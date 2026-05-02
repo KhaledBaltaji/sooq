@@ -352,7 +352,54 @@ Originally targeted Bahrain (`me-south-1`) for Lebanese-user latency. Discovered
 - [x] CloudFront distribution deploying
 - [x] All resource IDs documented in `docs/AWS_RESOURCES.md`
 - [x] tsc + lint clean
-- [ ] pg_cron extension verified post-reboot
-- [ ] User explicitly approves "ready for W6"
+- [ ] pg_cron extension verified post-reboot (deferred to W7)
+- [x] User approved "ready for W6"
+
+---
+
+## W6 — Auth.js v5 (in progress)
+
+**Goal:** Replace Supabase Auth with Auth.js v5 + Drizzle adapter + Google OAuth + custom WhatsApp OTP via existing VerifyWay integration. Switch RPCs from `auth.uid()` to `app.user_id()` GUC pattern so they work post-Supabase.
+
+### Done so far (this commit)
+
+- Installed `next-auth@5.0.0-beta.31` and `@auth/drizzle-adapter`
+- Generated `AUTH_SECRET` (32-byte random) into `.env.local`
+- **Drizzle schema extended** for Auth.js: added `accounts`, `sessions`, `verification_tokens` tables; users table got `name`, `email_verified`, `image` Auth.js-standard columns alongside existing Sooq fields (phone, displayName, avatarUrl, etc.)
+- **Drizzle DB client** at `src/lib/db/index.ts` — global `pg` Pool, SSL on RDS, connection-string from `DATABASE_URL`
+- **`src/auth.ts`** — NextAuth config: DrizzleAdapter, database session strategy, Google + WhatsApp OTP providers
+- **WhatsApp OTP custom provider** at `src/lib/auth/whatsapp-otp-provider.ts` — Credentials provider that validates OTP code against existing `otp_verifications` table, find-or-creates user by phone, marks code consumed
+- **`src/app/api/auth/[...nextauth]/route.ts`** — exports `GET`/`POST` handlers
+- **`src/middleware.ts`** — slimmed to rate-limit + coming-soon redirect only. Admin auth check moved to admin layout (Edge runtime can't run DrizzleAdapter)
+- **`supabase/migrations/367_w6_auth_guc.sql`** — creates `app` schema and `app.user_id()` helper that reads `current_setting('app.user_id', true)::uuid`
+
+### Google Cloud setup
+
+- Created `sooq-staging` (798395303413) and `sooq-prod` (827242747316) GCP projects via `gcloud`
+- Enabled IAM/IAM Credentials/Resource Manager APIs on staging
+- User configured OAuth consent screen + Web App credentials in UI
+- `AUTH_GOOGLE_ID` set in `.env.local` (Client ID, public-ish)
+- `AUTH_GOOGLE_SECRET` pasted by user (35-char `GOCSPX-` prefix)
+- Cleanup of old GCP projects blocked: gcloud says `khaledbaltaji@rival.finance` doesn't have delete permissions on most. They appear in project list but as viewer/billing. Owner needs to delete them.
+
+### Still pending in W6 (next commits)
+
+- **Sed-pass `auth.uid()` → `app.user_id()`** across surviving RPC bodies. The W4 retail-rewrite RPCs (`speed_execute_trade`, `speed_execute_cashout`) still call `auth.uid()`. Strip and `CREATE OR REPLACE` them in a follow-up migration.
+- **Refactor auth helpers** in `src/lib/auth/{actions,guards,hooks}.ts` to use Auth.js's `auth()` and `useSession()` instead of `supabase.auth.*`
+- **Refactor admin layout** to enforce `is_admin` + `admin_allowed_views` via Auth.js session lookup
+- **Replace `supabase.auth.signInWithOAuth`** call sites with Auth.js `signIn("google")`
+- **Replace `supabase.auth.getUser()`** call sites in API routes with `auth()` from `@/auth`
+- **Update existing auth UI** — `src/components/auth/auth-steps.tsx` to call `signIn("whatsapp-otp", { phone, code })` instead of the old Supabase flow
+- **Wire `DATABASE_URL`** — user pulls master password from Secrets Manager (one-liner provided), pastes into `.env.local`
+- **E2E test** — Google sign-in + WhatsApp OTP signup + signin against staging RDS
+
+### Sec issues raised in this phase (chat-leaked credentials)
+
+User pasted in chat:
+- AWS access key + secret (rotation pending — user accepted risk for staging)
+- Google OAuth Client Secret (rotation pending)
+- Screenshot of full `.env.local` exposing 3pay/VerifyWay/Sentry/Cron secrets
+
+User accepted residual risk and said they'll delete the chat. Production rotation required before W11 cutover.
 
 ---

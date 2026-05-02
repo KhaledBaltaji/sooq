@@ -77,17 +77,22 @@ export const withdrawalStatus = pgEnum("withdrawal_status", [
 ]);
 
 // ============================================================================
-// Users + auth
+// Users + auth (Auth.js v5 schema, extended with Sooq fields)
 // ============================================================================
 
 export const users = pgTable(
   "users",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Auth.js standard fields
+    name: text("name"),
+    email: text("email"),
+    emailVerified: timestamp("email_verified", { withTimezone: true }),
+    image: text("image"),
+    // Sooq fields
     phone: text("phone"),
     displayName: text("display_name"),
     avatarUrl: text("avatar_url"),
-    email: text("email"),
     bio: text("bio"),
     locale: text("locale").notNull().default("en"),
     balanceUsd: numeric("balance_usd", { precision: 18, scale: 6 })
@@ -105,6 +110,61 @@ export const users = pgTable(
   })
 );
 
+// ---- Auth.js core tables (used by the Drizzle adapter) ----
+
+export const accounts = pgTable(
+  "accounts",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    provider: text("provider").notNull(),
+    providerAccountId: text("provider_account_id").notNull(),
+    refresh_token: text("refresh_token"),
+    access_token: text("access_token"),
+    expires_at: integer("expires_at"),
+    token_type: text("token_type"),
+    scope: text("scope"),
+    id_token: text("id_token"),
+    session_state: text("session_state"),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.provider, t.providerAccountId] }),
+    userIdx: index("accounts_user_idx").on(t.userId),
+  })
+);
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    sessionToken: text("session_token").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    expires: timestamp("expires", { withTimezone: true }).notNull(),
+  },
+  (t) => ({
+    userIdx: index("sessions_user_idx").on(t.userId),
+  })
+);
+
+export const verificationTokens = pgTable(
+  "verification_tokens",
+  {
+    identifier: text("identifier").notNull(),
+    token: text("token").notNull(),
+    expires: timestamp("expires", { withTimezone: true }).notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.identifier, t.token] }),
+  })
+);
+
+// ---- Sooq legacy: WhatsApp OTP via VerifyWay ----
+// Used by /api/auth/{send-otp, verify-otp}. Kept separate from Auth.js's
+// verificationTokens because the OTP flow has phone-specific concerns
+// (rate limit, IP-based spray protection, message_id from VerifyWay).
 export const otpVerifications = pgTable(
   "otp_verifications",
   {
@@ -329,6 +389,8 @@ export const notifications = pgTable(
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
+export type Account = typeof accounts.$inferSelect;
+export type Session = typeof sessions.$inferSelect;
 export type Transaction = typeof transactions.$inferSelect;
 export type NewTransaction = typeof transactions.$inferInsert;
 export type Deposit = typeof deposits.$inferSelect;
