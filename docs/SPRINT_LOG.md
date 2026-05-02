@@ -61,9 +61,81 @@ These need user input or external action before W2/W3 work can be promoted:
 
 - [x] `npx tsc --noEmit` passes (exit 0)
 - [x] `npm install` completes (705 packages)
-- [ ] `npm run lint` — not run yet, will run before W2 commit
+- [x] `npm run lint` exit 0 (260 pre-existing warnings, 0 errors)
 - [x] CI green: bare-minimum workflow in place (will only run when remote is wired)
 - [x] Lockfile + `.claude/sessions/locks` skeleton in place
-- [ ] User explicitly approves "ready for W2"
+- [x] User explicitly approves "ready for W2" (said "keep going to u finish all the phases")
+
+---
+
+## W2 — Strip pass 1 (LMSR + demo + prelaunch + stale + admin tooling)
+
+**Goal:** Drop everything that isn't surviving v1 except branches/commission. Branches + commission stay one more week (W3 surgery); LMSR / demo / prelaunch / stale features / admin tooling go now.
+
+### Done — SQL strip
+
+- Wrote `supabase/migrations/364_w2_strip_pass_1.sql` — single migration, 7 sections, all `IF EXISTS + CASCADE`, idempotent
+- Migration number `364` reserved in `.claude/sessions/migrations/next.json`
+- Sections drop:
+  - **Stale features** — `news_articles` (defensive — already dropped in mig 342), `copy_settings`, `comment_likes`, `market_comments`, `leader_stats`, `leaderboard_view`, `price_alerts`
+  - **Demo mode** — 6 `demo_*` tables + 10 `demo_*` RPCs + 5 `users` columns (`demo_first_enabled_at`, `demo_first_trade_at`, `demo_balance_usd`, `first_real_deposit_after_demo_at`, `demo_mode`)
+  - **Prelaunch** — `prelaunch_votes`, `prelaunch_questions`, `prelaunch_waitlist` + `record_prelaunch_vote` RPC
+  - **LMSR core** — `markets`, `amm_state`, `trades`, `positions`, `retail_trades`, `retail_positions`, `platform_revenue` + 16 RPCs (`execute_trade`, `resolve_market`, `lock_market`, `void_market`, `_void_market_internal`, `lmsr_cost/price/shares_for_cost`, `initialize_amm`, `get_amm_price`, `get_amm_risk_snapshot`, `get_cash_out_value`, `admin_create_market`, `admin_update_market`, `update_homepage_ranks`, `get_price_history`)
+  - **Deposit bonus** — `claim_deposit_bonus` + `users.deposit_bonus_claimed/wagering_requirement/total_wagered`
+  - **Admin tooling** — `system_logs`, `log_system_event`, `reconcile_balances`, `reconcile_agent_balances`, all 7 `get_stats_*` + `get_platform_stats`
+  - **Help articles** — `help_articles`, `help_collections`
+- Utility cleanup functions (`cleanup_test_data`, `staging_full_reset`) dropped first since their bodies reference half the schema; W4 ops rebuild adds slimmer replacements
+
+### Done — UI / route deletes
+
+- `src/app/(app)/{market,markets,demo,m,trade,help,referral-not-yet}/` — LMSR + demo + shorthand market routes + LMSR trade flow + LMSR help
+- `src/app/(prelaunch)/` — full prelaunch route group
+- `src/app/api/{prelaunch/,cron/{rank-markets,close-expired-markets,resolve-demo-markets,check-errors}/}` — prelaunch APIs + LMSR/demo/admin-tooling crons
+- `src/app/api/og/` — LMSR market OG image generation
+- `src/app/admin/{markets,amm,accounting,finance,stats,alerts,logs,help}/` — 8 LMSR / admin-tooling admin pages
+- `src/app/branch/` and `src/app/b/` — branch UI (originally W3 work, deleted now to satisfy W2 type-check; matches plan's "Speed broken mid-strip" expectation)
+- Replaced `src/app/(app)/page.tsx` with a minimal speed-pointing placeholder (W4 designs the real speed-first home)
+- Replaced `src/app/(app)/profile/page.tsx` with a slim balance + transactions + deposit/withdraw page (LMSR-position-aware UI gone; W4 redesigns for speed positions)
+
+### Done — components / hooks / queries
+
+- `src/components/{home,market,markets,trade,branch}/` — 5 dirs of LMSR + branch components
+- `src/lib/queries/markets.ts` — LMSR query layer (branch-markets.ts kept for W3)
+- `src/hooks/{use-close-position,use-execute-trade,use-market,use-markets,use-merged-positions,use-position-sparks,use-position,use-positions,use-branch-trade,use-price-history}.ts` — 10 LMSR + branch hooks
+
+### Done — tests
+
+- All 10 `demo-*.test.ts` removed
+- LMSR-only: `place-bet`, `resolve-market`, `payout-invariants`, `race-conditions`, `concurrency`, `opening-price`, `price-history`, `amm-risk-snapshot`, `admin-sidebar-counts`, `fee-config-uniqueness`
+- `src/tests/api/resolve-demo-markets.test.ts`
+- 30 test files remain: 11 speed (KEEP), 8 branch (W3 strip), 3 commission (W3 strip), plus auth/money/admin core
+
+### Verification
+
+- `npx tsc --noEmit` exit 0 ✓
+- `npm run lint` exit 0 (1 fixed: replaced `<a href="/speed">` with `<Link>` per next.config rule) ✓
+- Migration 364 SQL syntax: pending validation against fresh local Supabase stack (started, ports remapped to 5442X to coexist with existing prediction-market stack)
+
+### Surprises / deviations
+
+- Profile page rewrite was bigger than expected — original was 412 LOC of LMSR-position-aware UI. Replaced with ~110-line slim placeholder. W4 redesign will wire to speed positions when those exist.
+- Branch UI deletion happened in W2 (originally W3). Branch SQL surgery (the heavy part) still lives in W3.
+- `getSupportWhatsAppHref()` requires a message arg — fixed in profile rewrite to pass `tSupport("defaultMessage")`.
+- 2 small profile fixes after the rewrite: Avatar component requires `name` prop; WhatsApp helper requires message arg.
+
+### Open from W2
+
+1. **Validate `364_w2_strip_pass_1.sql` applies cleanly** to a fresh local Postgres — sooq Supabase stack starting in background
+2. **Test infrastructure** still references `SUPABASE_TEST_URL`; will work once stack is up. Some surviving tests (commission, branch, agent-wallet) reference dropped tables → expected to fail in W2; cleaned up in W3.
+
+### Phase boundary checkpoint (W2 → W3)
+
+- [x] `npx tsc --noEmit` passes
+- [x] `npm run lint` passes
+- [ ] Migration 364 applies cleanly to fresh local Postgres (in flight)
+- [x] LMSR / demo / prelaunch / stale / admin-tooling UI fully deleted
+- [x] Plan adherence: every drop maps to a row in the approved plan's "What gets stripped" table
+- [ ] Commit + push to staging
+- [ ] User explicitly approves "ready for W3"
 
 ---
