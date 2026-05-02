@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { logger } from "@/lib/logger";
-import { resolveAndApplyReferral } from "@/lib/auth/actions";
+// Referral resolver was stripped in W3 along with branches/commission system.
 import crypto from "crypto";
 
 const serviceClient = createClient(
@@ -146,34 +146,8 @@ export async function POST(request: Request) {
         );
       }
 
-      // Unified referral routing. Three surfaces, resolved by the typed
-      // dispatch in resolveAndApplyReferral:
-      //   1. /b/[slug]/?agent=[code]  → branch_signup with sub-agent
-      //   2. /b/[slug]                → branch_signup, attribute to manager
-      //   3. /r/[code] or manual      → direct_code (legacy path)
-      // /b/[slug] wins over /r/[code] when both are present (URL is stronger
-      // signal than persisted ref).
-      try {
-        if (branchSlug) {
-          await resolveAndApplyReferral(userId, {
-            type: "branch_signup",
-            branchSlug,
-            agentCode: agentCode || undefined,
-          });
-        } else if (referralCode) {
-          await resolveAndApplyReferral(userId, referralCode);
-        }
-      } catch (err) {
-        // Don't let a referral bookkeeping failure block signup.
-        logger.error("Unexpected error in referral capture", {
-          source: "auth/verify-otp",
-          userId,
-          referralCode,
-          branchSlug,
-          agentCode,
-          errorMessage: err instanceof Error ? err.message : String(err),
-        });
-      }
+      // W3 stripped the referral / branch attribution system entirely.
+      // Sooq Speed v1 ships without referrals — re-add via fresh spec.
     }
 
     // --- Step 3: Generate Supabase session ---

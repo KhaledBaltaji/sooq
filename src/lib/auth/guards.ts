@@ -1,58 +1,53 @@
-import { createClient } from "@/lib/supabase/server";
+// Server-side auth guards backed by Auth.js v5.
+//
+// Use these in Server Components or API routes:
+//   const session = await requireAuth();        // redirects to /login if no session
+//   const { user, allowedViews } = await requireAdmin();  // redirects if not admin
+
 import { redirect } from "next/navigation";
+import { auth } from "@/auth";
+import { db } from "@/lib/db";
+import { users } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
 
+/**
+ * Require any authenticated session. Redirects to /login if missing.
+ * Returns the Auth.js session.user object — has id, name, email, image.
+ */
 export async function requireAuth() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-
-  if (!user) {
+  const session = await auth();
+  if (!session?.user?.id) {
     redirect("/login");
   }
-
-  return user;
+  return session.user;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function requireBranchManager(): Promise<{ user: NonNullable<Awaited<ReturnType<Awaited<ReturnType<typeof createClient>>["auth"]["getUser"]>>["data"]["user"]>; branch: Record<string, any> }> {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-
-  if (!user) {
-    redirect("/login");
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: branch, error } = await (supabase as any)
-    .from("branches")
-    .select("*")
-    .eq("manager_user_id", user.id)
-    .limit(1)
-    .single() as { data: Record<string, unknown> | null; error: unknown };
-
-  if (error || !branch) {
-    redirect("/");
-  }
-
-  return { user, branch };
-}
-
+/**
+ * Require an admin session. Redirects to /login if no session, to /
+ * if signed in but not admin. Returns the user + their allowed admin views.
+ */
 export async function requireAdmin() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-
-  if (!user) {
+  const session = await auth();
+  if (!session?.user?.id) {
     redirect("/login");
   }
 
-  const { data: profile } = await supabase
-    .from("users")
-    .select("is_admin, admin_allowed_views")
-    .eq("id", user.id)
-    .single();
+  const rows = await db
+    .select({
+      isAdmin: users.isAdmin,
+      adminAllowedViews: users.adminAllowedViews,
+    })
+    .from(users)
+    .where(eq(users.id, session.user.id))
+    .limit(1);
 
-  if (!profile?.is_admin) {
+  const profile = rows[0];
+  if (!profile?.isAdmin) {
     redirect("/");
   }
 
-  return { user, allowedViews: (profile.admin_allowed_views as string[] | null) };
+  return {
+    user: session.user,
+    allowedViews: profile.adminAllowedViews ?? null,
+  };
 }
