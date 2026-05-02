@@ -61,17 +61,7 @@ export function PortfolioSidebar() {
           </div>
         </div>
 
-        {/* Agent Wallet (shown if > 0) */}
-        {user.agent_balance_usd > 0 && (
-          <div className="flex items-center justify-between pt-2">
-            <span className="text-[10px] text-muted-custom uppercase font-bold tracking-widest">
-              Agent Wallet
-            </span>
-            <span className="text-sm font-satoshi font-bold text-warning tabular-nums">
-              {formatCurrency(user.agent_balance_usd)}
-            </span>
-          </div>
-        )}
+        {/* Agent Wallet was stripped in W3 (agent system). */}
 
         {/* Stats grid */}
         <div className="grid grid-cols-2 gap-4 border-t border-border-custom pt-4">

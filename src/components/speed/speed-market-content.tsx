@@ -105,8 +105,9 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
   const [showShareMenu, setShowShareMenu] = useState(false);
   const [copied, setCopied] = useState(false);
   const shareRef = useRef<HTMLDivElement>(null);
+  // Referral codes were stripped in W3; share link is the bare market URL.
   const shareUrl = typeof window !== "undefined"
-    ? `${window.location.origin}/speed/${id}${user?.referral_code ? `?ref=${user.referral_code}` : ""}`
+    ? `${window.location.origin}/speed/${id}`
     : "";
 
   const handleCopyLink = () => {

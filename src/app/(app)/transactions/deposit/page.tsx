@@ -17,8 +17,8 @@ export default function DepositPage() {
   const t = useTranslations("wallet");
   const { user, loading: userLoading } = useUser();
 
-  // Deposit bonus eligibility: first deposit $20+, non-referred, not yet claimed
-  const bonusEligible = user && !user.referred_by && !user.deposit_bonus_claimed;
+  // Deposit bonus stripped in W2; flag stays false. Re-add via fresh growth spec.
+  const bonusEligible = false;
 
   const handleWhishSuccess = () => {
     // Whish manual deposit submitted — redirect to transactions

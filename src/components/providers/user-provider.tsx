@@ -1,25 +1,35 @@
 "use client";
 
+// User context — auth state via Auth.js useSession, profile via /api/users/me.
+// W7 cutover: Supabase auth listener + realtime subscription removed.
+// Profile shape stays snake_case (matches /api/users/me JSON) so existing
+// components don't need rewrites.
+
 import {
   createContext,
   useContext,
   useEffect,
   useState,
   useCallback,
-  useRef,
   type ReactNode,
 } from "react";
 import * as Sentry from "@sentry/nextjs";
-import { useSupabase } from "./supabase-provider";
-import type { User } from "@supabase/supabase-js";
-import type { User as AppUser } from "@/types/user";
+import { useSession } from "next-auth/react";
+import type { User } from "@/types/user";
+
+interface AuthUser {
+  id: string;
+  name?: string | null;
+  email?: string | null;
+  image?: string | null;
+}
 
 interface UserContextValue {
-  user: AppUser | null;
-  authUser: User | null;
+  user: User | null;
+  authUser: AuthUser | null;
   loading: boolean;
   authLoading: boolean;
-  refetch: () => Promise<AppUser | null>;
+  refetch: () => Promise<User | null>;
   adjustBalance: (delta: number) => void;
 }
 
@@ -27,148 +37,77 @@ const UserContext = createContext<UserContextValue | undefined>(undefined);
 
 interface UserProviderProps {
   children: ReactNode;
-  initialAuthUser: User | null;
-  initialProfile: AppUser | null;
+  initialProfile: User | null;
 }
 
-export function UserProvider({
-  children,
-  initialAuthUser,
-  initialProfile,
-}: UserProviderProps) {
-  const supabase = useSupabase();
-  const [authUser, setAuthUser] = useState<User | null>(initialAuthUser);
-  const [profile, setProfile] = useState<AppUser | null>(initialProfile);
-  const [authLoading, setAuthLoading] = useState(!initialAuthUser && initialAuthUser !== null ? true : false);
+export function UserProvider({ children, initialProfile }: UserProviderProps) {
+  const { data: session, status } = useSession();
+  const authLoading = status === "loading";
+  const authUser: AuthUser | null = session?.user
+    ? {
+        id: (session.user as { id?: string }).id ?? "",
+        name: session.user.name,
+        email: session.user.email,
+        image: session.user.image,
+      }
+    : null;
+
+  const [profile, setProfile] = useState<User | null>(initialProfile);
   const [profileLoading, setProfileLoading] = useState(false);
-  // Track the initial auth user ID to detect changes
-  const currentAuthId = useRef(initialAuthUser?.id ?? null);
 
-  // Initialize loading states correctly:
-  // - If we have server data (initialAuthUser provided or explicitly null), no loading needed
-  // - The server always provides these props, so loading starts as false
+  // Sentry user tagging follows the session.
   useEffect(() => {
-    // Set Sentry user on mount if we have initial data
-    if (initialAuthUser) {
-      Sentry.setUser({ id: initialAuthUser.id, email: initialAuthUser.email });
+    if (authUser?.id) {
+      Sentry.setUser({ id: authUser.id, email: authUser.email ?? undefined });
+    } else {
+      Sentry.setUser(null);
     }
-  }, []); // eslint-disable-line
+  }, [authUser?.id, authUser?.email]);
 
-  const fetchProfile = useCallback(async () => {
-    const currentUser = authUser;
-    if (!currentUser) {
+  const fetchProfile = useCallback(async (): Promise<User | null> => {
+    if (!authUser?.id) {
       setProfile(null);
       setProfileLoading(false);
       return null;
     }
-    const { data, error } = await supabase
-      .from("users")
-      .select("*")
-      .eq("id", currentUser.id)
-      .single();
-
-    if (error) {
-      console.error("Failed to fetch user profile:", error.message);
+    setProfileLoading(true);
+    try {
+      const res = await fetch("/api/users/me");
+      if (!res.ok) {
+        setProfileLoading(false);
+        return null;
+      }
+      const data = (await res.json()) as User;
+      setProfile(data);
+      setProfileLoading(false);
+      return data;
+    } catch (err) {
+      console.error("Failed to fetch /api/users/me:", err);
       setProfileLoading(false);
       return null;
     }
-
-    const freshProfile = data as AppUser | null;
-    setProfile(freshProfile);
-    setProfileLoading(false);
-    return freshProfile;
-  }, [supabase, authUser]);
+  }, [authUser?.id]);
 
   const adjustBalance = useCallback((delta: number) => {
-    setProfile((prev: AppUser | null) =>
-      prev ? { ...prev, balance_usd: Math.max(0, prev.balance_usd + delta) } : prev
+    setProfile((prev) =>
+      prev
+        ? { ...prev, balance_usd: Math.max(0, prev.balance_usd + delta) }
+        : prev
     );
   }, []);
 
-  // Auth state change listener
-  useEffect(() => {
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      const newUser = session?.user ?? null;
-      setAuthUser(newUser);
-      setAuthLoading(false);
-
-      if (newUser) {
-        Sentry.setUser({ id: newUser.id, email: newUser.email });
-        // If user ID changed, refetch profile
-        if (newUser.id !== currentAuthId.current) {
-          currentAuthId.current = newUser.id;
-          setProfileLoading(true);
-          setProfile(null);
-        }
-      } else {
-        Sentry.setUser(null);
-        currentAuthId.current = null;
-        setProfile(null);
-        setProfileLoading(false);
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [supabase]);
-
-  // Profile fetch + realtime subscription (when auth user changes)
   useEffect(() => {
     if (authLoading) return;
-    if (!authUser) {
+    if (!authUser?.id) {
       setProfile(null);
       setProfileLoading(false);
       return;
     }
 
-    // Only fetch if we don't already have a matching profile
     if (!profile || profile.id !== authUser.id) {
       fetchProfile();
     }
 
-    // Subscribe to profile changes
-    const channel = supabase
-      .channel("user-profile")
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "users",
-          filter: `id=eq.${authUser.id}`,
-        },
-        (payload) => setProfile(payload.new as AppUser)
-      )
-      .subscribe((status) => {
-        if (status === "CHANNEL_ERROR") {
-          console.error("User profile realtime subscription error");
-        }
-      });
-
-    // Refetch profile when tab regains focus
-    let lastProfileCheck = Date.now();
-    const onVisibilityChange = () => {
-      if (
-        document.visibilityState === "visible" &&
-        Date.now() - lastProfileCheck > 3000
-      ) {
-        lastProfileCheck = Date.now();
-        fetchProfile();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      supabase.removeChannel(channel);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [authUser, authLoading, supabase, fetchProfile, profile]);
-
-  // Re-check auth when tab regains focus (catches server-set session cookies)
-  useEffect(() => {
     let lastCheck = Date.now();
     const onVisibilityChange = () => {
       if (
@@ -176,24 +115,27 @@ export function UserProvider({
         Date.now() - lastCheck > 3000
       ) {
         lastCheck = Date.now();
-        supabase.auth
-          .getUser()
-          .then(({ data: { user: freshUser } }) => {
-            setAuthUser(freshUser);
-          })
-          .catch(() => {});
+        fetchProfile();
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    return () =>
+    return () => {
       document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [supabase]);
+    };
+  }, [authUser?.id, authLoading, fetchProfile, profile]);
 
   const loading = authLoading || profileLoading;
 
   return (
     <UserContext.Provider
-      value={{ user: profile, authUser, loading, authLoading, refetch: fetchProfile, adjustBalance }}
+      value={{
+        user: profile,
+        authUser,
+        loading,
+        authLoading,
+        refetch: fetchProfile,
+        adjustBalance,
+      }}
     >
       {children}
     </UserContext.Provider>

@@ -1,35 +1,23 @@
-import type { Database, AgentLevel } from "./database";
+// Slim User type for client-side use. Matches the snake_case shape returned
+// by /api/users/me (Drizzle camelCase converted at the API boundary).
+//
+// Server-side code uses the Drizzle-inferred types from @/lib/db/schema.
 
-export type User = Database["public"]["Tables"]["users"]["Row"];
-
-export interface UserProfile {
+export interface User {
   id: string;
-  display_name: string | null;
+  name: string | null;
+  email: string | null;
+  email_verified: string | null;
+  image: string | null;
   phone: string | null;
+  display_name: string | null;
   avatar_url: string | null;
-  balance_usd: number;
-  referral_code: string;
-  referred_by: string | null;
-  agent_level: AgentLevel;
-  direct_referral_count: number;
+  bio: string | null;
   locale: string;
+  balance_usd: number;
   is_admin: boolean;
+  is_frozen: boolean;
   admin_allowed_views: string[] | null;
-  // Demo Mode (migration 263)
-  demo_mode: boolean;
-  demo_balance_usd: number;
-  demo_first_enabled_at: string | null;
-  demo_first_trade_at: string | null;
-  first_real_deposit_after_demo_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
-
-export interface AgentStats {
-  level: AgentLevel;
-  direct_referral_count: number;
-  tier1_earnings: number;
-  tier2_earnings: number;
-  tier3_earnings: number;
-  total_earnings: number;
-}
-
-export type { AgentLevel };

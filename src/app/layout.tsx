@@ -1,7 +1,10 @@
 import type { Viewport } from "next";
-import { cookies } from "next/headers";
 import { getLocale, getMessages, getTranslations } from "next-intl/server";
-import { createClient } from "@/lib/supabase/server";
+import { auth } from "@/auth";
+import { db } from "@/lib/db";
+import { users } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
+import type { User as ApiUser } from "@/types/user";
 import { Analytics } from "@vercel/analytics/next";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { satoshi, dmSans, notoSansArabic, geist, geistMono } from "@/lib/fonts";
@@ -52,22 +55,40 @@ export default async function RootLayout({
   const messages = await getMessages();
   const dir = locale === "ar" ? "rtl" : "ltr";
 
-  // Prefetch user profile server-side to eliminate client waterfall
-  let initialAuthUser = null;
-  let initialProfile = null;
-  const cookieStore = await cookies();
-  const hasAuthCookie = cookieStore.getAll().some((c) => c.name.startsWith("sb-"));
-  if (hasAuthCookie) {
+  // Prefetch session + user profile server-side. Profile is shaped to
+  // match the snake_case JSON returned by /api/users/me.
+  const session = await auth();
+  let initialProfile: ApiUser | null = null;
+  if (session?.user?.id) {
     try {
-      const supabase = await createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        initialAuthUser = JSON.parse(JSON.stringify(user));
-        const { data } = await supabase.from("users").select("*").eq("id", user.id).single();
-        initialProfile = data;
+      const rows = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, session.user.id))
+        .limit(1);
+      const u = rows[0];
+      if (u) {
+        initialProfile = {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          email_verified: u.emailVerified ? u.emailVerified.toISOString() : null,
+          image: u.image,
+          phone: u.phone,
+          display_name: u.displayName,
+          avatar_url: u.avatarUrl,
+          bio: u.bio,
+          locale: u.locale,
+          balance_usd: Number(u.balanceUsd),
+          is_admin: u.isAdmin,
+          is_frozen: u.isFrozen,
+          admin_allowed_views: u.adminAllowedViews,
+          created_at: u.createdAt.toISOString(),
+          updated_at: u.updatedAt.toISOString(),
+        };
       }
     } catch {
-      // Auth fetch failed — continue without prefetched data
+      // Profile prefetch failed — UserProvider will retry client-side.
     }
   }
 
@@ -100,7 +121,7 @@ export default async function RootLayout({
           Skip to content
         </a>
         <MaterialSymbols />
-        <Providers locale={locale} messages={messages as Record<string, unknown>} initialAuthUser={initialAuthUser} initialProfile={initialProfile}>
+        <Providers locale={locale} messages={messages as Record<string, unknown>} session={session} initialProfile={initialProfile}>
           <LanguageSelectorModal />
           {children}
         </Providers>

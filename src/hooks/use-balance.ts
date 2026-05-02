@@ -1,14 +1,14 @@
 "use client";
 
+// Balance hook. agent_balance / wagering_requirement / total_wagered were
+// stripped in W2/W3 along with the agent + deposit-bonus systems.
+
 import { useUser } from "@/lib/auth/hooks";
 
 export function useBalance() {
   const { user, loading } = useUser();
   return {
     balance: user?.balance_usd ?? 0,
-    agent_balance: user?.agent_balance_usd ?? 0,
     loading,
-    wagering_requirement: user?.wagering_requirement ?? 0,
-    total_wagered: user?.total_wagered ?? 0,
   };
 }
