@@ -35,6 +35,11 @@ interface NavGroup {
   items: NavItem[];
 }
 
+// W4 strip: slim admin to surviving pages only.
+// Removed: markets, amm, agents, branches, finance, stats, accounting,
+// alerts, logs, help. Most of the corresponding RPCs/tables were dropped
+// in W2/W3. The lean ops rebuild between W10 and W11 will add back a
+// minimal alerts/logs surface.
 const ADMIN_NAV_GROUPS: NavGroup[] = [
   {
     group: "Overview",
@@ -45,34 +50,20 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
   {
     group: "Markets",
     items: [
-      { key: "markets", href: "/admin/markets", icon: "analytics", label: "Markets" },
       { key: "speed", href: "/admin/speed", icon: "bolt", label: "Speed Markets" },
-      { key: "amm", href: "/admin/amm", icon: "monitoring", label: "AMM Risk" },
     ],
   },
   {
     group: "People",
     items: [
       { key: "users", href: "/admin/users", icon: "group", label: "Users" },
-      { key: "agents", href: "/admin/agents", icon: "smart_toy", label: "Agents" },
-      { key: "branches", href: "/admin/branches", icon: "store", label: "Branches" },
     ],
   },
   {
     group: "Money",
     items: [
-      { key: "finance", href: "/admin/finance", icon: "account_balance", label: "Finance", badgeKey: "pending_finance" },
+      { key: "withdrawals", href: "/admin/withdrawals", icon: "request_quote", label: "Withdrawals", badgeKey: "pending_finance" },
       { key: "fees", href: "/admin/fees", icon: "payments", label: "Fees" },
-      { key: "stats", href: "/admin/stats", icon: "bar_chart", label: "Stats" },
-      { key: "accounting", href: "/admin/accounting", icon: "receipt_long", label: "Accounting" },
-    ],
-  },
-  {
-    group: "Ops",
-    items: [
-      { key: "alerts", href: "/admin/alerts", icon: "notifications_active", label: "Alerts" },
-      { key: "logs", href: "/admin/logs", icon: "bug_report", label: "System Logs" },
-      { key: "help", href: "/admin/help", icon: "help_center", label: "Help Center" },
     ],
   },
   {

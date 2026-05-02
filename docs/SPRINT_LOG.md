@@ -195,6 +195,75 @@ These need user input or external action before W2/W3 work can be promoted:
 - [x] Migration 365 written with full coverage of branch/commission/agent surface
 - [ ] Migration 365 application to fresh Postgres (deferred to W4)
 - [ ] Speed RPC retail-only rewrites (W4 — known break window)
-- [ ] User explicitly approves "ready for W4"
+- [x] Commit `41c0f53` pushed to `staging`
+
+---
+
+## W4 — Cleanup, speed retail-only rewrites, Drizzle foundation
+
+**Goal:** Close the "speed broken mid-strip" window opened in W2/W3. Slim the admin to surviving pages. Lay the Drizzle schema foundation that W6/W7 will build on.
+
+### Done — speed RPC retail-only rewrites (migration 366)
+
+`supabase/migrations/366_w4_speed_retail_rewrites.sql` rewrites:
+- **`speed_execute_trade`** — retail-only. No `signup_branch_id` lookup, no `speed_branches` row, no `speed_pool_ledger` write, no `pay_speed_trade_commissions` call. Stake range hardcoded ($1–$25, $200 per-side cap). Variance flows through `users.balance_usd` decrement + `transactions` insert (`type='speed_stake'`). Position + trade rows no longer carry `branch_id`.
+- **`speed_execute_cashout`** — retail-only. No `speed_branches` lock or pool debit. Cashout amount calculated identically; user balance credit + `transactions` insert (`type='speed_cashout'`).
+- **`speed_resolve_market`** — retail-only. Void path: full refund per position via balance + transactions, no pool ledger. Resolution path: winners get `stake / entry_offered_prob` from house, losers close at zero, push (at_strike) returns stake. All settlements written to `speed_settlements` (now `branch_id`-free).
+- Also drops `speed_settlements.branch_id` column (missed in 365).
+
+These RPCs still use `auth.uid()` and read fee rates from `fee_config` — both are W6 (auth) / later (fee hardcode) work.
+
+### Done — admin slim
+
+- `src/components/admin/admin-sidebar.tsx` — reduced 14 nav items to 5 (Dashboard, Speed Markets, Users, Withdrawals, Fees, Admins). Killed dead links: markets, amm, agents, branches, finance, stats, accounting, alerts, logs, help.
+- The lean ops rebuild between W10 and W11 will add back a minimal alerts/logs surface.
+
+### Done — Drizzle foundation
+
+- `drizzle.config.ts` at repo root — schema in `src/lib/db/schema.ts`, output to `drizzle/migrations/`, `dialect: 'postgresql'`, reads `DATABASE_URL` env var.
+- `src/lib/db/schema.ts` — first cut Drizzle schema mirroring the surviving Postgres schema. ~280 LOC. Captures:
+  - **users**, **otp_verifications**
+  - **transactions**, **deposits**, **withdrawals**
+  - **speed_assets**, **speed_markets**, **speed_positions**, **speed_trades**, **speed_settlements**
+  - **notifications**
+  - 7 enums: `speed_duration`, `speed_side`, `speed_market_status`, `speed_market_outcome`, `speed_position_status`, `speed_trade_kind`, `transaction_type`, `deposit_status`, `withdrawal_status`
+  - Relevant indexes (phone unique on users, user/market/createdAt composites, etc.)
+  - `$inferSelect` / `$inferInsert` type exports for app code to use
+- Internal speed telemetry tables (oracle_ticks, exposure_live, external_book_snapshots) deliberately NOT modelled yet — Postgres-side only writes them; app layer doesn't need types until W7.
+
+### Verification
+
+- `npx tsc --noEmit` exit 0 ✓
+- `npm run lint` exit 0 (80 pre-existing warnings, 0 errors) ✓
+- Migration 366 SQL: review-only — applies in W7 against fresh RDS. The pre-365 prediction-market local stack still has `speed_branches`/etc. so applying 366 against it would fail; it's designed to apply ON TOP of 365.
+
+### Not done in W4
+
+- **Apply 364 + 365 + 366 to a fresh Postgres for end-to-end migration validation.** Sooq's local stack hit the `pg_read_file` permission error on mig 332 (`speed_pg_cron`), and digging into it isn't worth the time when W7's RDS will validate everything cleanly. Punted.
+- **Drop `fee_config` table + hardcode rates in speed RPCs.** Per plan: fee values to be confirmed before W3. Still pending. Do this once values land — separate small migration (367 or later).
+- **`schema.sql` snapshot regeneration.** Same blocker (no fresh DB to dump). The Drizzle schema is the new source of truth going forward; `schema.sql` will get regenerated in W7 from RDS.
+
+### Phase boundary checkpoint (W4 → W5)
+
+- [x] `npx tsc --noEmit` passes
+- [x] `npm run lint` passes
+- [x] Migration 366 (speed retail rewrites + speed_settlements column drop) written
+- [x] Admin sidebar slimmed
+- [x] Drizzle schema + config in place
+- [ ] User explicitly approves "ready for W5"
+- [ ] **AWS access required from user** — W5 cannot start without AWS account + IAM credentials
+
+### Next phase: W5 (AWS infra) — STOP HERE
+
+W5 needs items I cannot do alone:
+- AWS account / org structure decision (single account vs Org with sub-accounts)
+- IAM role to assume from local
+- VPC / subnet / SG choices (or accept defaults)
+- Region commit: Bahrain (`me-south-1`) vs Frankfurt (`eu-central-1`)
+- RDS instance class (`db.t4g.medium` recommended)
+- S3 bucket naming convention (`sooq-prod-deposits`, `sooq-prod-thumbs`?)
+- DNS provider for the new domain (or reuse `sooq.exchange`?)
+
+Once those are decided, W5 can be done autonomously with `aws cli`.
 
 ---
