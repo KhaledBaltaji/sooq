@@ -15,6 +15,10 @@ export default defineConfig({
   dialect: "postgresql",
   dbCredentials: {
     url: process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/sooq",
+    // RDS uses Amazon's CA which Node's default trust store doesn't have.
+    // Connection stays encrypted; only cert chain validation is skipped.
+    // Production: download AWS RDS root cert and use rejectUnauthorized: true.
+    ssl: { rejectUnauthorized: false },
   },
   verbose: true,
   strict: true,
