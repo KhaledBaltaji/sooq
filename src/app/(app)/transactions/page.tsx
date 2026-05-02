@@ -21,37 +21,32 @@ import {
   History,
 } from "lucide-react";
 
+// W2/W3 strip: dropped LMSR/branch/commission/bonus transaction kinds
+// (trade/bet/close_position/win/resolution_*/commission/bonus/seed/
+// agent_transfer_*). Slim list maps Sooq Speed transaction types only.
 const TYPE_CONFIG: Record<string, { icon: typeof ArrowDownLeft; color: string; label: string }> = {
-  deposit:            { icon: ArrowDownLeft,   color: "text-success",     label: "Deposit" },
-  withdrawal:         { icon: ArrowUpRight,    color: "text-error",       label: "Withdrawal" },
-  bet:                { icon: Coins,           color: "text-no",          label: "Trade" },
-  trade:              { icon: Coins,           color: "text-no",          label: "Trade" },
-  close_position:     { icon: ArrowUpRight,    color: "text-yes",         label: "Cash Out" },
-  win:                { icon: Trophy,          color: "text-success",     label: "Win" },
-  resolution_payout:  { icon: Trophy,          color: "text-success",     label: "Payout" },
-  resolution_fee:     { icon: Percent,         color: "text-muted-custom", label: "Resolution Fee" },
-  commission:         { icon: Percent,         color: "text-yes",         label: "Commission" },
-  bonus:              { icon: Gift,            color: "text-success",     label: "Bonus" },
-  refund:             { icon: RotateCcw,       color: "text-muted-custom", label: "Refund" },
-  seed:               { icon: Coins,           color: "text-muted-custom", label: "Seed" },
-  agent_transfer_out: { icon: Wallet,          color: "text-warning",     label: "Agent Transfer" },
-  agent_transfer_in:  { icon: ArrowRightLeft,  color: "text-success",     label: "Agent Transfer" },
+  deposit:        { icon: ArrowDownLeft,   color: "text-success",     label: "Deposit" },
+  withdrawal:     { icon: ArrowUpRight,    color: "text-error",       label: "Withdrawal" },
+  speed_stake:    { icon: Coins,           color: "text-no",          label: "Speed Stake" },
+  speed_cashout:  { icon: ArrowUpRight,    color: "text-yes",         label: "Cash Out" },
+  speed_payout:   { icon: Trophy,          color: "text-success",     label: "Payout" },
+  speed_refund:   { icon: RotateCcw,       color: "text-muted-custom", label: "Refund" },
+  admin_credit:   { icon: ArrowDownLeft,   color: "text-success",     label: "Admin Credit" },
+  admin_debit:    { icon: ArrowUpRight,    color: "text-error",       label: "Admin Debit" },
 };
 
-type Filter = "all" | "trades" | "deposits" | "transfers";
+type Filter = "all" | "trades" | "deposits";
 
 const FILTERS: { key: Filter; label: string }[] = [
-  { key: "all",       label: "All" },
-  { key: "trades",    label: "Trades" },
-  { key: "deposits",  label: "Deposits" },
-  { key: "transfers", label: "Transfers" },
+  { key: "all",      label: "All" },
+  { key: "trades",   label: "Trades" },
+  { key: "deposits", label: "Deposits" },
 ];
 
 const FILTER_TYPES: Record<Filter, string[] | null> = {
   all: null,
-  trades: ["bet", "trade", "close_position", "win", "resolution_payout", "resolution_fee"],
-  deposits: ["deposit", "withdrawal", "bonus", "refund"],
-  transfers: ["agent_transfer_in", "agent_transfer_out", "commission"],
+  trades: ["speed_stake", "speed_cashout", "speed_payout", "speed_refund"],
+  deposits: ["deposit", "withdrawal"],
 };
 
 export default function TransactionsPage() {
@@ -137,10 +132,14 @@ export default function TransactionsPage() {
               </p>
               <div className="bg-surface rounded-2xl overflow-hidden">
                 {txs.map((tx, i) => {
-                  const config = TYPE_CONFIG[tx.type] || TYPE_CONFIG.trade;
+                  const config = TYPE_CONFIG[tx.type] || TYPE_CONFIG.speed_stake;
                   const Icon = config.icon;
                   const isCredit = tx.amount > 0;
-                  const isTrade = tx.type === "trade" || tx.type === "bet" || tx.type === "close_position";
+                  const isTrade =
+                    tx.type === "speed_stake" ||
+                    tx.type === "speed_cashout" ||
+                    tx.type === "speed_payout" ||
+                    tx.type === "speed_refund";
                   const desc = (tx.description || "").toLowerCase();
                   const isYes = desc.includes("yes");
                   const isNo = desc.includes("no");

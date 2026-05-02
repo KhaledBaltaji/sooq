@@ -1,5 +1,8 @@
 import * as Sentry from "@sentry/nextjs";
-import { createClient } from "@supabase/supabase-js";
+
+// W2 cleanup: system_logs table was dropped along with the rest of the
+// admin tooling. Logger is now console + Sentry only. The lean ops rebuild
+// between W10 and W11 will add a leaner persistence layer if needed.
 
 type LogLevel = "info" | "warn" | "error" | "critical";
 
@@ -47,46 +50,6 @@ function sendToSentry(
   });
 }
 
-// ---- system_logs persistence (fire-and-forget) ----
-
-let _logClient: ReturnType<typeof createClient> | null = null;
-
-function getLogClient() {
-  if (
-    !_logClient &&
-    process.env.NEXT_PUBLIC_SUPABASE_URL &&
-    process.env.SUPABASE_SERVICE_ROLE_KEY
-  ) {
-    _logClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    );
-  }
-  return _logClient;
-}
-
-/** Persist error/critical logs to system_logs table for admin dashboard visibility. */
-export function persistToSystemLogs(
-  severity: "error" | "critical",
-  message: string,
-  context: Record<string, unknown>
-) {
-  try {
-    const client = getLogClient();
-    if (!client) return;
-    // Fire-and-forget — don't await, don't block the caller
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    void (client.from("system_logs") as any).insert({
-      severity,
-      source: (context.source as string) || "app",
-      message: message.slice(0, 1000),
-      context,
-    });
-  } catch {
-    // Never crash on logging failure
-  }
-}
-
 export const logger = {
   info(message: string, context: Record<string, unknown> = {}) {
     const payload = buildPayload("info", message, context);
@@ -118,8 +81,6 @@ export const logger = {
     } else {
       console.error(`[ERROR] ${message}`, context, error || "");
     }
-    // Always persist to system_logs for admin dashboard visibility
-    persistToSystemLogs("error", message, context);
   },
 
   critical(
@@ -128,11 +89,7 @@ export const logger = {
     error?: unknown
   ) {
     const payload = buildPayload("critical", message, context);
-    // Always log critical errors
     console.error(JSON.stringify(payload));
-    // Always send critical to Sentry regardless of environment
     sendToSentry("critical", message, context, error);
-    // Always persist to system_logs for admin dashboard visibility
-    persistToSystemLogs("critical", message, context);
   },
 };

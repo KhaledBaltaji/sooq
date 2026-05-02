@@ -23,8 +23,10 @@ import {
   Building2,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
-import { useBranchManager } from "@/hooks/use-branch-manager";
 import { getSupportWhatsAppHref, isSupportWhatsAppConfigured } from "@/lib/support-whatsapp";
+
+// Branch system stripped W3 — managedBranch always null.
+const managedBranch = null;
 
 export function ProfileDropdown() {
   const { user } = useUser();
@@ -35,7 +37,6 @@ export function ProfileDropdown() {
   const { openWithdrawModal } = useWithdrawModal();
   const t = useTranslations("profileMenu");
   const tSupport = useTranslations("support");
-  const { managedBranch } = useBranchManager();
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<NodeJS.Timeout | null>(null);

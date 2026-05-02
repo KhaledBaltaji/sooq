@@ -24,7 +24,8 @@ import { useTheme } from "@/components/providers/theme-provider";
 import { useAuthModal } from "@/components/auth/auth-modal-provider";
 import { useDepositModal } from "@/components/wallet/deposit-modal-provider";
 import { useWithdrawModal } from "@/components/wallet/withdraw-modal-provider";
-import { useBranchManager } from "@/hooks/use-branch-manager";
+// Branch system stripped W3 — managedBranch always null.
+const managedBranch = null;
 import { cn } from "@/lib/utils";
 import { getSupportWhatsAppHref, isSupportWhatsAppConfigured } from "@/lib/support-whatsapp";
 
@@ -45,7 +46,6 @@ export function AccountSheet({ open, onOpenChange }: AccountSheetProps) {
   const { openLoginModal } = useAuthModal();
   const { openDepositModal } = useDepositModal();
   const { openWithdrawModal } = useWithdrawModal();
-  const { managedBranch } = useBranchManager();
   const t = useTranslations("profileMenu");
   const tSupport = useTranslations("support");
   const tChip = useTranslations("balanceChip");

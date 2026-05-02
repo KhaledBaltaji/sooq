@@ -39,11 +39,12 @@ export async function GET() {
       if (error) throw new Error(error.message);
     }),
     runCheck("tables", async () => {
-      const { error: marketsErr } = await supabase
-        .from("markets")
+      // W2 strip: LMSR `markets` table dropped. Speed mode is the v1 product.
+      const { error: speedMarketsErr } = await supabase
+        .from("speed_markets")
         .select("id")
         .limit(1);
-      if (marketsErr) throw new Error(`markets: ${marketsErr.message}`);
+      if (speedMarketsErr) throw new Error(`speed_markets: ${speedMarketsErr.message}`);
 
       const { error: feeErr } = await supabase
         .from("fee_config")

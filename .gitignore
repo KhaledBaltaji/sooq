@@ -52,6 +52,7 @@ supabase/.temp
 .claude/scheduled_tasks.lock
 .claude/skills/
 .claude/worktrees/
+.claude/settings.local.json
 
 # Codex session metadata (local only)
 .context/

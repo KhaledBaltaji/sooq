@@ -191,7 +191,7 @@ All `SECURITY DEFINER`, called via `supabase.rpc()` (pre-W7) or Drizzle's `sql\`
 | **Staging** | `staging.sooq.exchange` (Vercel preview) | RDS small (W5+) | Full via `aws cli` |
 | **Production** | `sooq.exchange` (Vercel) | RDS multi-AZ (W11+) | CI/CD only |
 
-Region: `me-south-1` (Bahrain) preferred, `eu-central-1` (Frankfurt) fallback.
+Region: `eu-central-1` (Frankfurt). Bahrain `me-south-1` was first choice for latency but blocked by Lebanese ISP. See `docs/AWS_RESOURCES.md` for all infrastructure IDs.
 
 ---
 

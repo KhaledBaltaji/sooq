@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { updateSession } from "@/lib/supabase/middleware";
 import { isRateLimited, getRateLimitConfig } from "@/lib/rate-limit";
-import { persistToSystemLogs } from "@/lib/logger";
+import { logger } from "@/lib/logger";
 import { getViewKeyFromPathname, getFirstAllowedPath, canAccessView } from "@/lib/admin-views";
 
 export async function middleware(request: NextRequest) {
@@ -42,7 +42,7 @@ export async function middleware(request: NextRequest) {
       || "unknown";
 
     if (isRateLimited(ip, request.nextUrl.pathname, rateLimitConfig.limit, rateLimitConfig.windowMs)) {
-      persistToSystemLogs("error", `Rate limited: ${request.method} ${request.nextUrl.pathname}`, {
+      logger.warn(`Rate limited: ${request.method} ${request.nextUrl.pathname}`, {
         source: "http/429",
         ip,
         path: request.nextUrl.pathname,

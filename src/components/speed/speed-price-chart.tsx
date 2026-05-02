@@ -350,7 +350,7 @@ export function SpeedPriceChart({
     const last = lastBarRef.current;
     if (!last) return;
     const tickPrice = Number(oracle.price);
-    const tickEpoch = Math.floor(new Date(oracle.ts).getTime() / 1000);
+    const tickEpoch = Math.floor(new Date(oracle.received_at).getTime() / 1000);
     const bucketed = (Math.floor(tickEpoch / resolvedBucket) * resolvedBucket) as UTCTimestamp;
     if (bucketed < last.time) return;
 

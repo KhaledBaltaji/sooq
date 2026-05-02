@@ -55,7 +55,7 @@ Re-add in a later phase if growth needs it. Plan via a separate spec, not by un-
 | **Staging** | `staging.sooq.exchange` (Vercel preview) | RDS small (`db.t4g.medium`) | W5 |
 | **Production** | `sooq.exchange` (Vercel) | RDS multi-AZ (`db.t4g.large`+) | W11 just before canary |
 
-Region target: `me-south-1` (Bahrain) preferred for Lebanese-user latency, fall back to `eu-central-1` (Frankfurt) if any required service isn't there.
+Region: `eu-central-1` (Frankfurt). Originally targeted `me-south-1` (Bahrain) for Lebanese-user latency but the user's ISP couldn't reach the Bahrain AWS endpoint (timeout). Frankfurt is the next-closest viable region with full service catalog.
 
 ## Operational Rules (MANDATORY)
 

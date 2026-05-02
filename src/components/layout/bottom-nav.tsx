@@ -1,11 +1,14 @@
 "use client";
 
+// W3 strip: dropped branch-aware routing (`/b/[code]/*`), `/trade` (LMSR
+// trade flow), `/referral` (commission UI), `/branch/dashboard` (branch
+// admin). Slim bottom nav for Sooq Speed: Home + Account.
+
 import { useRouter, usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useCallback, useState } from "react";
-import { Home, ArrowLeftRight, Gift, User, Building2 } from "lucide-react";
+import { Home, User } from "lucide-react";
 import { cn, triggerHapticLight } from "@/lib/utils";
-import { useBranchManager } from "@/hooks/use-branch-manager";
 import { AccountSheet } from "./account-sheet";
 
 const ACCOUNT_KEY = "__account__";
@@ -15,35 +18,11 @@ export function BottomNav() {
   const pathname = usePathname();
   const t = useTranslations("nav");
   const [accountOpen, setAccountOpen] = useState(false);
-  const { managedBranch } = useBranchManager();
 
-  // Detect branch context from URL
-  const branchMatch = pathname.match(/^\/b\/([^/]+)/);
-  const branchCode = branchMatch?.[1];
-
-  const baseItems = managedBranch
-    ? [
-        { href: "/", icon: Home, labelKey: "home" as const, noBranchPrefix: false },
-        { href: "/trade", icon: ArrowLeftRight, labelKey: "trade" as const, noBranchPrefix: false },
-        { href: "/branch/dashboard", icon: Building2, labelKey: "myBranch" as const, noBranchPrefix: true },
-        { href: ACCOUNT_KEY, icon: User, labelKey: "account" as const, noBranchPrefix: true },
-      ]
-    : [
-        { href: "/", icon: Home, labelKey: "home" as const, noBranchPrefix: false },
-        { href: "/trade", icon: ArrowLeftRight, labelKey: "trade" as const, noBranchPrefix: false },
-        { href: "/referral", icon: Gift, labelKey: "agent" as const, noBranchPrefix: false },
-        { href: ACCOUNT_KEY, icon: User, labelKey: "account" as const, noBranchPrefix: true },
-      ];
-
-  const navItems = branchCode
-    ? baseItems.map(item => ({
-        ...item,
-        href: item.noBranchPrefix ? item.href :
-          item.href === "/" ? `/b/${branchCode}` :
-          item.href === "/referral" ? `/b/${branchCode}/agent` :
-          `/b/${branchCode}${item.href}`,
-      }))
-    : baseItems;
+  const navItems = [
+    { href: "/", icon: Home, labelKey: "home" as const },
+    { href: ACCOUNT_KEY, icon: User, labelKey: "account" as const },
+  ];
 
   const handleTap = useCallback((href: string) => {
     triggerHapticLight();
@@ -66,9 +45,9 @@ export function BottomNav() {
             const isAccount = href === ACCOUNT_KEY;
             const isActive = isAccount
               ? accountOpen || pathname.startsWith("/profile")
-              : branchCode
-                ? (href === `/b/${branchCode}` ? pathname === `/b/${branchCode}` || pathname === `/b/${branchCode}/` : pathname.startsWith(href))
-                : (href === "/" ? pathname === "/" : pathname.startsWith(href));
+              : href === "/"
+                ? pathname === "/"
+                : pathname.startsWith(href);
             return (
               <button
                 key={href}

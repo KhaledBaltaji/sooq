@@ -80,7 +80,7 @@ export function UserProvider({
   }, [supabase, authUser]);
 
   const adjustBalance = useCallback((delta: number) => {
-    setProfile((prev) =>
+    setProfile((prev: AppUser | null) =>
       prev ? { ...prev, balance_usd: Math.max(0, prev.balance_usd + delta) } : prev
     );
   }, []);
