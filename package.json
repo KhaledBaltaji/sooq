@@ -10,10 +10,11 @@
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "type-check": "tsc --noEmit",
-    "pretest": "bash scripts/check-supabase-link.sh",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check:link": "bash scripts/check-supabase-link.sh",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
     "postinstall": "bash scripts/install-hooks.sh",
     "hooks:install": "bash scripts/install-hooks.sh"
   },

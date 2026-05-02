@@ -1,298 +1,139 @@
-# CLAUDE.md — MENA Prediction Market
+# CLAUDE.md — Sooq Speed
 
 ## Project Overview
-Real-money political prediction exchange for the MENA region, launching in Lebanon. **LMSR AMM (Automated Market Maker)** — users buy/sell shares at real-time prices, cash out anytime. Fintech UX hiding crypto settlement.
 
-**Model:** V3 AMM (replaces V2 pool-based model). Full migration — no V2 coexistence.
+**Sooq Speed** — real-money BTC fast-cycle prediction trading for the MENA region. Single-product fintech: users predict BTC up/down on 5m / 15m / 24h durations. TWAP-resolved, oracle-fed, instant withdrawals.
+
+Forked from `prediction-market` (LMSR + branches + commission) on 2026-05-02. Stripped to speed-only in W2/W3/W4 of the rebuild plan (`~/.claude/plans/oh-my-how-much-giggly-crystal.md`).
 
 ## Tech Stack
-- **Frontend:** Next.js 14+ (App Router), TypeScript, Tailwind CSS, shadcn/ui
-- **Backend:** Supabase (Postgres + Auth + Realtime + Edge Functions)
-- **Hosting:** Vercel (frontend) + Supabase (backend)
-- **Payment:** 3pay (USDT/USDC) + Whish (Lebanese mobile payments)
 
-## Design System
-Always read DESIGN.md before making any visual or UI decisions.
-All font choices, colors, spacing, and aesthetic direction are defined there.
-Do not deviate without explicit user approval.
-In QA mode, flag any code that doesn't match DESIGN.md.
+- **Frontend:** Next.js 16 (App Router) + TypeScript + Tailwind + Radix/Base UI
+- **Backend DB:** PostgreSQL (Supabase locally for now; **AWS RDS PostgreSQL in W5+**)
+- **ORM:** Drizzle (`src/lib/db/schema.ts`) + `pg` driver — replacing `supabase-js` data layer in W7
+- **Auth:** Auth.js v5 (W6 onward) — Google OAuth + WhatsApp OTP via VerifyWay
+- **Hosting:** Vercel (frontend + API routes)
+- **Storage:** S3 + CloudFront (W7 onward)
+- **Payments:** 3pay (USDT/USDC) + Whish (Lebanese mobile)
+- **Errors:** Sentry
+- **i18n:** next-intl, bilingual (Arabic + English, RTL)
 
-For icons, use `lucide-react` only. See `docs/ICONS.md` for stroke width, size scale, and brand-icon conventions.
+## Architecture (post-strip)
 
-## Architecture
-- Supabase-only (no separate Node.js backend)
-- All financial logic in Postgres functions via `supabase.rpc()`
-- **Core Postgres functions:** `execute_trade`, `resolve_market`, `_void_market_internal`, `void_market`, `lock_market`, `process_deposit`, `process_withdrawal`, `claim_deposit_bonus`, `update_agent_level`, `initialize_amm`, `get_amm_price`, `get_cash_out_value`, `lmsr_cost`, `lmsr_price`, `lmsr_shares_for_cost`, `pay_trade_commissions`, `settle_resolution_commissions`, `record_revenue`, `admin_adjust_balance`, `admin_update_fee`, `admin_create_market`, `admin_update_market`, `get_platform_stats`, `toggle_agent_activation_override`, `get_stats_users`, `get_stats_trading`, `get_stats_markets`, `get_stats_finance`, `get_stats_revenue`, `get_stats_health`, `get_price_history`, `update_homepage_ranks`, `search_news_for_market`, `record_prelaunch_vote`, `toggle_demo_mode`, `demo_reset_balance`, `demo_execute_trade`, `initialize_demo_amm`, `admin_create_demo_market`, `admin_resolve_demo_market`, `demo_get_price_history`, `get_demo_conversion_stats`, `admin_list_demo_markets_with_outcomes`, `demo_seed_initial_price`
-- Append-only ledger pattern for all balance mutations
-- `balance_usd` on users table is a cache — source of truth is `SUM(transactions)`
+- **Speed mode only.** No LMSR markets, no demo, no prelaunch, no branch network, no multi-level commission.
+- All money flow through `users.balance_usd` + `transactions` ledger (append-only). Source of truth is `SUM(transactions)`; `balance_usd` is a cache.
+- Speed RPCs (`speed_execute_trade`, `speed_execute_cashout`, `speed_resolve_market`) live in Postgres as `SECURITY DEFINER` functions, called via Drizzle's `sql\`SELECT * FROM ...\`` (post-W7) or `supabase.rpc()` (pre-W7).
+- pg_cron runs `speed_resolve_market`, `speed_roll_markets`, partition extension every minute.
+- Oracle (TWAP from external book) feeds `speed_oracle_latest` and `speed_oracle_ticks`.
+- Auth: Auth.js issues JWT → Next.js API route extracts user → sets `app.user_id` Postgres GUC on every connection → RPCs use `app.user_id()` (W6 swap from `auth.uid()`).
+- Notifications: in-app only (`notifications` table + dropdown). No email infra.
 
-## AMM Model (LMSR)
-- Each market has an AMM: `C(q) = b * ln(e^(q_yes/b) + e^(q_no/b))`
-- `b` = liquidity parameter (default 1000), controls price sensitivity
-- YES shares pay $1.00 if YES wins, $0.00 if NO wins (and vice versa)
-- Winning shares pay $0.99 (1% resolution fee)
-- Users can buy AND sell anytime while market is open (full trading until resolution)
+## Speed Mode Specifics
 
-## Fee Architecture (Subliminal Model)
-- **Visible:** 0.5% explicit trading fee (on every buy and sell)
-- **Hidden:** AMM spread (~2-3%), resolution fee (1%), cash-out premium (0.5%), dynamic spread widening (0.5% avg)
-- **Effective take rate:** ~5% per round trip
-- All fee rates read from `fee_config` table, NEVER hardcoded
+- Assets: BTC only at launch; `speed_assets` table is extensible.
+- Durations: `5m`, `15m`, `24h` (enum `speed_duration`).
+- Stake range: $1–$25 per bet (hardcoded retail caps), $200 cap per side per market.
+- Pricing: `fair_prob_over` from BSM-ish formula (oracle price, strike, time-left, IV) + half-spread offset.
+- Resolution: 30-second TWAP window before close. Voids if no oracle ticks. `at_strike` is a push (refund).
+- Cashout: while market open, with multiplier from `fee_config` indexed by `duration × winner|loser × time-bucket`.
 
-## Critical Security Rules
-- **auth.uid():** All user-facing RPCs derive user from Supabase Auth session, NEVER from client-supplied user_id parameter. Only admin/webhook functions accept user_id.
-- **SELECT FOR UPDATE:** All balance-mutating functions lock the user row + market row + amm_state row before reading.
-- **Fee config:** All rates read from `fee_config` table, NEVER hardcoded.
-- **Wagering:** Only buys count toward `total_wagered` (prevents churn exploit on sells).
+## Commission, Branches, Agents — STRIPPED
 
-## Commission Model
-Multi-level revenue share on **total platform revenue** (explicit fee + AMM spread + cash-out premium).
-4 agent levels by network volume: L1 (default), L2 ($10K+), L3 ($50K+), L4 ($200K+) × 2 layers (direct 30-50%, indirect 5-12%).
-Activation gate: agents need 5 qualified referrals before commissions are credited (escrowed until then).
-**Canonical spec:** `docs/commission-model.md` — read this before touching any commission code.
+These existed in prediction-market and are NOT in Sooq Speed v1:
+- Multi-level commission (4 tiers × 2 layers + activation gate)
+- Branch network / agents / branch operators
+- Referral chain tracking
+- Reseller pool ledger
 
-## Both-Side Trading
-Users CAN hold both YES and NO positions on the same market. Every trade generates commission (fee-based, not exposure-based).
-- Admin alert for both-side detection
-- Leaderboard accuracy based on final net position P&L at resolution
-- No same_side database constraint
+Re-add in a later phase if growth needs it. Plan via a separate spec, not by un-stripping.
 
-## Deposit Bonus
-$5 free on first deposit of $20+. ONLY for non-referred (organic) users.
-Referred users do NOT get the bonus. 2x wagering requirement before withdrawal.
+## Environments
 
-## Demo Mode
-Isolated `/demo/*` sandbox with fully separate `demo_*` tables (migrations 270-272). $10K persistent demo balance per authenticated user. Pure LMSR trading with zero fees, zero commissions, zero revenue impact. Admin-scheduled outcomes + hourly cron auto-resolution. Conversion analytics (`demo_first_enabled_at`, `demo_first_trade_at`, `first_real_deposit_after_demo_at` on users).
-**Iron invariants:** demo never writes to `transactions`, `positions`, `trades`, `commissions`, `platform_revenue`, `leader_stats`, or branch tables. Referral tree never touched. Route gate is `demo_first_enabled_at IS NOT NULL`, not `demo_mode`. Full spec: `docs/designs/demo-mode.md` and `docs/ARCHITECTURE.md` §18.
-
-## Claude Code Operational Rules (MANDATORY)
-
-### FORBIDDEN Actions — Never Do These
-1. **NEVER** link Supabase CLI to production (`dwpizrhtyrquhibqcuuu`). Only `zzebptrztuwnqlxxmjuo` (staging) is allowed locally.
-2. **NEVER** run `supabase db push` or `supabase db reset` unless user explicitly confirms AND linked project is verified as staging.
-3. **NEVER** run destructive SQL (`TRUNCATE`, `DROP TABLE`, `DROP FUNCTION`, `DELETE FROM` without WHERE, `ALTER TABLE ... DROP COLUMN`) against any remote database without explicit user approval.
-4. **NEVER** force push (`git push --force` or `git push -f`) to `main` or `staging` branches.
-5. **NEVER** push directly to `main`. Production changes flow only through PRs: `staging` → `main`.
-6. **NEVER** run `supabase db reset` on any remote project — this destroys all data.
-7. **NEVER** display or log production database credentials.
-
-### REQUIRED Actions — Always Do These
-1. **ALWAYS** run `npm test` and confirm all tests pass before committing to staging.
-2. **ALWAYS** verify the currently linked Supabase project before any `supabase` CLI command: `cat supabase/.temp/project-ref` must show `zzebptrztuwnqlxxmjuo`.
-3. **ALWAYS** ask user for explicit confirmation before: pushing to any remote branch, creating/merging PRs, running migrations, running any SQL against a remote database.
-4. **ALWAYS** update tests when migrations change schema (see Test-Migration Sync Rules below).
-
-### Multi-Session Safety Protocol (MANDATORY)
-
-This repo is frequently edited by multiple Claude Code sessions simultaneously on the same branch. Every session MUST follow this protocol to prevent conflicts.
-
-#### Session Registration
-1. On session start, create `.claude/sessions/locks/<YYYYMMDD-HHMMSS-XXXX>.json` with:
-   - `session_id`, `started_at`, `description`, `areas` (file/dir paths planned to edit)
-   - `migrations_reserved` (list of migration numbers), `last_heartbeat` (ISO timestamp)
-2. Create `.claude/sessions/locks/` directory if it doesn't exist.
-
-#### Before Editing ANY File — Conflict Check
-1. Read ALL `.json` files in `.claude/sessions/locks/`.
-2. Ignore lockfiles where `last_heartbeat` is older than 2 hours (stale).
-3. If any active lockfile's `areas` matches or is a parent of the file you want to edit → **STOP and warn user**.
-4. If no conflict → add the file path to your own lockfile's `areas`, then proceed.
-5. After each edit, update `last_heartbeat`.
-
-#### Migration Number Reservation (CRITICAL)
-**Never create a migration file without reserving the number first.**
-1. Read `.claude/sessions/migrations/next.json` (create if missing by scanning `supabase/migrations/`).
-2. Reserve: take `next_available`, write reservation, increment counter.
-3. Before writing the `.sql` file, verify: `ls supabase/migrations/ | grep "^NNN_"` — if a file with that number exists, STOP.
-4. After committing, clean up your reservation entry.
-
-#### Tier 1 Files — Always Check Locks Before Editing
-- `supabase/migrations/*`
-- `src/tests/db/helpers.ts`
-- `package.json` / `package-lock.json`
-- `src/lib/supabase.ts`
-- `src/middleware.ts`
-
-#### On Session End
-Move your lockfile to `.claude/sessions/completed/` or delete it.
-
-#### Schema Snapshot (MANDATORY after any migration)
-`supabase/schema.sql` is the authoritative snapshot of the public schema. CI runs `supabase db diff --linked --schema public` after migrations apply and fails the deploy on any drift — this is the gate that catches silent migration failures (the 231 / 252 incident).
-- After creating a new migration, regenerate the snapshot before committing: `npx supabase db dump --linked --schema public --data-only=false > supabase/schema.sql` (staging only — verify `cat supabase/.temp/project-ref` is `zzebptrztuwnqlxxmjuo` first).
-- Commit `supabase/schema.sql` in the same commit as the migration. The pre-commit hook warns if you forget; CI will fail the deploy if you push without it.
-
-### Deployment Flow
-```
-staging (dev + test) → PR to main (requires GitHub approval)
-```
-- Code: commit to `staging` branch, push, CI runs tests + type-check before deploying
-- **Staging deploy pipeline:** tests → type-check → migrations → Vercel auto-deploy → health check (`/api/health`)
-- Production: create PR from `staging` → `main`, merge requires manual GitHub environment approval
-- Migrations: handled by GitHub Actions deploy workflows — never pushed locally to non-staging environments
-
-### Environment Reference
-| Environment | Supabase project ref | Vercel URL | Claude access |
+| Env | Frontend | DB | When provisioned |
 |---|---|---|---|
-| Staging | `zzebptrztuwnqlxxmjuo` | `staging.sooq.exchange` | Full (local CLI, can wipe) |
-| Production | `dwpizrhtyrquhibqcuuu` | `sooq.exchange` | CI/CD only, NEVER local |
+| **Local** | `next dev` on `localhost:3000` | Docker Postgres | Dev workstation |
+| **Staging** | `staging.sooq.exchange` (Vercel preview) | RDS small (`db.t4g.medium`) | W5 |
+| **Production** | `sooq.exchange` (Vercel) | RDS multi-AZ (`db.t4g.large`+) | W11 just before canary |
 
-### Vercel
-- **Account:** `khaledbaltaji` (Pro plan)
-- **Project:** `prediction-market` under `khaledbaltajis-projects`
-- **Auto-deploy:** Connected to GitHub — pushes to `staging` trigger preview deploys, `main` triggers production
-- **Cron jobs:** `check-errors` (10min), `fetch-news` (10min), `rank-markets` (daily) — requires Pro plan
-- **Env vars:** All staging Supabase, Sentry, 3pay, Telegram, and cron secrets are configured
+Region target: `me-south-1` (Bahrain) preferred for Lebanese-user latency, fall back to `eu-central-1` (Frankfurt) if any required service isn't there.
 
-## Bug Resolution Workflows
+## Operational Rules (MANDATORY)
 
-### Bug on STAGING
-- **Access:** Full — local CLI, direct code changes, migrations via `supabase db push`
-- **Flow:** Reproduce → Fix locally → Run tests → Commit → Push (after user approval)
-- **Risk:** Low — dev environment only
+### FORBIDDEN
+1. **NEVER** run destructive SQL (`TRUNCATE`, `DROP TABLE` without `IF EXISTS`, `DELETE FROM` without `WHERE`) against staging or production without explicit user approval.
+2. **NEVER** force push (`git push --force`) to `main`.
+3. **NEVER** push directly to `main`. Production changes flow only through PRs: `staging` → `main`.
+4. **NEVER** display or log production database credentials.
+5. **NEVER** create AWS accounts or enter financial info on the user's behalf — always direct the user to do this themselves.
+6. **NEVER** type access keys / passwords / OTP codes — the user pastes credentials into prompts themselves.
 
-### Bug on PRODUCTION / LIVE
-- **Access:** ZERO direct access. Investigation only through logs, Sentry, user reports.
-- **Flow:** Investigate → Reproduce on staging → Fix on staging → PR staging → main (requires GitHub approval)
-- **NEVER:** Link to production Supabase, push to main directly, run SQL against production
-- **Emergency:** Even for "hotfix NOW" — still go staging → main. User must approve each step.
+### REQUIRED
+1. **ALWAYS** run `npx tsc --noEmit` and `npm run lint` before committing to `staging`.
+2. **ALWAYS** ask user for explicit confirmation before: pushing to any remote branch, creating/merging PRs, running migrations against staging or production, running any SQL against a remote database.
+3. **ALWAYS** update `docs/SPRINT_LOG.md` at phase boundaries during the rebuild sprint.
 
-## New Feature Development Flow
+### Multi-Session Safety
 
-When user discusses a new feature, Claude MUST follow this workflow:
+This repo can be edited by multiple Claude Code sessions. Follow `.claude/sessions/` rules:
+1. On session start, create `.claude/sessions/locks/<YYYYMMDD-HHMMSS-XXXX>.json` with `session_id`, `started_at`, `description`, `areas`, `migrations_reserved`, `last_heartbeat`.
+2. Before editing a file, check `.claude/sessions/locks/` for conflicting active locks (heartbeat < 2 hrs old).
+3. Before creating a migration file, reserve the number in `.claude/sessions/migrations/next.json`.
+4. On session end, move your lockfile to `.claude/sessions/completed/`.
 
-### Phase 1: Understand Before Building
-1. **Read the architecture** — Before anything else, read: `CLAUDE.md`, `docs/ARCHITECTURE.md` (system bible), `docs/build-plan-v3.md`, `docs/commission-model.md` (if touching money/fees), memory files
-2. **Explore impacted areas** — Search codebase for files/functions the feature would touch
-3. **Ask questions** — If the feature might impact existing workflows (trading, commissions, resolution, deposits), ASK before proceeding
-4. **Map dependencies** — List affected Postgres functions, tables, frontend pages, and tests
+## Deployment Flow
 
-### Phase 2: CEO Review (`/ceo`)
-- Only after Phase 1 is complete
-- Business impact, user experience, scope
+```
+local Docker PG  →  staging branch  →  PR to main  →  production deploy
+```
 
-### Phase 3: Engineering Review (`/engineering`)
-- Technical plan: files to modify, new migrations, test changes
-- Security implications, blast radius
+- **Local:** `next dev`, Docker Postgres, free
+- **Staging:** push to `staging` branch → Vercel preview → CI runs tests + type-check → Drizzle migrations apply automatically (W5+)
+- **Production:** PR `staging → main` → manual GitHub environment approval → Vercel production deploy
 
-### Phase 4: Implementation
-- Work on `staging` branch only
-- Follow all operational rules
-- Update tests alongside code changes
+## Tests
 
-## Test Suite
+Surviving test files (16) in `src/tests/`:
+- `db/admin-credit.test.ts`, `db/admin-fee-bounds.test.ts`, `db/admin-roles.test.ts`
+- `db/deposit-withdrawal.test.ts`, `db/submit-manual-deposit.test.ts`
+- `db/speed-*.test.ts` (10 files — invariants, smoothing, exposure caps, idempotency, late window, pool concurrency, pricing, roll markets, strike finalize, twap boundary)
+- `db/helpers.ts`
 
-### Test Files (`src/tests/`)
-| File | Tests | What it covers |
-|---|---|---|
-| `db/place-bet.test.ts` | 9 | `execute_trade` — buy/sell, pricing, limits, closed markets |
-| `db/resolve-market.test.ts` | 6 | `resolve_market`, `void_market` — payouts, voiding |
-| `db/commission.test.ts` | 10 | Multi-level commissions, tier upgrades, clawback, activation gate |
-| `db/deposit-withdrawal.test.ts` | 12 | `process_deposit/withdrawal`, idempotency, bonus, race conditions, concurrency |
-| `db/payout-invariants.test.ts` | 7 | Math: ledger consistency, no negative balances, resolution fees, stress test |
-| `db/race-conditions.test.ts` | 7 | Concurrent trades, double-deposit, rate limiting, parallel operations |
-| `db/agent-wallet.test.ts` | 5 | Agent wallet transfers, balance checks, commission segregation |
-| `db/admin-credit.test.ts` | 8 | Admin credit/debit, PIN protection, frozen users, audit log |
-| `format-utils.test.ts` | 13 | `formatCurrency`, `formatPercentage`, date/number formatting utils |
+LMSR / demo / branch / commission tests were deleted in W2/W3 strip phases.
 
-### Test-Migration Sync Rules
-- **Column add/remove** on core tables → update `helpers.ts` + affected tests
-- **RPC signature change** → update corresponding test file immediately
-- **New RPC function** → create test file with min 3 cases (happy, edge, error)
-- **Fee logic changes** → update `commission.test.ts` + `payout-invariants.test.ts`
+## Repo Layout
 
-## Services & Subscriptions
-
-### Supabase (Backend)
-- **What:** Database (Postgres), Auth, Realtime, Edge Functions, Storage
-- **Plan:** Free tier (staging) / Pro needed for production
-- **Projects:** Staging `zzebptrztuwnqlxxmjuo`, Production `dwpizrhtyrquhibqcuuu`
-- **Cost:** Free → $25/mo per project on Pro
-
-### Vercel (Frontend Hosting)
-- **What:** Next.js hosting, serverless functions, edge middleware, cron jobs
-- **Plan:** Pro (needed for cron + multiple environments)
-- **Cost:** $20/mo
-
-### GitHub (Code + CI/CD)
-- **What:** Git hosting, Actions (CI/CD), environment secrets, branch protection
-- **Repo:** `S-oftware-F-actory/prediction-market` (private)
-- **Cost:** Free
-
-### Sentry (Error Monitoring)
-- **What:** Error tracking, performance monitoring, session replay, alerting
-- **Plan:** Developer (free)
-- **Sampling:** `tracesSampleRate: 0.1` (10% in production — reduced from 1.0 during dev)
-- **Configs:** `sentry.client.config.ts`, `sentry.server.config.ts`, `sentry.edge.config.ts`
-- **Cost:** Free → Team $26/mo if volume grows
-
-### 3pay (Crypto Payments — PENDING)
-- **Status:** Not yet integrated — need merchant account
-- **Integration:** `/api/webhook/3pay` route exists, needs credentials
-
-### Whish (Mobile Payments — PENDING)
-- **Status:** Not yet integrated — need developer account
-- **Integration:** `/api/webhook/whish` route exists, needs credentials
-
-### Domain & DNS — PENDING
-- No production domain registered yet
-
-## Monitoring & Alerting
-
-### Logging Stack
-- **Logger:** `src/lib/logger.ts` — JSON in production, human-readable in dev. Routes errors/critical to Sentry automatically.
-- **Database logs:** `system_logs` table with severity, source, context JSON, admin acknowledgment. Postgres `log_system_event()` for RPCs.
-- **Admin dashboard:** `/admin/alerts` (health overview), `/admin/logs` (log viewer with filtering).
-
-### Alerting
-- **Slack:** `src/lib/slack.ts` — shared `sendSlackAlert()` utility. Requires `SLACK_WEBHOOK_URL` env var on Vercel.
-- **Payment alerts:** 3pay and Whish webhooks send Slack alerts on deposit failures or unresolvable users.
-- **Cron monitoring:** `/api/cron/check-errors` runs every 10 min — checks system_logs errors, balance mismatches, and payment/trade failures. Alerts to Slack.
-- **Health endpoint:** `/api/health` — checks DB connectivity, table access, returns 503 on degradation.
-
-### Environment Variables (monitoring)
-| Variable | Where | Purpose |
-|---|---|---|
-| `SLACK_WEBHOOK_URL` | Vercel (staging + production) | Slack alerts for errors |
-| `STAGING_URL` | GitHub Actions variable | Post-deploy health check |
-| `SENTRY_DSN` / `NEXT_PUBLIC_SENTRY_DSN` | Vercel | Error tracking |
-| `CRON_SECRET` | Vercel | Protects cron endpoints |
-
-## Documentation Maintenance Rules (MANDATORY)
-- `docs/ARCHITECTURE.md` is the **SYSTEM BIBLE** — update when adding/changing any flow (trading, deposits, admin, etc.)
-- `docs/SCHEMA.md` must be updated when migrations change schema (new tables, columns, RPCs)
-- Memory files must be kept current across sessions (build state, go-live checklist)
-- New sessions should read `docs/ARCHITECTURE.md` + `CLAUDE.md` for full context before any work
-- When shipping a feature, update ARCHITECTURE.md in the same commit — don't leave docs for later
+| Path | What's there |
+|---|---|
+| `src/app/(app)/` | User-facing routes — speed market detail, profile, notifications, settings, transactions, terms, privacy |
+| `src/app/admin/` | 5 surviving admin pages — page, speed, users, withdrawals, fees, admins |
+| `src/app/api/` | Webhooks (3pay, Whish), auth (send-otp, verify-otp), speed crons (roll, resolve, partitions), wallet, deposit, internal log-error, health |
+| `src/components/` | UI primitives + admin/auth/feed/help/layout/locale/profile/providers/speed/wallet/icons |
+| `src/hooks/` | Speed mode + auth + balance + transactions hooks |
+| `src/lib/db/schema.ts` | Drizzle schema — single source of truth post-W7 |
+| `src/lib/auth/`, `src/lib/supabase/` | Auth helpers (W6 will rewrite for Auth.js) |
+| `src/lib/verifyway.ts` | WhatsApp OTP integration via VerifyWay |
+| `supabase/migrations/` | 366 SQL migrations (squash candidate for W7) |
+| `docs/` | ARCHITECTURE.md (system bible), SPRINT_LOG.md (rebuild log), STRIP_NOTES.md (W3 surgery notes), speed-runbook.md, ICONS.md |
+| `.claude/sessions/` | Multi-session locks + migration reservations (gitignored) |
 
 ## Key Documents (read in this order for new sessions)
-1. `CLAUDE.md` — **YOU ARE HERE.** Operational rules, architecture overview, all constraints.
-2. `docs/ARCHITECTURE.md` — **SYSTEM BIBLE.** End-to-end flows for all live subsystems (trading, deposits, admin, realtime, prelaunch, geo, etc.). Support is a WhatsApp deep link only (`NEXT_PUBLIC_SUPPORT_WHATSAPP`).
-3. `docs/build-plan-v3.md` — V3 AMM implementation plan (replaces V1).
-4. `docs/technical-brief-v3.html` — V3 product spec (AMM model, fee architecture, all features)
-5. `docs/commission-model.md` — Canonical commission spec (network-volume tiers, activation gate)
-6. `docs/SCHEMA.md` — Complete database schema reference (tables, RPCs, enums, indexes)
-7. `docs/admin-panel.md` — Admin panel reference (every page, component, PIN system, audit trail)
-8. `docs/decisions.md` — Decision log (what was decided, why, when)
-9. `DESIGN.md` — Design system (colors, typography, spacing, motion, states)
-10. `docs/review-decisions.md` — All decisions from CEO/Eng/Design/Codex reviews
-11. `docs/V1_INVARIANTS.md` — Non-negotiable system invariants (locking, ledger, math purity)
-12. `docs/build-plan-v1.md` — V1/V2 implementation plan (historical reference only)
-12. `docs/technical-brief-v2.md` — V2 product spec (superseded by V3)
 
-## Skill routing
+1. **`CLAUDE.md`** — you are here. Operational rules, architecture overview, constraints.
+2. **`docs/ARCHITECTURE.md`** — system bible. End-to-end flows for speed mode, money, auth, notifications.
+3. **`docs/SPRINT_LOG.md`** — rebuild progress (W1–current). Read latest entry to know where work stands.
+4. **`~/.claude/plans/oh-my-how-much-giggly-crystal.md`** — the 12-week rebuild plan. Phase-by-phase goals, decisions, risks.
+5. **`docs/STRIP_NOTES.md`** — coupling map for the speed RPCs that were surgically rewritten in W4.
+6. **`DESIGN.md`** — design system (colors, typography, spacing, motion).
+7. **`docs/ICONS.md`** — icon conventions (lucide-react only).
+8. **`docs/speed-runbook.md`** — speed mode operational notes.
 
-When the user's request matches an available skill, ALWAYS invoke it using the Skill
-tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
-The skill has specialized workflows that produce better results than ad-hoc answers.
+## Skill Routing
 
-Key routing rules:
-- Product ideas, "is this worth building", brainstorming → invoke office-hours
-- Bugs, errors, "why is this broken", 500 errors → invoke investigate
-- Ship, deploy, push, create PR → invoke ship
-- QA, test the site, find bugs → invoke qa
-- Code review, check my diff → invoke review
-- Update docs after shipping → invoke document-release
-- Weekly retro → invoke retro
-- Design system, brand → invoke design-consultation
-- Visual audit, design polish → invoke design-review
-- Architecture review → invoke plan-eng-review
+When the user's request matches an available skill, ALWAYS invoke it using the Skill tool as your FIRST action. Examples:
+- Bug investigation → `investigate`
+- Ship / deploy / push / create PR → `ship`
+- QA / test the site / find bugs → `qa`
+- Code review / check my diff → `review`
+- Update docs after shipping → `document-release`
+- Visual audit / design polish → `design-review`
+- Architecture review → `plan-eng-review`

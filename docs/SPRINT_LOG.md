@@ -250,8 +250,25 @@ These RPCs still use `auth.uid()` and read fee rates from `fee_config` — both 
 - [x] Migration 366 (speed retail rewrites + speed_settlements column drop) written
 - [x] Admin sidebar slimmed
 - [x] Drizzle schema + config in place
-- [ ] User explicitly approves "ready for W5"
+- [x] User explicitly approved "ready for W5"
 - [ ] **AWS access required from user** — W5 cannot start without AWS account + IAM credentials
+
+### W4 cleanup pass (post-W4 before W5 starts)
+
+User asked: "I want to reduce them significantly that are not related." Done in a single pass:
+
+- **Deleted 25+ docs** — `docs/{build-plan-v1,build-plan-v3,technical-brief-v2,technical-brief-v3,commission-model,admin-panel,V1_INVARIANTS,decisions,review-decisions,ceo-plan,eng-review-test-plan,office-hours-design-doc,operations-bible,plan-summary,launch-ops-playbook,Launch Ops Playbook.docx,s2-branch-boundary,SCHEMA,project-audit-go-live-plan.pdf}.md`, `docs/audits/`, `docs/plans/`, `docs/designs/{commission-branch,demo-mode}.md` (and the empty `designs/` dir). Survivors: `ARCHITECTURE.md`, `SPRINT_LOG.md`, `STRIP_NOTES.md`, `speed-runbook.md`, `ICONS.md`.
+- **Deleted obsolete scripts** — `check-supabase-link.sh`, `check-env-parity.ts`, `check-schema-snapshot.sh`, `scripts/audits/`. Survivors: `hooks/`, `install-hooks.sh`.
+- **Deleted 8 disabled GitHub workflows** — `deploy-staging.yml.disabled`, etc. Survivors: `ci.yml`.
+- **Rewrote `vercel.json`** — 7 cron entries → 3 (speed-resolve, speed-roll, speed-partitions). Dead crons (`check-errors`, `rank-markets`, `close-expired-markets`, `resolve-demo-markets`) gone.
+- **Trimmed `package.json` scripts** — dropped `pretest` + `check:link` (Supabase-specific). Added `db:generate`, `db:push`, `db:studio` for Drizzle Kit.
+- **Rewrote `CLAUDE.md`** — full replacement (was 298 lines about LMSR/Supabase/branches; now Sooq Speed-specific).
+- **Rewrote `.claude/CLAUDE.md`** — slim Sooq session rules.
+- **Rewrote `docs/ARCHITECTURE.md`** — full replacement (was 970 lines LMSR-era; now ~300-line Sooq Speed system bible). 11 sections: product, stack, schema, RPCs, end-to-end flows, security, environments, CI/CD, repo paths, gaps, phase roadmap.
+- **Stripped i18n** — removed 8 LMSR/branch/commission/demo top-level keys from `en.json` + `ar.json` (`market`, `markets`, `news`, `prelaunch`, `helpPage`, `demo`, `hero`, `trade`). Total i18n: 1810 → 1108 lines (38% smaller).
+- **Verification:** `npx tsc --noEmit` exit 0, `npm run lint` exit 0 (80 pre-existing warnings).
+
+Net: ~45 files affected, mostly deletions. Repo is now ~75% the size it was after W4.
 
 ### Next phase: W5 (AWS infra) — STOP HERE
 
