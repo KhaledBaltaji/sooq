@@ -1,5 +1,8 @@
 "use client";
 
+// W3 strip: removed agent-activation override (toggle_agent_activation_override
+// RPC dropped, agent_activated column dropped). Only freeze/unfreeze remains.
+
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSupabase } from "@/components/providers/supabase-provider";
@@ -9,16 +12,13 @@ import { useTranslations } from "next-intl";
 interface UserActionsProps {
   userId: string;
   isFrozen: boolean;
-  agentActivated: boolean;
-  activationOverride: boolean;
 }
 
-export function UserActions({ userId, isFrozen, agentActivated, activationOverride }: UserActionsProps) {
+export function UserActions({ userId, isFrozen }: UserActionsProps) {
   const router = useRouter();
   const supabase = useSupabase();
   const t = useTranslations("toast");
   const [toggling, setToggling] = useState(false);
-  const [togglingOverride, setTogglingOverride] = useState(false);
 
   const handleToggleFreeze = async () => {
     setToggling(true);
@@ -34,26 +34,6 @@ export function UserActions({ userId, isFrozen, agentActivated, activationOverri
       router.refresh();
     }
     setToggling(false);
-  };
-
-  const handleToggleActivationOverride = async () => {
-    setTogglingOverride(true);
-    const { data, error } = await supabase.rpc("toggle_agent_activation_override", {
-      p_user_id: userId,
-      p_override: !activationOverride,
-    });
-
-    if (error) {
-      toast.error(t("failedToUpdateOverride"), { description: error.message });
-    } else {
-      const released = (data as any)?.released ?? 0;
-      const msg = !activationOverride
-        ? (released > 0 ? t("overrideEnabledReleased", { amount: `$${released.toFixed(2)}` }) : t("overrideEnabled"))
-        : t("overrideRemoved");
-      toast.success(msg);
-      router.refresh();
-    }
-    setTogglingOverride(false);
   };
 
   return (
@@ -75,26 +55,6 @@ export function UserActions({ userId, isFrozen, agentActivated, activationOverri
           : toggling ? "Freezing..." : "Freeze Account"
         }
       </button>
-
-      {!agentActivated && (
-        <button
-          onClick={handleToggleActivationOverride}
-          disabled={togglingOverride}
-          className={`flex items-center gap-2 rounded-lg px-6 py-3 font-semibold text-sm border transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
-            activationOverride
-              ? "border-[var(--warning)] text-[var(--warning)] hover:bg-[var(--warning)]/5"
-              : "border-[var(--yes)] text-[var(--yes)] hover:bg-[var(--yes)]/5"
-          }`}
-        >
-          <span className="material-symbols-outlined text-lg">
-            {activationOverride ? "lock_open" : "lock"}
-          </span>
-          {activationOverride
-            ? togglingOverride ? "Removing..." : "Remove Override"
-            : togglingOverride ? "Enabling..." : "Override Activation"
-          }
-        </button>
-      )}
     </div>
   );
 }

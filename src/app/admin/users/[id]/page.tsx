@@ -5,7 +5,6 @@ import { formatCurrency } from "@/lib/utils";
 import { isSuperAdmin } from "@/lib/admin-views";
 import { UserActions } from "@/components/admin/user-actions";
 import { QuickCreditButton } from "@/components/admin/quick-credit-button";
-import { QuickAgentCreditButton } from "@/components/admin/quick-agent-credit-button";
 
 const LEVEL_STYLES: Record<number, string> = {
   1: "bg-[#e8eff3] text-[#566166]",
@@ -166,12 +165,9 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <QuickCreditButton user={{ id, display_name: u.display_name, phone: u.phone, balance_usd: u.balance_usd }} />
-          <QuickAgentCreditButton user={{ id, display_name: u.display_name, phone: u.phone, agent_balance_usd: Number(u.agent_balance_usd ?? 0) }} />
           <UserActions
             userId={id}
             isFrozen={u.is_frozen}
-            agentActivated={u.agent_activated}
-            activationOverride={u.agent_activation_override}
           />
         </div>
       </div>
