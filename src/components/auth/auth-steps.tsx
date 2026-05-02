@@ -1,8 +1,11 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+// W6 cutover: Supabase Auth -> Auth.js. Branch / referral signup paths
+// were stripped in W3 — re-add via fresh spec when growth needs it.
+
+import { useState, useCallback } from "react";
 import { useTranslations } from "next-intl";
-import { createClient } from "@/lib/supabase/client";
+import { signIn } from "next-auth/react";
 import { PhoneInput } from "./phone-input";
 import { OTPInput } from "./otp-input";
 import { cn } from "@/lib/utils";
@@ -15,35 +18,8 @@ export function AuthSteps({ onAuthSuccess }: { onAuthSuccess?: () => void } = {}
   const [step, setStep] = useState<AuthStep>("welcome");
   const [direction, setDirection] = useState<Direction>("forward");
   const [phone, setPhone] = useState("");
-  const [referralCode, setReferralCode] = useState("");
-  // Commission-branch signup context (from /b/[slug]/?agent=code URLs)
-  const [branchSlug, setBranchSlug] = useState("");
-  const [agentCode, setAgentCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Capture referral context from URL on mount. Three sources:
-  //   ?ref=code        → retail /r/[code] signup
-  //   ?branch=slug     → /b/[slug] commission-branch signup
-  //   ?agent=code      → sub-agent within the branch signup
-  // Also try to derive branch slug from pathname if user reached auth via /b/[slug]
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const ref = params.get("ref");
-    const branch = params.get("branch");
-    const agent = params.get("agent");
-    if (ref) setReferralCode(ref);
-    if (branch) setBranchSlug(branch);
-    if (agent) setAgentCode(agent);
-
-    // Fallback: if the user reached auth directly from /b/[slug]/* without an
-    // explicit ?branch param (e.g. clicked "Sign up" on a branch page), derive
-    // the slug from the pathname.
-    if (!branch) {
-      const match = window.location.pathname.match(/^\/b\/([^/]+)/);
-      if (match) setBranchSlug(match[1]);
-    }
-  }, []);
 
   const goTo = (next: AuthStep, dir: Direction = "forward") => {
     setDirection(dir);
@@ -84,43 +60,37 @@ export function AuthSteps({ onAuthSuccess }: { onAuthSuccess?: () => void } = {}
     }
   };
 
-  const handleVerifyOTP = useCallback(async (code: string) => {
-    if (!phone) return;
-    setLoading(true);
-    setError(null);
+  const handleVerifyOTP = useCallback(
+    async (code: string) => {
+      if (!phone) return;
+      setLoading(true);
+      setError(null);
 
-    try {
-      const res = await fetch("/api/auth/verify-otp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          phone,
-          otp: code,
-          referralCode: referralCode || undefined,
-          branchSlug: branchSlug || undefined,
-          agentCode: agentCode || undefined,
-        }),
+      // Auth.js signIn with our custom whatsapp-otp Credentials provider.
+      // The provider validates the 6-digit code against otp_verifications
+      // (SHA-256 hash match), find-or-creates the user by phone, marks the
+      // code consumed.
+      const result = await signIn("whatsapp-otp", {
+        phone,
+        code,
+        redirect: false,
       });
-      const data = await res.json();
 
-      if (!res.ok || data.error) {
-        setError(data.error || "Verification failed");
+      if (!result?.ok || result.error) {
+        setError(result?.error ?? "Verification failed");
         setLoading(false);
         return;
       }
 
-      // Session cookies are set by the API route — hard reload to pick them up
-      // Soft navigation (router.push) causes stale auth state on client
+      // Session cookie is set by Auth.js. Hard reload to pick it up cleanly.
       if (onAuthSuccess) {
         window.location.reload();
       } else {
         window.location.href = "/";
       }
-    } catch {
-      setError("Verification failed. Please try again.");
-      setLoading(false);
-    }
-  }, [phone, referralCode, branchSlug, agentCode, onAuthSuccess]);
+    },
+    [phone, onAuthSuccess]
+  );
 
   const handleResendOTP = async () => {
     if (!phone) return;
@@ -136,21 +106,9 @@ export function AuthSteps({ onAuthSuccess }: { onAuthSuccess?: () => void } = {}
     }
   };
 
-  // --- Google OAuth ---
+  // --- Google OAuth (Auth.js) ---
   const handleGoogleAuth = async () => {
-    const supabase = createClient();
-    const params = new URLSearchParams();
-    if (branchSlug) params.set("branch", branchSlug);
-    if (agentCode) params.set("agent", agentCode);
-    if (referralCode) params.set("ref", referralCode);
-    const query = params.toString();
-    const redirectUrl = query
-      ? `${window.location.origin}/auth/callback?${query}`
-      : `${window.location.origin}/auth/callback`;
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: redirectUrl },
-    });
+    await signIn("google", { callbackUrl: "/" });
   };
 
   return (
@@ -180,8 +138,6 @@ export function AuthSteps({ onAuthSuccess }: { onAuthSuccess?: () => void } = {}
             onSubmit={handleSendOTP}
             loading={loading}
             error={error}
-            referralCode={referralCode}
-            onReferralChange={setReferralCode}
           />
         </StepWrapper>
 
@@ -336,15 +292,12 @@ function WelcomeStep({ onGoogle, onPhone }: {
 // =============================================
 // STEP 2: PHONE
 // =============================================
-function PhoneStep({ onBack, onSubmit, loading, error, referralCode, onReferralChange }: {
+function PhoneStep({ onBack, onSubmit, loading, error }: {
   onBack: () => void;
   onSubmit: (phone: string) => void;
   loading: boolean;
   error: string | null;
-  referralCode: string;
-  onReferralChange: (v: string) => void;
 }) {
-  const [showReferral, setShowReferral] = useState(!!referralCode);
   const t = useTranslations("auth");
 
   return (
@@ -359,25 +312,6 @@ function PhoneStep({ onBack, onSubmit, loading, error, referralCode, onReferralC
 
       <div className="space-y-6">
         <PhoneInput onSubmit={onSubmit} loading={loading} error={error} />
-
-        {/* Referral toggle */}
-        <div>
-          {!showReferral ? (
-            <button
-              onClick={() => setShowReferral(true)}
-              className="text-muted-custom text-[13px] hover:text-text transition-colors"
-            >
-              {t("haveReferralCode")}
-            </button>
-          ) : (
-            <AuthInput
-              placeholder={t("referralCodePlaceholder")}
-              value={referralCode}
-              onChange={onReferralChange}
-              label={t("referralCode")}
-            />
-          )}
-        </div>
       </div>
 
       <p className="mt-8 text-[11px] text-dim text-center leading-relaxed">
