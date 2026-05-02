@@ -101,15 +101,11 @@ export default async function RootLayout({
       suppressHydrationWarning
     >
       <head>
-        {/* Theme bootstrap — runs synchronously in <head> before paint to
-            avoid FOUC. Removed the /shu-rayak prelaunch override (route
-            stripped in W2). Uses Script with beforeInteractive strategy
-            to satisfy React 19's "no inline <script> in components" rule
-            while still loading early. */}
-        <Script
-          id="theme-bootstrap"
-          strategy="beforeInteractive"
-        >{`(function(){try{var t=localStorage.getItem('theme');if(t==='dark'){document.documentElement.setAttribute('data-theme','dark')}else if(t==='system'){var d=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',d)}else{document.documentElement.setAttribute('data-theme','light')}}catch(e){}})()`}</Script>
+        {/* Theme bootstrap — static file in /public, loaded with
+            beforeInteractive so it sets data-theme before first paint
+            (no FOUC). React 19 / Next 16 rejects inline <script> children
+            in component trees as a hard error; using `src=` bypasses that. */}
+        <Script src="/theme-bootstrap.js" strategy="beforeInteractive" />
       </head>
       <body
         className={`${satoshi.variable} ${dmSans.variable} ${notoSansArabic.variable} ${geist.variable} ${geistMono.variable} antialiased`}

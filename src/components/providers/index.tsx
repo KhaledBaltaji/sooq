@@ -8,6 +8,7 @@ import { NextIntlClientProvider } from "next-intl";
 import { SessionProvider } from "next-auth/react";
 import type { Session } from "next-auth";
 import { ThemeProvider } from "./theme-provider";
+import { SupabaseProvider } from "./supabase-provider";
 import { UserProvider } from "./user-provider";
 import { AuthModalProvider } from "@/components/auth/auth-modal-provider";
 import { DepositModalProvider } from "@/components/wallet/deposit-modal-provider";
@@ -37,22 +38,27 @@ export function Providers({
     <NextIntlClientProvider locale={locale} messages={messages}>
       <ThemeProvider>
         <SessionProvider session={session}>
-          <UserProvider initialProfile={initialProfile}>
-            <QueryProvider>
-              <AuthModalProvider>
-                <DepositModalProvider>
-                  <WithdrawModalProvider>
-                    {children}
-                    <RealtimeStatus />
-                    <Toaster
-                      position={isRtl ? "top-left" : "top-right"}
-                      dir={isRtl ? "rtl" : "ltr"}
-                    />
-                  </WithdrawModalProvider>
-                </DepositModalProvider>
-              </AuthModalProvider>
-            </QueryProvider>
-          </UserProvider>
+          {/* SupabaseProvider stays during W7 hybrid state — many
+              components still call useSupabase() for non-auth queries.
+              They get cut over to Drizzle progressively. */}
+          <SupabaseProvider>
+            <UserProvider initialProfile={initialProfile}>
+              <QueryProvider>
+                <AuthModalProvider>
+                  <DepositModalProvider>
+                    <WithdrawModalProvider>
+                      {children}
+                      <RealtimeStatus />
+                      <Toaster
+                        position={isRtl ? "top-left" : "top-right"}
+                        dir={isRtl ? "rtl" : "ltr"}
+                      />
+                    </WithdrawModalProvider>
+                  </DepositModalProvider>
+                </AuthModalProvider>
+              </QueryProvider>
+            </UserProvider>
+          </SupabaseProvider>
         </SessionProvider>
       </ThemeProvider>
     </NextIntlClientProvider>
