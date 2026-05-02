@@ -402,4 +402,63 @@ User pasted in chat:
 
 User accepted residual risk and said they'll delete the chat. Production rotation required before W11 cutover.
 
+### W6 done so far (commits 90605c1, d41eddc)
+
+**Auth backend wired up:**
+- Auth.js v5 + Drizzle adapter installed and configured
+- Drizzle schema extended (accounts, sessions, verification_tokens, users.email_verified)
+- `src/auth.ts` — Google OAuth + WhatsApp OTP custom provider
+- `src/lib/auth/whatsapp-otp-provider.ts` — VerifyWay-backed Credentials provider that validates 6-digit code against `otp_verifications` table
+- `/api/auth/[...nextauth]/route.ts` — Auth.js handler
+- `src/middleware.ts` — slim Edge middleware (rate limit + redirects only)
+- `src/lib/auth/guards.ts` — requireAuth + requireAdmin via Auth.js + Drizzle (admin layout uses this)
+- `src/lib/auth/actions.ts` — slimmed to just signOut (525 LOC of LMSR/branch resolver removed)
+- Migration 367: `app` schema + `app.user_id()` helper
+- Migration 368: `auth.uid()` → `app.user_id()` swap on `speed_execute_trade` + `speed_execute_cashout` (sed-pass on 366)
+- `/auth/callback` Supabase OAuth route deleted (Auth.js handles its own callback at `/api/auth/callback/google`)
+
+**GCP setup:**
+- `sooq-staging` (798395303413) + `sooq-prod` (827242747316) projects created via gcloud
+- IAM/OAuth APIs enabled on staging
+- User configured OAuth consent screen + Web App credentials in UI
+- AUTH_GOOGLE_ID + AUTH_GOOGLE_SECRET in `.env.local`
+
+### W6 carrying into W7
+
+These components/files still call `supabase.auth.*` and continue working during the transition. They get cut over in W7 alongside the data-layer migration to Drizzle + RDS:
+
+- `src/lib/auth/hooks.ts` (uses `useUserContext` from user-provider)
+- `src/components/providers/user-provider.tsx` (Supabase-backed user context)
+- `src/components/auth/{auth-steps,complete-profile-modal}.tsx`
+- `src/components/layout/{profile-dropdown,account-sheet}.tsx`
+- `src/app/layout.tsx`, `src/app/(app)/settings/page.tsx`
+- API routes: `verify-otp`, `health`, `deposit/verify`, `wallet/generate`, `admin/withdrawal/{review,mark-sent}`
+- `src/hooks/use-speed-position{,s}.ts`
+
+This is a **hybrid state** — Auth.js sessions work alongside the existing Supabase-backed data fetching. Both coexist until W7 cuts the data layer to Drizzle + RDS.
+
+### Pending user action
+
+- **DATABASE_URL** — pull RDS master password from AWS Secrets Manager and add to `.env.local`. One-liner:
+  ```bash
+  PGPASSWORD=$(aws secretsmanager get-secret-value --secret-id 'rds!db-fc910551-747a-4b28-8abc-f9c271c3a2e7-gki8se' --query SecretString --output text | python3 -c "import sys,json;print(json.load(sys.stdin)['password'])")
+  echo "DATABASE_URL=postgresql://sooqadmin:${PGPASSWORD}@sooq-staging-db.cl0keqcqsenr.eu-central-1.rds.amazonaws.com:5432/sooq?sslmode=require" >> .env.local
+  ```
+- **Apply migrations 364–368** to staging RDS (use `psql` from W5 setup, then `\\i supabase/migrations/364_w2_strip_pass_1.sql` etc., OR W7 will do this via Drizzle Kit)
+- **E2E test**: `next dev`, sign in with Google, sign in with WhatsApp OTP
+
+### Phase boundary checkpoint (W6 → W7)
+
+- [x] Auth.js scaffold complete + tests pass type-check
+- [x] Migrations 367/368 written
+- [x] Auth helpers refactored
+- [x] Middleware slim
+- [x] Admin layout works against new guards
+- [ ] DATABASE_URL wired (user action)
+- [ ] Migrations applied to RDS
+- [ ] E2E auth verified
+- [ ] User explicitly approves "ready for W7"
+
+W7 starts with: apply migrations to RDS + replace `supabase-js` data calls with Drizzle queries across the surviving codebase.
+
 ---
