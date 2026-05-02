@@ -1,0 +1,32 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/check-errors",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/rank-markets",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/close-expired-markets",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/resolve-demo-markets",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/speed-resolve",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/speed-roll",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/speed-partitions",
+      "schedule": "0 0 * * 0"
+    }
+  ]
+}

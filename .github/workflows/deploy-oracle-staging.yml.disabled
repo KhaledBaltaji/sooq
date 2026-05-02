@@ -1,0 +1,82 @@
+name: Deploy speed-oracle (staging)
+
+# Triggered by changes to the speed-oracle worker source on staging.
+#
+# Why a separate workflow: Railway hosts the speed-oracle Node service
+# (Binance @kline_1s WebSocket → Supabase). Railway is NOT in the main
+# deploy-staging.yml because:
+#   1. The worker has its own deploy lifecycle independent of Vercel
+#   2. Most staging pushes don't touch services/speed-oracle/, so we'd
+#      waste minutes redeploying a service that didn't change
+#   3. Railway deploys are idempotent but can take 60-90s — splitting
+#      keeps the main staging pipeline lean
+#
+# This workflow exists because of the 70-minute outage on 2026-04-27:
+# Push F (commit a94e8fd) shipped a worker code change that required
+# manual `railway up`, and the manual step didn't happen for over an
+# hour, leaving speed_oracle_klines empty. Auto-deploy fixes that.
+#
+# Required GitHub secrets:
+#   RAILWAY_TOKEN_STAGING — project-scoped Railway token for the staging
+#                           speed-oracle service (Railway dashboard → Project
+#                           Settings → Tokens). When the production worker
+#                           lands, add RAILWAY_TOKEN_PRODUCTION as a sibling.
+#
+# Health URL is hardcoded below — it's the public Railway endpoint, not a
+# secret. Leaving it inline avoids needing a second GitHub secret per env.
+
+on:
+  push:
+    branches: [staging]
+    paths:
+      - 'services/speed-oracle/**'
+      - '.github/workflows/deploy-oracle-staging.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/speed-oracle
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: services/speed-oracle/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check + build
+        run: npm run build
+
+      - name: Install Railway CLI
+        run: |
+          curl -fsSL https://railway.com/install.sh | sh
+          echo "$HOME/.railway/bin" >> $GITHUB_PATH
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_STAGING }}
+        run: railway up --service speed-oracle --detach
+
+      - name: Wait for health
+        env:
+          ORACLE_URL: https://speed-oracle-production.up.railway.app
+        run: |
+          for i in $(seq 1 12); do
+            sleep 10
+            BODY=$(curl -fsS "$ORACLE_URL/health" 2>/dev/null || echo '{}')
+            HEALTHY=$(echo "$BODY" | jq -r '.healthy // false')
+            AGE=$(echo "$BODY" | jq -r '.last_tick_age_sec // -1')
+            echo "Attempt $i: healthy=$HEALTHY age=${AGE}s"
+            if [ "$HEALTHY" = "true" ] && [ "$AGE" -ge 0 ] && [ "$AGE" -lt 5 ]; then
+              echo "Oracle healthy."
+              exit 0
+            fi
+          done
+          echo "Oracle did not report healthy within 2 minutes."
+          exit 1

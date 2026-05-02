@@ -1,0 +1,68 @@
+name: Nightly Full Test Suite
+
+# Runs the entire 301-test integration suite against staging once a day at
+# 03:00 UTC (06:00 Beirut). Catches drift the smoke-test subset wouldn't:
+# admin tooling, demo mode, branch lifecycle, race-conditions, fee-config
+# uniqueness, opening-price, price-history, manual deposits, etc.
+#
+# Smoke tests on every staging push (deploy-staging.yml) cover the money
+# path and run in ~3-4 min. This workflow is the safety net: slower, fuller,
+# runs while no one is pushing, alerts on regression so you wake up to
+# "yesterday's commits broke something" not "production user found it."
+#
+# Manual trigger via workflow_dispatch — handy for "run the full suite
+# before I merge to main" without waiting for the cron.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: nightly-full-test
+  cancel-in-progress: false
+
+jobs:
+  full-test:
+    name: Run All 301 Tests
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: staging
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Run full vitest suite
+        run: npm test
+        env:
+          SUPABASE_TEST_URL: ${{ secrets.SUPABASE_TEST_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+
+  notify-failure:
+    name: Slack Failure Alert
+    needs: full-test
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v3.0.2
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":warning: *Nightly full test suite FAILED* [STAGING]\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\nReview before next push to staging."
+            }

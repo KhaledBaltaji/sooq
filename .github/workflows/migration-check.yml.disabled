@@ -1,0 +1,54 @@
+name: Migration Safety Check
+
+on:
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+
+jobs:
+  check:
+    name: Check for destructive operations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan new migrations for destructive SQL
+        run: |
+          # Find migration files changed in this PR
+          CHANGED=$(git diff --name-only --diff-filter=AM origin/${{ github.base_ref }}...HEAD -- 'supabase/migrations/*.sql')
+
+          if [ -z "$CHANGED" ]; then
+            echo "No new migrations found."
+            exit 0
+          fi
+
+          echo "Scanning migrations for destructive operations..."
+          FOUND=0
+
+          for file in $CHANGED; do
+            # Demo-mode DML (DELETE/TRUNCATE on demo_* tables) is whitelisted:
+            # those tables are fake-money sandbox, fully isolated from real-money ledgers,
+            # and seed-refresh migrations legitimately need DELETE. Schema changes on demo_*
+            # (DROP TABLE, ALTER ... DROP COLUMN) are NOT whitelisted — they still require review.
+            ISSUES=$(grep -inE '(DROP\s+(TABLE|COLUMN|INDEX|FUNCTION|SCHEMA|DATABASE)|DELETE\s+FROM\s+[a-z]|^\s*TRUNCATE\s|ALTER\s+TABLE.*DROP\s+COLUMN)' "$file" | grep -viE '(DROP\s+TRIGGER\s+IF\s+EXISTS|DROP\s+(NOT\s+NULL|DEFAULT|CONSTRAINT)|--.*truncate|IF\s+EXISTS|DELETE\s+FROM\s+demo_|TRUNCATE\s+demo_)' || true)
+            if [ -n "$ISSUES" ]; then
+              echo ""
+              echo "::warning file=$file::Destructive operation detected in $file"
+              echo "$ISSUES"
+              FOUND=1
+            fi
+          done
+
+          if [ "$FOUND" -eq 1 ]; then
+            echo ""
+            if [ "${{ github.base_ref }}" = "main" ]; then
+              echo "::error::BLOCKED: Destructive migration targeting production. Requires manual review and explicit approval."
+              exit 1
+            else
+              echo "::warning::Destructive migration operations detected. Please review carefully before merging."
+            fi
+          else
+            echo "No destructive operations found."
+          fi

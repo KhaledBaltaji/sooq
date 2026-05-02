@@ -1,0 +1,13 @@
+#!/bin/bash
+# Pre-commit hook: type check only.
+# Schema-snapshot drift check removed in W1 — it depended on Supabase CLI.
+# Will be re-added in W5+ when Drizzle + RDS are wired.
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+
+echo "Running type check..."
+npx tsc --noEmit
+if [ $? -ne 0 ]; then
+  echo "Type check failed. Fix errors before committing."
+  exit 1
+fi
+echo "Type check passed."

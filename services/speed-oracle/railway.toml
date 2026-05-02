@@ -1,0 +1,14 @@
+# Railway service configuration
+#
+# Single instance — running >1 replica produces duplicate ticks and races
+# the speed_oracle_latest upsert. Keep numReplicas = 1 forever.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "./Dockerfile"
+
+[deploy]
+numReplicas = 1
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+healthcheckPath = "/health"
+healthcheckTimeout = 90

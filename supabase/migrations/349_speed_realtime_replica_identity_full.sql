@@ -1,0 +1,35 @@
+-- ============================================================================
+-- 349_speed_realtime_replica_identity_full.sql
+--
+-- Fix: "RECONNECTING TO PRICE FEED" pill stuck on /speed/[id]; client console
+-- loops `speed_oracle_latest realtime CHANNEL_ERROR` then `CLOSED`. Server-side
+-- the worker writes a fresh row every second — the data is healthy. The break
+-- is in the realtime delivery handshake.
+--
+-- Why:
+--   Both speed_oracle_latest and speed_markets have RLS enabled (mig 315) and
+--   are in the supabase_realtime publication (mig 316). The clients subscribe
+--   with a filter:
+--     useSpeedOracleLatest: filter: asset=eq.BTC
+--     useSpeedMarket:       filter: id=eq.<uuid>
+--   The worker's INSERT … ON CONFLICT DO UPDATE produces UPDATE WAL events.
+--   With REPLICA IDENTITY default, the OLD-row image in the WAL diff carries
+--   only the primary key. Supabase Realtime needs the full OLD row to (a) run
+--   the table's RLS policy as the subscribed user and (b) evaluate the filter.
+--   Without it, every subscription returns CHANNEL_ERROR and the client retries
+--   forever.
+--
+-- Fix: switch both tables to REPLICA IDENTITY FULL so the WAL carries the
+--      whole OLD row on every UPDATE. RLS + filter both succeed; subscriptions
+--      deliver normally; the UI's "Reconnecting" pill clears within ~2s.
+--
+-- Cost: WAL entries get marginally larger per UPDATE. speed_oracle_latest is
+--       a 2-row table; speed_markets gets infrequent UPDATEs. Negligible.
+--
+-- Surfaced by the status callback added to use-speed-oracle.ts in this same
+-- session (was previously silent — bug has likely existed since the realtime
+-- tables were created in mig 316).
+-- ============================================================================
+
+ALTER TABLE speed_oracle_latest REPLICA IDENTITY FULL;
+ALTER TABLE speed_markets       REPLICA IDENTITY FULL;

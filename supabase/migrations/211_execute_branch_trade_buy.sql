@@ -1,0 +1,386 @@
+-- ============================================================
+-- 211: S2 Branch System — execute_branch_trade (buy path)
+--
+-- Branch trade execution. Shares canonical LMSR with retail but
+-- writes to separate pools/ledgers. Markup extracted before LMSR.
+--
+-- Lock order: user → market → amm_state → branches
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION execute_branch_trade(
+  p_market_id UUID,
+  p_branch_id UUID,
+  p_side TEXT,
+  p_amount DECIMAL DEFAULT NULL,
+  p_shares_to_sell DECIMAL DEFAULT NULL,
+  p_idempotency_key TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_user_id UUID;
+  v_user RECORD;
+  v_market RECORD;
+  v_amm RECORD;
+  v_branch RECORD;
+  v_position RECORD;
+  v_assignment RECORD;
+  v_market_config RECORD;
+
+  -- Fee/config
+  v_price_impact_cap DECIMAL;
+  v_min_trade DECIMAL;
+
+  -- Markup
+  v_markup_pct DECIMAL;
+  v_markup_amount DECIMAL;
+  v_net_canonical DECIMAL;
+
+  -- LMSR
+  v_b DECIMAL;
+  v_shares DECIMAL;
+  v_new_q_yes DECIMAL;
+  v_new_q_no DECIMAL;
+  v_new_yes_price DECIMAL;
+  v_new_no_price DECIMAL;
+  v_price_per_share DECIMAL;
+  v_price_impact DECIMAL;
+
+  -- Solvency
+  v_solvency JSONB;
+  v_old_worst_case DECIMAL;
+  v_new_worst_case DECIMAL;
+  v_worst_case_delta DECIMAL;
+
+  -- Position cap
+  v_position_cap DECIMAL;
+  v_current_shares DECIMAL := 0;
+
+  -- Output
+  v_trade_id UUID;
+  v_branch_trade_id UUID;
+BEGIN
+  v_user_id := auth.uid();
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  -- Bypass protected columns trigger
+  PERFORM set_config('app.trigger_bypass', 'true', true);
+
+  -- ═══ BUY PATH ONLY in this migration (sell in 212) ═══
+  IF p_amount IS NULL OR p_amount <= 0 THEN
+    RAISE EXCEPTION 'Buy requires positive p_amount';
+  END IF;
+
+  -- Idempotency check
+  IF p_idempotency_key IS NOT NULL THEN
+    SELECT bt.id INTO v_branch_trade_id
+    FROM branch_trades bt
+    WHERE bt.branch_id = p_branch_id AND bt.idempotency_key = p_idempotency_key;
+
+    IF FOUND THEN
+      -- Return existing trade result
+      RETURN jsonb_build_object(
+        'trade_id', v_branch_trade_id,
+        'idempotent', true,
+        'message', 'Duplicate trade — returning existing result'
+      );
+    END IF;
+  END IF;
+
+  -- Lock order: user → market → amm_state → branches
+  SELECT * INTO v_user FROM users WHERE id = v_user_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'User not found'; END IF;
+  IF v_user.is_frozen THEN RAISE EXCEPTION 'Account is frozen'; END IF;
+
+  SELECT * INTO v_market FROM markets WHERE id = p_market_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Market not found'; END IF;
+  IF v_market.status <> 'open' THEN RAISE EXCEPTION 'Market is not open for trading'; END IF;
+  IF now() >= v_market.closes_at THEN RAISE EXCEPTION 'Market has closed'; END IF;
+
+  SELECT * INTO v_amm FROM amm_state WHERE market_id = p_market_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'AMM not initialized'; END IF;
+  v_b := v_amm.liquidity_param;
+
+  SELECT * INTO v_branch FROM branches WHERE id = p_branch_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Branch not found'; END IF;
+  IF v_branch.status IN ('frozen', 'suspended') THEN
+    RAISE EXCEPTION 'Branch is %', v_branch.status;
+  END IF;
+
+  -- Validate user is assigned to this branch
+  SELECT * INTO v_assignment
+  FROM branch_user_assignments
+  WHERE user_id = v_user_id AND branch_id = p_branch_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'User not assigned to this branch';
+  END IF;
+
+  -- Check if market is enabled for this branch
+  SELECT * INTO v_market_config
+  FROM branch_market_config
+  WHERE branch_id = p_branch_id AND market_id = p_market_id;
+
+  IF FOUND AND NOT v_market_config.is_enabled THEN
+    RAISE EXCEPTION 'Market is disabled for this branch';
+  END IF;
+
+  -- Read config
+  SELECT rate INTO v_price_impact_cap FROM fee_config
+  WHERE fee_type = 'canonical_price_impact_cap' AND level IS NULL;
+  IF v_price_impact_cap IS NULL THEN v_price_impact_cap := 0.05; END IF;
+
+  SELECT rate INTO v_min_trade FROM fee_config
+  WHERE fee_type = 'min_trade_amount' AND level IS NULL;
+
+  -- Minimum trade guard
+  IF v_min_trade IS NOT NULL AND p_amount < v_min_trade THEN
+    RAISE EXCEPTION 'Trade below minimum ($% required)', v_min_trade;
+  END IF;
+
+  -- Check user balance
+  IF p_amount > v_user.balance_usd THEN
+    RAISE EXCEPTION 'Insufficient balance';
+  END IF;
+
+  -- ═══ MARKUP EXTRACTION ═══
+  v_markup_pct := CASE WHEN p_side = 'yes' THEN v_branch.yes_markup_pct
+                       ELSE v_branch.no_markup_pct END;
+  v_markup_amount := ROUND(p_amount * v_markup_pct, 2);
+  v_net_canonical := p_amount - v_markup_amount;
+
+  IF v_net_canonical <= 0 THEN
+    RAISE EXCEPTION 'Trade too small after markup';
+  END IF;
+
+  -- ═══ POSITION CAP CHECK ═══
+  -- Check per-market override first, then branch default
+  v_position_cap := CASE WHEN p_side = 'yes' THEN
+    COALESCE(v_market_config.position_cap_yes, v_branch.default_position_cap_yes)
+  ELSE
+    COALESCE(v_market_config.position_cap_no, v_branch.default_position_cap_no)
+  END;
+
+  IF v_position_cap IS NOT NULL THEN
+    SELECT COALESCE(shares_held, 0) INTO v_current_shares
+    FROM positions
+    WHERE user_id = v_user_id AND market_id = p_market_id
+      AND side = p_side::bet_side AND branch_id = p_branch_id;
+
+    -- We'll check after computing shares
+  END IF;
+
+  -- ═══ LMSR EXECUTION ═══
+  v_shares := lmsr_shares_for_cost(v_b, v_amm.q_yes, v_amm.q_no, p_side, v_net_canonical);
+
+  IF v_shares <= 0 THEN
+    RAISE EXCEPTION 'Trade too small';
+  END IF;
+
+  -- Position cap enforcement (now that we know shares)
+  IF v_position_cap IS NOT NULL AND (v_current_shares + v_shares) * 0.99 > v_position_cap THEN
+    RAISE EXCEPTION 'Position cap exceeded (max $%)', v_position_cap;
+  END IF;
+
+  IF p_side = 'yes' THEN
+    v_new_q_yes := v_amm.q_yes + v_shares;
+    v_new_q_no := v_amm.q_no;
+  ELSE
+    v_new_q_yes := v_amm.q_yes;
+    v_new_q_no := v_amm.q_no + v_shares;
+  END IF;
+
+  v_new_yes_price := lmsr_price(v_b, v_new_q_yes, v_new_q_no, 'yes');
+  v_new_no_price := lmsr_price(v_b, v_new_q_yes, v_new_q_no, 'no');
+
+  -- ═══ PRICE IMPACT CAP ═══
+  v_price_impact := ABS(v_new_yes_price - v_amm.current_yes_price);
+  IF v_price_impact > v_price_impact_cap THEN
+    RAISE EXCEPTION 'Price impact exceeds cap (%.1f%% > %.1f%%)',
+      v_price_impact * 100, v_price_impact_cap * 100;
+  END IF;
+
+  -- ═══ SOLVENCY GATE ═══
+  -- Compute worst case delta for this market
+  v_old_worst_case := _branch_worst_case_market(p_branch_id, p_market_id);
+
+  -- After trade: pool gets gross amount, shares increase
+  -- Simulate new worst case by adjusting share counts
+  -- We use the function with updated position data after we write,
+  -- but for pre-trade check we estimate:
+  DECLARE
+    v_est_yes_shares DECIMAL;
+    v_est_no_shares DECIMAL;
+    v_est_pool_cash DECIMAL;
+    v_est_worst DECIMAL;
+  BEGIN
+    SELECT COALESCE(SUM(shares_held), 0) INTO v_est_yes_shares
+    FROM positions
+    WHERE branch_id = p_branch_id AND market_id = p_market_id AND side = 'yes' AND shares_held > 0;
+
+    SELECT COALESCE(SUM(shares_held), 0) INTO v_est_no_shares
+    FROM positions
+    WHERE branch_id = p_branch_id AND market_id = p_market_id AND side = 'no' AND shares_held > 0;
+
+    IF p_side = 'yes' THEN
+      v_est_yes_shares := v_est_yes_shares + v_shares;
+    ELSE
+      v_est_no_shares := v_est_no_shares + v_shares;
+    END IF;
+
+    SELECT COALESCE(SUM(
+      CASE WHEN type IN ('trade_buy', 'exit_fee') THEN amount
+           WHEN type = 'trade_sell' THEN amount
+           ELSE 0 END
+    ), 0) INTO v_est_pool_cash
+    FROM branch_pools
+    WHERE branch_id = p_branch_id AND market_id = p_market_id;
+
+    -- Add incoming gross amount (full amount goes to pool)
+    v_est_pool_cash := v_est_pool_cash + p_amount;
+
+    v_est_worst := GREATEST(0,
+      GREATEST(v_est_yes_shares * 0.99, v_est_no_shares * 0.99) - v_est_pool_cash
+    );
+
+    v_worst_case_delta := v_est_worst - v_old_worst_case;
+  END;
+
+  -- Check solvency with projected values
+  v_solvency := branch_solvency_check(p_branch_id, p_amount, v_worst_case_delta);
+
+  IF NOT (v_solvency->>'can_trade')::BOOLEAN THEN
+    RAISE EXCEPTION 'Branch solvency gate: trade rejected (utilization %)',
+      v_solvency->>'utilization';
+  END IF;
+
+  -- ═══ PAYBACK MODE: additional constraint ═══
+  IF v_branch.status = 'payback' THEN
+    -- In payback mode, new trades only allowed if post-trade pool
+    -- can cover pending payouts + worst case
+    DECLARE
+      v_post_pool DECIMAL;
+      v_after_reserving DECIMAL;
+    BEGIN
+      v_post_pool := v_branch.pool_balance + p_amount;
+      v_after_reserving := v_post_pool - v_branch.pending_payouts;
+      IF v_after_reserving < (v_branch.worst_case_total + v_worst_case_delta) THEN
+        RAISE EXCEPTION 'Payback mode: insufficient post-trade coverage';
+      END IF;
+    END;
+  END IF;
+
+  -- ═══ ALL CHECKS PASSED — EXECUTE ═══
+
+  v_price_per_share := v_net_canonical / v_shares;
+
+  -- Update canonical AMM state (shared with retail)
+  UPDATE amm_state SET
+    q_yes = v_new_q_yes, q_no = v_new_q_no,
+    current_yes_price = v_new_yes_price, current_no_price = v_new_no_price,
+    total_volume = total_volume + v_net_canonical, total_trades = total_trades + 1,
+    updated_at = NOW()
+  WHERE market_id = p_market_id;
+
+  -- Insert position (with branch_id)
+  INSERT INTO positions (user_id, market_id, side, branch_id, shares_held, avg_entry_price, total_invested)
+  VALUES (v_user_id, p_market_id, p_side::bet_side, p_branch_id, v_shares, v_price_per_share, v_net_canonical)
+  ON CONFLICT (user_id, market_id, side, COALESCE(branch_id, '00000000-0000-0000-0000-000000000000')) DO UPDATE SET
+    avg_entry_price = (positions.total_invested + v_net_canonical) / (positions.shares_held + v_shares),
+    shares_held = positions.shares_held + v_shares,
+    total_invested = positions.total_invested + v_net_canonical;
+
+  -- Insert canonical trade record (with branch_id)
+  INSERT INTO trades (user_id, market_id, side, direction, shares, price_per_share,
+                      total_cost, explicit_fee, amm_spread_cost, cash_out_premium,
+                      post_yes_price, post_no_price, branch_id)
+  VALUES (v_user_id, p_market_id, p_side::bet_side, 'buy'::trade_direction, v_shares,
+          v_price_per_share, p_amount, 0, v_markup_amount, 0,
+          v_new_yes_price, v_new_no_price, p_branch_id)
+  RETURNING id INTO v_trade_id;
+
+  -- Insert branch audit trail
+  INSERT INTO branch_trades (
+    trade_id, branch_id, agent_id, user_id, market_id,
+    gross_amount, branch_markup, net_canonical_amount,
+    branch_quote_shown,
+    canonical_pre_yes_price, canonical_pre_no_price,
+    canonical_post_yes_price, canonical_post_no_price,
+    shares_issued, idempotency_key
+  ) VALUES (
+    v_trade_id, p_branch_id, v_assignment.agent_id, v_user_id, p_market_id,
+    p_amount, v_markup_amount, v_net_canonical,
+    v_price_per_share,
+    v_amm.current_yes_price, v_amm.current_no_price,
+    v_new_yes_price, v_new_no_price,
+    v_shares, COALESCE(p_idempotency_key, gen_random_uuid()::TEXT)
+  );
+
+  -- Credit branch pool (gross amount — markup stays in pool as revenue)
+  INSERT INTO branch_pools (branch_id, market_id, type, amount, balance_after, reference_id, description)
+  VALUES (p_branch_id, p_market_id, 'trade_buy', p_amount,
+          v_branch.pool_balance + p_amount, v_trade_id,
+          'Buy ' || p_side || ' — gross $' || p_amount || ', markup $' || v_markup_amount);
+
+  -- Update branch pool balance cache + worst_case_total
+  UPDATE branches SET
+    pool_balance = pool_balance + p_amount,
+    worst_case_total = GREATEST(0, worst_case_total + v_worst_case_delta),
+    updated_at = NOW()
+  WHERE id = p_branch_id;
+
+  -- Payback sweep: if in payback mode, sweep inflow to pending payouts
+  IF v_branch.status = 'payback' AND v_branch.pending_payouts > 0 THEN
+    DECLARE
+      v_sweep DECIMAL;
+    BEGIN
+      v_sweep := LEAST(p_amount, v_branch.pending_payouts);
+      IF v_sweep > 0 THEN
+        INSERT INTO branch_pools (branch_id, type, amount, balance_after, description)
+        VALUES (p_branch_id, 'payback_sweep', -v_sweep,
+                v_branch.pool_balance + p_amount - v_sweep,
+                'Payback sweep on buy inflow');
+
+        UPDATE branches SET
+          pending_payouts = GREATEST(0, pending_payouts - v_sweep),
+          pool_balance = pool_balance + p_amount - v_sweep
+        WHERE id = p_branch_id;
+      END IF;
+    END;
+  END IF;
+
+  -- Debit user balance
+  INSERT INTO transactions (user_id, type, amount, balance_after, reference_id, description)
+  VALUES (v_user_id, 'trade', -p_amount, v_user.balance_usd - p_amount, v_trade_id,
+          'Branch buy ' || p_side || ' shares');
+
+  UPDATE users SET
+    balance_usd = balance_usd - p_amount,
+    total_wagered = total_wagered + p_amount,
+    updated_at = NOW()
+  WHERE id = v_user_id;
+
+  -- Update market stats
+  UPDATE markets SET
+    trade_count = trade_count + 1,
+    unique_traders = (SELECT COUNT(DISTINCT user_id) FROM trades WHERE market_id = p_market_id)
+  WHERE id = p_market_id;
+
+  RETURN jsonb_build_object(
+    'trade_id', v_trade_id,
+    'shares', ROUND(v_shares, 6),
+    'price_per_share', ROUND(v_price_per_share, 6),
+    'total_cost', ROUND(p_amount, 2),
+    'markup', ROUND(v_markup_amount, 2),
+    'net_canonical', ROUND(v_net_canonical, 2),
+    'new_yes_price', ROUND(v_new_yes_price, 6),
+    'new_no_price', ROUND(v_new_no_price, 6),
+    'price_impact', ROUND(v_price_impact, 6),
+    'solvency_status', v_solvency->>'status'
+  );
+END;
+$$;

@@ -1,0 +1,45 @@
+name: Staging Crons (per-minute)
+
+# Vercel cron jobs only run on production deployments. To exercise the cron
+# pipeline on the staging Preview deployment (staging.sooq.exchange), this
+# workflow pings the same endpoints on a schedule using the same CRON_SECRET.
+# Requires repo secrets: STAGING_CRON_SECRET; repo variables: STAGING_URL.
+
+on:
+  schedule:
+    - cron: "* * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: staging-crons
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    name: Ping staging cron endpoints
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: speed-resolve
+        run: |
+          curl -fsS --max-time 30 \
+            -H "Authorization: Bearer ${{ secrets.STAGING_CRON_SECRET }}" \
+            "${{ vars.STAGING_URL }}/api/cron/speed-resolve" \
+            -o /tmp/r.json -w "status=%{http_code}\n"
+          cat /tmp/r.json | head -c 400; echo
+
+      - name: speed-roll
+        run: |
+          curl -fsS --max-time 30 \
+            -H "Authorization: Bearer ${{ secrets.STAGING_CRON_SECRET }}" \
+            "${{ vars.STAGING_URL }}/api/cron/speed-roll" \
+            -o /tmp/r.json -w "status=%{http_code}\n"
+          cat /tmp/r.json | head -c 400; echo
+
+      - name: close-expired-markets (every minute is overkill; original Vercel cron is */10 — but staging has 784-market backlog right now, so over-pinging is fine until cleared)
+        run: |
+          curl -fsS --max-time 30 \
+            -H "Authorization: Bearer ${{ secrets.STAGING_CRON_SECRET }}" \
+            "${{ vars.STAGING_URL }}/api/cron/close-expired-markets" \
+            -o /tmp/r.json -w "status=%{http_code}\n"
+          cat /tmp/r.json | head -c 400; echo

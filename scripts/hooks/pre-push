@@ -1,0 +1,16 @@
+#!/bin/bash
+# Pre-push hook: block direct pushes to main.
+# Smoke suite removed in W1 — most of those test files (LMSR, commission)
+# are scheduled for deletion in W2/W3. Will be re-added with a leaner
+# speed-only smoke set in W4+.
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+
+while read local_ref local_sha remote_ref remote_sha; do
+  branch=$(echo "$remote_ref" | sed 's|refs/heads/||')
+
+  if [ "$branch" = "main" ]; then
+    echo "BLOCKED: Direct push to main is forbidden."
+    echo "Open a PR from a feature branch into main instead."
+    exit 1
+  fi
+done

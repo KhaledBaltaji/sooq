@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "export PATH=/usr/local/bin:$PATH && npm run dev"],
+      "port": 3000,
+      "autoPort": true
+    },
+    {
+      "name": "gemlens-dev",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd /Users/khaledbaltaji/Desktop/jewellery-photography && npm run dev -- -p 3001"],
+      "port": 3001
+    }
+  ]
+}

@@ -1,0 +1,480 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * Z-INDEX SCALE
+ * z-1    — Decorative overlays (grain)
+ * z-10   — Minor tooltips
+ * z-20   — Dropdowns, popovers
+ * z-50   — Navigation (top nav, bottom nav)
+ * z-60   — Dropdown menus above nav
+ * z-90   — Floating widgets (chat)
+ * z-100  — Modals, dialogs, sheets
+ * z-200  — Skip-to-content link
+ * z-999  — Celebration overlays (confetti)
+ */
+
+/* ===========================
+   DESIGN TOKENS (from DESIGN.md)
+   Dark mode is default.
+   =========================== */
+
+:root {
+  /* Dark mode (default) */
+  --bg: #0A0B0E;
+  --surface: #161618;
+  --elevated: #222226;
+  --border: #2E2E36;
+  --text: #EDEDF0;
+  --muted: #8A8A98;
+  --dim: #3A3A42;
+  --yes: #2D8CFF;
+  --no: #FF4757;
+  --success: #34D399;
+  --error: #FF4757;
+  --warning: #FBBF24;
+  --info: #2D8CFF;
+
+  /* Border radius tokens */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-full: 9999px;
+
+  /* ── Speed v2 (Sooq Round) design tokens ─────────────────────────
+     Scoped to the speed-trading mobile screen ("/speed/[id]" via the
+     mobile modal). Doesn't override existing tokens — additive only.
+     Reference: docs/designs/speed-round-v2.md (TODO if formalising).  */
+  --speed-v2-bg: oklch(0.985 0.003 95);
+  --speed-v2-bg-tint: oklch(0.97 0.005 95);
+  --speed-v2-surface: #ffffff;
+  --speed-v2-ink: oklch(0.18 0.01 260);
+  --speed-v2-ink-2: oklch(0.42 0.01 260);
+  --speed-v2-ink-3: oklch(0.62 0.01 260);
+  --speed-v2-line: oklch(0.92 0.005 260);
+  --speed-v2-line-2: oklch(0.96 0.005 260);
+
+  --speed-v2-chart-bg: oklch(0.16 0.012 260);
+  --speed-v2-chart-line: oklch(0.26 0.012 260);
+  --speed-v2-chart-grid: oklch(0.22 0.01 260);
+  --speed-v2-chart-ink: oklch(0.78 0.005 260);
+  --speed-v2-chart-ink-3: oklch(0.55 0.01 260);
+
+  --speed-v2-up: oklch(0.66 0.16 152);
+  --speed-v2-up-bg: oklch(0.95 0.05 152);
+  --speed-v2-up-deep: oklch(0.52 0.16 152);
+
+  --speed-v2-down: oklch(0.58 0.20 25);
+  --speed-v2-down-bg: oklch(0.96 0.04 25);
+  --speed-v2-down-deep: oklch(0.48 0.20 25);
+
+  --speed-v2-shadow-sm: 0 1px 2px rgba(15, 17, 21, 0.04), 0 0 0 1px rgba(15, 17, 21, 0.05);
+  --speed-v2-shadow-md: 0 4px 14px rgba(15, 17, 21, 0.08);
+  --speed-v2-shadow-lg: 0 10px 30px rgba(15, 17, 21, 0.18);
+}
+
+/* Light mode overrides */
+[data-theme="light"] {
+  --bg: #F5F5F7;
+  --surface: #FFFFFF;
+  --elevated: #F0F0F2;
+  --border: #D4D4D8;
+  --text: #09090B;
+  --muted: #71717A;
+  --dim: #A1A1AA;
+  --yes: #1D6FE8;
+  --no: #E03131;
+  --success: #16A34A;
+  --error: #E03131;
+  --warning: #D97706;
+  --info: #1D6FE8;
+}
+
+/* ===========================
+   TAILWIND v4 THEME
+   =========================== */
+
+@theme {
+  /* Custom design tokens (from DESIGN.md) */
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+  --color-border-custom: var(--border);
+  --color-text: var(--text);
+  --color-muted-custom: var(--muted);
+  --color-yes: var(--yes);
+  --color-no: var(--no);
+  --color-success: var(--success);
+  --color-error: var(--error);
+  --color-info: var(--info);
+  --color-warning: var(--warning);
+  --color-dim: var(--dim);
+
+  /* shadcn/ui semantic colors → our design tokens */
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--yes);
+  --color-primary-foreground: #FFFFFF;
+  --color-secondary: var(--elevated);
+  --color-secondary-foreground: var(--text);
+  --color-muted: var(--elevated);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--elevated);
+  --color-accent-foreground: var(--text);
+  --color-destructive: var(--error);
+  --color-destructive-foreground: #FFFFFF;
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--yes);
+
+  /* shadcn chart colors (for Recharts) */
+  --color-chart-1: var(--yes);
+  --color-chart-2: var(--no);
+  --color-chart-3: var(--success);
+  --color-chart-4: var(--error);
+  --color-chart-5: var(--muted);
+
+  /* Border radius */
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-full: var(--radius-full);
+
+  /* Font families */
+  --font-satoshi: "Satoshi", system-ui, sans-serif;
+  --font-dm-sans: "DM Sans", system-ui, sans-serif;
+  --font-noto-arabic: "Noto Sans Arabic", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* Font sizes (DESIGN.md scale) */
+  --text-xs: 0.6875rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.75rem;
+  --text-sm--line-height: 1rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.25rem;
+  --text-md: 1rem;
+  --text-md--line-height: 1.5rem;
+  --text-lg: 1.25rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl: 1.5rem;
+  --text-xl--line-height: 2rem;
+  --text-2xl: 2rem;
+  --text-2xl--line-height: 2.25rem;
+  --text-3xl: 2.625rem;
+  --text-3xl--line-height: 2.75rem;
+  --text-hero: 3rem;
+  --text-hero--line-height: 1;
+}
+
+/* ===========================
+   BASE STYLES
+   =========================== */
+
+html {
+  font-size: 16px;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overscroll-behavior-y: none;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-dm-sans);
+  font-size: 0.875rem;
+  overscroll-behavior-y: contain;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* PWA touch polish — snappy taps, no long-press callout on interactive elements */
+button, a, [role="button"] {
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+
+/* Tabular nums for data display */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Glow effects — border transitions (GPU-cheap, works both themes) */
+.glow-yes {
+  transition: border-color 150ms ease;
+  border: 1.5px solid transparent;
+}
+.glow-yes:hover {
+  border-color: rgba(45, 140, 255, 0.4);
+}
+
+.glow-no {
+  transition: border-color 150ms ease;
+  border: 1.5px solid transparent;
+}
+.glow-no:hover {
+  border-color: rgba(255, 71, 87, 0.35);
+}
+
+.glow-success {
+  transition: border-color 150ms ease;
+  border: 1.5px solid transparent;
+}
+.glow-success:hover {
+  border-color: rgba(52, 211, 153, 0.35);
+}
+
+/* Focus ring (DESIGN.md: 2px ring in --yes color with 2px offset) */
+:focus-visible {
+  outline: 2px solid var(--yes);
+  outline-offset: 2px;
+}
+
+/* Grid dot pattern for chart/surface backgrounds */
+.grid-dots {
+  background-image: radial-gradient(var(--border) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Pulse glow for live chart endpoints */
+.pulse-glow {
+  box-shadow: 0 0 12px 2px rgba(45, 140, 255, 0.4);
+}
+
+/* Light mode card shadows for depth */
+[data-theme="light"] .bg-surface {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+/* Light mode: stronger hover shadow for cards that lift */
+[data-theme="light"] .hover\:-translate-y-1\.5:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10),
+              0 12px 32px rgba(0, 0, 0, 0.14),
+              0 24px 56px rgba(0, 0, 0, 0.10) !important;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--elevated);
+  border-radius: var(--radius-full);
+}
+
+/* Hide scrollbar for horizontal scroll containers */
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+.hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ===========================
+   ACCESSIBILITY
+   =========================== */
+
+/* Pointer cursor on all interactive elements */
+button, [role="button"], select, a, label[for], input[type="button"], input[type="submit"] {
+  cursor: pointer;
+}
+
+/* Minimum 44px touch targets — mobile only. Desktop uses compact sizes via md: overrides. */
+@media (max-width: 767px) {
+  button, [role="button"], select, textarea {
+    min-height: 44px;
+  }
+  input:not([type="hidden"]) {
+    min-height: 44px;
+  }
+  /* Links only when they're standalone navigation (not inline text links) */
+  a[class*="btn"], a[class*="nav"], nav a {
+    min-height: 44px;
+  }
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Shimmer animation for skeleton loaders */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--elevated) 25%,
+    var(--surface) 37%,
+    var(--elevated) 63%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* ===========================
+   RTL SUPPORT
+   =========================== */
+
+/* Price display stays LTR regardless of dir */
+[dir="rtl"] .price-display-fixed {
+  direction: ltr;
+}
+
+/* Arabic body text uses Noto Sans Arabic */
+[dir="rtl"] body {
+  font-family: var(--font-noto-arabic);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  letter-spacing: -0.01em;
+}
+
+/* Numbers stay LTR in RTL context */
+[dir="rtl"] .tabular-nums,
+[dir="rtl"] .font-mono {
+  direction: ltr;
+  unicode-bidi: embed;
+}
+
+/* ===========================
+   RESPONSIVE UTILITIES
+   =========================== */
+
+/* Safe-area utilities — require viewport-fit=cover in layout <meta> to activate on iOS */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+.pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}
+.min-h-dvh {
+  min-height: 100dvh;
+}
+
+/* Desktop-only content */
+@media (max-width: 767px) {
+  .desktop-only { display: none !important; }
+}
+
+/* Mobile-only content */
+@media (min-width: 768px) {
+  .mobile-only { display: none !important; }
+}
+
+/* ===========================
+   PHONE INPUT LIBRARY OVERRIDES
+   (react-phone-number-input)
+   =========================== */
+
+.phone-input-wrapper .PhoneInput {
+  display: flex;
+  gap: 8px;
+  height: 48px;
+}
+
+.phone-input-wrapper .PhoneInputCountry {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  min-width: 90px;
+}
+
+.phone-input-wrapper .PhoneInputCountry:hover {
+  border-color: var(--elevated);
+}
+
+.phone-input-wrapper .PhoneInputCountryIcon {
+  width: 24px;
+  height: 18px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.phone-input-wrapper .PhoneInputCountryIcon--border {
+  box-shadow: none;
+  background: none;
+}
+
+.phone-input-wrapper .PhoneInputCountrySelectArrow {
+  color: var(--muted);
+  opacity: 0.6;
+  border-color: var(--muted);
+}
+
+.phone-input-wrapper .PhoneInputCountrySelect {
+  cursor: pointer;
+}
+
+.phone-input-wrapper .PhoneInputInput {
+  flex: 1;
+  height: 48px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 16px;
+  color: var(--text);
+  font-family: var(--font-dm-sans);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.phone-input-wrapper .PhoneInputInput::placeholder {
+  color: var(--dim);
+}
+
+.phone-input-wrapper .PhoneInputInput:focus {
+  border-color: var(--yes);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--yes) 30%, transparent);
+}
+
+/* ===========================
+   .btn-3d-yes — Trade screen CTA (empty state "Browse markets", etc.)
+   Bottom drop shadow gives the 3D pressable feel. Matches design mockup.
+   =========================== */
+.btn-3d-yes {
+  background: var(--yes);
+  color: #fff;
+  font-family: var(--font-satoshi);
+  font-weight: 900;
+  border: 0;
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 0 0 color-mix(in srgb, var(--yes) 55%, #000 45%);
+  transition: transform 80ms, box-shadow 80ms, filter 80ms;
+  cursor: pointer;
+}
+.btn-3d-yes:hover {
+  filter: brightness(1.1);
+  transform: translateY(1px);
+  box-shadow: 0 3px 0 0 color-mix(in srgb, var(--yes) 55%, #000 45%);
+}
+.btn-3d-yes:active {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 0 color-mix(in srgb, var(--yes) 55%, #000 45%);
+}
