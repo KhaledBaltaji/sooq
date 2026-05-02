@@ -2,6 +2,10 @@
 // against surviving tables only, queried via Drizzle. The lean ops rebuild
 // between W10 and W11 will add back a richer dashboard if needed.
 
+// RDS isn't reachable from Vercel's build pool (SG restricted to dev IP).
+// `force-dynamic` keeps this page out of the static-generation pass.
+export const dynamic = "force-dynamic";
+
 import { sql, gte, eq, and } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { speedTrades, speedMarkets, users, deposits, withdrawals } from "@/lib/db/schema";

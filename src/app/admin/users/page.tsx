@@ -1,3 +1,6 @@
+// RDS isn't reachable from Vercel's build pool — render per-request.
+export const dynamic = "force-dynamic";
+
 import { desc } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";

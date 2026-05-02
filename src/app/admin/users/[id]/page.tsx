@@ -2,6 +2,9 @@
 // Removed: agent levels, referral tree, total_wagered, qualified-referral
 // gates, the LMSR `trades` table.
 
+// RDS isn't reachable from Vercel's build pool — render per-request.
+export const dynamic = "force-dynamic";
+
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { eq, desc, ne, sql } from "drizzle-orm";

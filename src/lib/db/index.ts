@@ -31,6 +31,10 @@ function makePool(): Pool {
     // Sane defaults for Vercel serverless; tune in W7.
     max: 10,
     idleTimeoutMillis: 30_000,
+    // 5-second connect cap so build-time SSG attempts fail fast when RDS
+    // isn't reachable from the Vercel build pool, rather than hanging out
+    // until Next's 60-second worker timeout kicks in.
+    connectionTimeoutMillis: 5_000,
     ssl:
       process.env.NODE_ENV === "production" || process.env.DATABASE_URL.includes("rds.amazonaws.com")
         ? { rejectUnauthorized: false }
