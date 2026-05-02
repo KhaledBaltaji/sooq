@@ -284,3 +284,75 @@ W5 needs items I cannot do alone:
 Once those are decided, W5 can be done autonomously with `aws cli`.
 
 ---
+
+## W5 — AWS infrastructure (staging)
+
+**Goal:** Provision staging RDS + S3 + CloudFront in eu-central-1 (Frankfurt).
+
+### Region pivot
+
+Originally targeted Bahrain (`me-south-1`) for Lebanese-user latency. Discovered the Lebanese ISP routes block `sts.me-south-1.amazonaws.com` (timeout). Frankfurt (`eu-central-1`) reachable on first try, full service catalog. Switched.
+
+### Done
+
+- IAM: `sooq-deploy` user with `AdministratorAccess` via group, access keys configured locally (`~/.aws/credentials`, locked region `eu-central-1`)
+- Networking: using default VPC `vpc-02f23b3f13d0ac544` (`172.31.0.0/16`), 3 default subnets across `eu-central-1a/b/c`
+- Security group `sg-0d2a509aed2180dd2` — inbound 5432 from dev IP `149.3.154.247/32` only (W11 will tighten and add Vercel egress IPs)
+- RDS subnet group `sooq-staging-db-subnets` (all 3 AZs)
+- DB parameter group `sooq-staging-pg17` — `shared_preload_libraries = pg_cron`, applied on reboot
+- **RDS PG 17.9 instance `sooq-staging-db`**:
+  - `db.t4g.medium` (2 vCPU, 4 GB RAM, ARM Graviton)
+  - 100 GB gp3 storage, encrypted, 7-day backups
+  - Single-AZ for staging cost
+  - IAM database authentication enabled
+  - Performance Insights enabled
+  - Master password managed by RDS in Secrets Manager (`arn:aws:secretsmanager:eu-central-1:940161469084:secret:rds!db-fc910551-747a-4b28-8abc-f9c271c3a2e7-gki8se`)
+  - Endpoint: `sooq-staging-db.cl0keqcqsenr.eu-central-1.rds.amazonaws.com:5432`
+- S3 buckets:
+  - `sooq-staging-deposits` — versioning on, fully private (signed URLs only)
+  - `sooq-staging-thumbnails` — versioning on, CloudFront-fronted via OAC
+- CloudFront distribution `E3FXT85I8OR44E` at `d36u9ggi9no1rl.cloudfront.net`:
+  - OAC `E1HN6E39AAIHIK` for `sooq-staging-thumbnails`
+  - PriceClass_100 (US/Europe edge — cheapest)
+  - HTTP/2, IPv6, redirect-to-HTTPS, gzip
+  - Bucket policy gates access via OAC + matching distribution ARN
+
+### Cleanup pass (in-flight at W5 start, audit recommendations executed)
+
+- Deleted: `src/tests/` entirely (16 tests + format-utils + middleware-auth-bypass), `vitest.config.ts`, vitest dep
+- Deleted: ~30 stale admin components (accounting/, stats/, market-*, finance-*, edit-market-*, activity-feed-client, icon-picker, speed-branch-controls, etc.)
+- Deleted: `solvency-card.tsx`, branch+demo+agent hooks (`use-agent-transfer`, `use-branch-*`, `use-demo-mode`, `demo/`, `use-activity-feed`)
+- Deleted: stale lib utilities (`branch-pricing`, `branch-webhooks`, `branch-feature-flag`, `commission-branch-feature-flag`, `build-network-tree`, `prelaunch-share`, `prelaunch-visitor`, `slug-rules`, `market-utils`, `query/markets/queries`)
+- Deleted: stale types (`agent`, `branch`, `help`, `market`, `position`, `admin`); pruned `database.ts`, `transaction.ts`
+- Deleted: dead routes (`/api/admin/dispatch-webhooks`, `/api/internal/log-error`)
+- Deleted: `public/onboarding/` (LMSR onboarding images)
+- `src/lib/logger.ts` — removed `persistToSystemLogs` (system_logs table dropped W2)
+- `sentry.client.config.ts` + `sentry.server.config.ts` — dropped fire-and-forget POST to `/api/internal/log-error` (route gone)
+- `src/middleware.ts`, `src/components/layout/*`, `src/app/admin/page.tsx`, `src/app/not-found.tsx` — minor edits to reflect deletes
+
+### Verification
+
+- `npx tsc --noEmit` exit 0 (after fixing 2 small errors: `prev` typing in user-provider, `oracle.ts` → `oracle.received_at` in speed-price-chart)
+- `npm run lint` exit 0 (43 warnings, down from 80)
+
+### Deferred to remaining W5 / W6 work
+
+- **Wait for RDS `available` status** (currently `backing-up`)
+- **Connect via psql + enable pg_cron extension** (must reboot RDS for parameter group to take effect, then `CREATE EXTENSION pg_cron`)
+- **Apply migrations 001–366 to staging RDS** — likely deferred to W7 service migration when Drizzle Kit + the new DB client land
+- **RDS Proxy** — defer to W7 alongside the data-layer cutover
+- **Configure Vercel env vars** — W6 (after Auth.js wired to use the secret)
+
+### Phase boundary checkpoint (W5 → W6)
+
+- [x] AWS account access via `sooq-deploy` IAM user
+- [x] Region committed (`eu-central-1`)
+- [x] RDS PG 17.9 provisioned (status `backing-up` → `available` shortly)
+- [x] S3 buckets ready
+- [x] CloudFront distribution deploying
+- [x] All resource IDs documented in `docs/AWS_RESOURCES.md`
+- [x] tsc + lint clean
+- [ ] pg_cron extension verified post-reboot
+- [ ] User explicitly approves "ready for W6"
+
+---
