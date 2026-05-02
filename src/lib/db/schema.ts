@@ -359,6 +359,56 @@ export const speedSettlements = pgTable(
 );
 
 // ============================================================================
+// Speed mode telemetry (Postgres-side reads/writes; thin app exposure)
+// ============================================================================
+
+export const speedOracleLatest = pgTable("speed_oracle_latest", {
+  asset: text("asset").primaryKey().references(() => speedAssets.id),
+  price: numeric("price", { precision: 24, scale: 8 }).notNull(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
+});
+
+export const speedOracleTicks = pgTable(
+  "speed_oracle_ticks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    asset: text("asset")
+      .notNull()
+      .references(() => speedAssets.id),
+    ts: timestamp("ts", { withTimezone: true }).notNull(),
+    price: numeric("price", { precision: 24, scale: 8 }).notNull(),
+    source: text("source"),
+  },
+  (t) => ({
+    assetTsIdx: index("speed_oracle_ticks_asset_ts_idx").on(t.asset, t.ts),
+  })
+);
+
+// ============================================================================
+// Config (fee rates + admin PIN/preferences)
+// ============================================================================
+
+export const feeConfig = pgTable("fee_config", {
+  feeType: text("fee_type").primaryKey(),
+  rate: numeric("rate", { precision: 18, scale: 8 }).notNull(),
+  description: text("description"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid("updated_by").references(() => users.id),
+});
+
+export const adminConfig = pgTable("admin_config", {
+  adminUserId: uuid("admin_user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  pinHash: text("pin_hash"),
+  pinAttempts: integer("pin_attempts").notNull().default(0),
+  pinLockedUntil: timestamp("pin_locked_until", { withTimezone: true }),
+  lastPinSetAt: timestamp("last_pin_set_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ============================================================================
 // Notifications
 // ============================================================================
 

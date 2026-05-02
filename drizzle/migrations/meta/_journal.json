@@ -8,6 +8,20 @@
       "when": 1777746181837,
       "tag": "0000_plain_turbo",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1777747676766,
+      "tag": "0001_large_xorn",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777750000000,
+      "tag": "0002_speed_rpcs",
+      "breakpoints": true
     }
   ]
 }
