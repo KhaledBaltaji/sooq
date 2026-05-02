@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { createBrowserClient } from "@supabase/ssr";
 import {
   Dialog,
   DialogContent,
@@ -134,13 +133,15 @@ export function AdminPinSetup({ open, onOpenChange, onSuccess }: AdminPinSetupPr
 
     setLoading(true);
     try {
-      const supabase = createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      );
-
-      const { error } = await supabase.rpc("admin_set_pin", { p_pin: pin });
-      if (error) throw error;
+      const res = await fetch("/api/admin/pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "Failed to set PIN");
+      }
 
       toast.success(t("pinConfigured"));
       setPin("");

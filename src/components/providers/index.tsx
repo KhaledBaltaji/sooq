@@ -15,7 +15,6 @@ import { DepositModalProvider } from "@/components/wallet/deposit-modal-provider
 import { WithdrawModalProvider } from "@/components/wallet/withdraw-modal-provider";
 import { QueryProvider } from "@/lib/query/provider";
 import { Toaster } from "@/components/ui/sonner";
-import { RealtimeStatus } from "@/components/ui/realtime-status";
 import type { User } from "@/types/user";
 
 interface ProvidersProps {
@@ -38,9 +37,10 @@ export function Providers({
     <NextIntlClientProvider locale={locale} messages={messages}>
       <ThemeProvider>
         <SessionProvider session={session}>
-          {/* SupabaseProvider stays during W7 hybrid state — many
-              components still call useSupabase() for non-auth queries.
-              They get cut over to Drizzle progressively. */}
+          {/* SupabaseProvider lingers as a transitional shim for the
+              remaining `useSupabase()` callsites that haven't been cut
+              over to Drizzle/API routes yet. Tracked for next-session
+              cleanup. */}
           <SupabaseProvider>
             <UserProvider initialProfile={initialProfile}>
               <QueryProvider>
@@ -48,7 +48,6 @@ export function Providers({
                   <DepositModalProvider>
                     <WithdrawModalProvider>
                       {children}
-                      <RealtimeStatus />
                       <Toaster
                         position={isRtl ? "top-left" : "top-right"}
                         dir={isRtl ? "rtl" : "ltr"}

@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useSupabase } from "@/components/providers/supabase-provider";
 import { toast } from "sonner";
 import { ADMIN_VIEWS } from "@/lib/admin-views";
 
@@ -16,7 +15,6 @@ interface AdminRoleEditorProps {
 
 export function AdminRoleEditor({ userId, displayName, isAdmin, allowedViews, onClose }: AdminRoleEditorProps) {
   const router = useRouter();
-  const supabase = useSupabase();
   const [saving, setSaving] = useState(false);
   const [adminEnabled, setAdminEnabled] = useState(isAdmin);
   const [superAdmin, setSuperAdmin] = useState(!allowedViews || allowedViews.length === 0);
@@ -39,15 +37,22 @@ export function AdminRoleEditor({ userId, displayName, isAdmin, allowedViews, on
       return;
     }
 
-    const { error } = await supabase.rpc("admin_set_admin_role", {
-      p_user_id: userId,
-      p_is_admin: adminEnabled,
-      p_allowed_views: views,
-    });
+    try {
+      const res = await fetch("/api/admin/users/role", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          is_admin: adminEnabled,
+          allowed_views: views,
+        }),
+      });
 
-    if (error) {
-      toast.error("Failed to update role", { description: error.message });
-    } else {
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "Failed to update role");
+      }
+
       toast.success(
         !adminEnabled
           ? "Admin access revoked"
@@ -57,8 +62,13 @@ export function AdminRoleEditor({ userId, displayName, isAdmin, allowedViews, on
       );
       router.refresh();
       onClose?.();
+    } catch (err) {
+      toast.error("Failed to update role", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   return (

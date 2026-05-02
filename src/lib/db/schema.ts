@@ -245,6 +245,25 @@ export const withdrawals = pgTable(
   }
 );
 
+// Crypto deposit addresses provisioned by 3pay. One row per user; addresses
+// are stable for the lifetime of the user (3pay keeps mapping clientId →
+// wallets server-side, so re-calls are idempotent — but caching here saves
+// the round-trip on every wallet view).
+export const userWallets = pgTable(
+  "user_wallets",
+  {
+    userId: uuid("user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull().default("3pay"),
+    providerUserId: text("provider_user_id"),
+    walletAddressTrc20: text("wallet_address_trc20"),
+    walletAddressErc20: text("wallet_address_erc20"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  }
+);
+
 // ============================================================================
 // Speed mode
 // ============================================================================
@@ -445,6 +464,7 @@ export type Transaction = typeof transactions.$inferSelect;
 export type NewTransaction = typeof transactions.$inferInsert;
 export type Deposit = typeof deposits.$inferSelect;
 export type Withdrawal = typeof withdrawals.$inferSelect;
+export type UserWallet = typeof userWallets.$inferSelect;
 export type SpeedMarket = typeof speedMarkets.$inferSelect;
 export type SpeedPosition = typeof speedPositions.$inferSelect;
 export type NewSpeedPosition = typeof speedPositions.$inferInsert;

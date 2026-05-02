@@ -1,21 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
+import { sql } from "drizzle-orm";
+import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { sendSlackAlert } from "@/lib/slack";
 
-// Use service role for webhook (not user-facing)
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Whish webhook → process_deposit RPC.
+// Service-role mode: no runAs(), no `app.user_id` GUC, RPC's auth gate
+// allows the call because the GUC is unset.
+//
+// Expected payload (set on the Whish merchant side):
+//   { user_id, amount, currency, tx_ref, status }
+
+interface WhishPayload {
+  user_id: string;
+  amount: number;
+  currency?: string;
+  tx_ref: string;
+  status: string;
+}
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.text();
     const signature = request.headers.get("x-whish-signature");
 
-    // HMAC verification
     const hmacSecret = process.env.WHISH_WEBHOOK_SECRET;
     if (!hmacSecret) {
       logger.error("Whish webhook secret not configured — rejecting request", {
@@ -43,42 +52,69 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
 
-    const payload = JSON.parse(body);
-
-    // Expected payload: { user_id, amount, currency, tx_ref, status }
+    const payload = JSON.parse(body) as WhishPayload;
     const { user_id, amount, currency, tx_ref, status } = payload;
 
     if (status !== "confirmed") {
       return NextResponse.json({ status: "ignored" });
     }
 
-    // Call process_deposit via service role (idempotent on provider_ref)
-    const { data, error } = await supabase.rpc("process_deposit", {
-      p_user_id: user_id,
-      p_amount: amount,
-      p_currency: currency || "LBP",
-      p_provider_ref: tx_ref,
-      p_provider: "whish",
-    });
+    if (!user_id || !tx_ref || !amount) {
+      logger.error("Whish webhook: missing required fields", {
+        source: "webhook/whish",
+        hasUserId: Boolean(user_id),
+        hasTxRef: Boolean(tx_ref),
+        hasAmount: Boolean(amount),
+      });
+      return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+    }
 
-    if (error) {
+    try {
+      const result = await db.execute<{
+        result: { status?: string; deposit_id?: string };
+      }>(sql`SELECT (process_deposit(
+        ${user_id}::uuid,
+        ${amount}::numeric,
+        ${currency || "LBP"}::text,
+        ${tx_ref}::text,
+        'whish'::text
+      ))::jsonb AS result`);
+
+      const data = (result.rows[0] as unknown as { result: { status?: string; deposit_id?: string } } | undefined)?.result;
+
+      if (data?.status === "already_processed") {
+        logger.info("Whish webhook duplicate delivery (idempotent)", {
+          source: "webhook/whish",
+          userId: user_id,
+          txRef: tx_ref,
+        });
+        return NextResponse.json({ success: true, duplicate: true, data });
+      }
+
+      logger.info("Whish deposit processed", {
+        source: "webhook/whish",
+        userId: user_id,
+        amount,
+        txRef: tx_ref,
+      });
+      return NextResponse.json({ success: true, data });
+    } catch (rpcErr) {
+      const errorMessage = rpcErr instanceof Error ? rpcErr.message : String(rpcErr);
       logger.error("Whish deposit processing failed", {
         source: "webhook/whish",
         userId: user_id,
         amount,
         currency: currency || "LBP",
         txRef: tx_ref,
-        errorMessage: error.message,
-        errorCode: error.code,
+        errorMessage,
       });
       await sendSlackAlert([
-        `Whish deposit FAILED: user=${user_id}, amount=${amount} ${currency || "LBP"}, txRef=${tx_ref}, error=${error.message}`,
+        `Whish deposit FAILED: user=${user_id}, amount=${amount} ${
+          currency || "LBP"
+        }, txRef=${tx_ref}, error=${errorMessage}`,
       ]);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: errorMessage }, { status: 500 });
     }
-
-    logger.info("Whish deposit processed", { source: "webhook/whish", userId: user_id, amount, txRef: tx_ref });
-    return NextResponse.json({ success: true, data });
   } catch (err) {
     logger.error("Whish webhook unhandled error", { source: "webhook/whish" }, err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });

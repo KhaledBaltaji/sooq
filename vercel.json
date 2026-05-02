@@ -1,16 +1,3 @@
 {
-  "crons": [
-    {
-      "path": "/api/cron/speed-resolve",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/cron/speed-roll",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/cron/speed-partitions",
-      "schedule": "0 0 * * 0"
-    }
-  ]
+  "$schema": "https://openapi.vercel.sh/vercel.json"
 }

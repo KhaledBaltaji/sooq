@@ -1,11 +1,10 @@
 "use client";
 
-// W3 strip: removed agent-activation override (toggle_agent_activation_override
-// RPC dropped, agent_activated column dropped). Only freeze/unfreeze remains.
+// W3 + W7: agent-activation gone, supabase.rpc replaced by /api/admin
+// fetch wrapper.
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useSupabase } from "@/components/providers/supabase-provider";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
 
@@ -16,24 +15,32 @@ interface UserActionsProps {
 
 export function UserActions({ userId, isFrozen }: UserActionsProps) {
   const router = useRouter();
-  const supabase = useSupabase();
   const t = useTranslations("toast");
   const [toggling, setToggling] = useState(false);
 
   const handleToggleFreeze = async () => {
     setToggling(true);
-    const { error } = await supabase.rpc("toggle_user_freeze", {
-      p_user_id: userId,
-      p_frozen: !isFrozen,
-    });
+    try {
+      const res = await fetch("/api/admin/users/freeze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, frozen: !isFrozen }),
+      });
 
-    if (error) {
-      toast.error(t("failedToUpdateUser"), { description: error.message });
-    } else {
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "Failed to update user");
+      }
+
       toast.success(isFrozen ? t("userUnfrozen") : t("userFrozen"));
       router.refresh();
+    } catch (err) {
+      toast.error(t("failedToUpdateUser"), {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setToggling(false);
     }
-    setToggling(false);
   };
 
   return (
@@ -51,9 +58,12 @@ export function UserActions({ userId, isFrozen }: UserActionsProps) {
           {isFrozen ? "gpp_bad" : "shield"}
         </span>
         {isFrozen
-          ? toggling ? "Unfreezing..." : "Unfreeze Account"
-          : toggling ? "Freezing..." : "Freeze Account"
-        }
+          ? toggling
+            ? "Unfreezing..."
+            : "Unfreeze Account"
+          : toggling
+            ? "Freezing..."
+            : "Freeze Account"}
       </button>
     </div>
   );

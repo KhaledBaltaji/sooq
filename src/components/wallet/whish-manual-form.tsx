@@ -2,7 +2,6 @@
 
 import { useState, useRef } from "react";
 import { useTranslations } from "next-intl";
-import { useSupabase } from "@/components/providers/supabase-provider";
 import { useSession } from "@/lib/auth/hooks";
 import { Button } from "@/components/ui/button";
 import { WHISH_DEPOSIT_NUMBERS } from "@/lib/constants";
@@ -31,7 +30,6 @@ export function WhishManualForm({
   onBack,
   compact = false,
 }: WhishManualFormProps) {
-  const supabase = useSupabase();
   const { user } = useSession();
   const t = useTranslations("wallet");
   const tc = useTranslations("common");
@@ -71,51 +69,48 @@ export function WhishManualForm({
     if (!canSubmit || !user || !proofFile) return;
 
     try {
-      let proofPath: string | null = null;
+      // Step 1: Upload proof image directly to S3 via presigned PUT URL.
+      setStatus("uploading");
+      const ext = proofFile.name.split(".").pop()?.toLowerCase() || "jpg";
+      const normalizedType =
+        proofFile.type === "image/jpg" ? "image/jpeg" : proofFile.type;
 
-      // Step 1: Upload proof image (if provided)
-      if (proofFile) {
-        setStatus("uploading");
-        const ext = proofFile.name.split(".").pop()?.toLowerCase() || "jpg";
-        proofPath = `${user.id}/${crypto.randomUUID()}.${ext}`;
+      const urlRes = await fetch("/api/storage/upload-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content_type: normalizedType, ext }),
+      });
+      if (!urlRes.ok) {
+        const data = (await urlRes.json().catch(() => ({}))) as { error?: string };
+        console.error("[whish-manual] presign failed", data);
+        toast.error(tt("receiptUploadFailed"));
+        setStatus("idle");
+        return;
+      }
+      const { url, key } = (await urlRes.json()) as { url: string; key: string };
 
-        // Normalize content type. Storage bucket allowlist is strictly
-        // ['image/jpeg', 'image/png'] — some browsers report 'image/jpg'
-        // for JPEG files which would silently fail upload.
-        const normalizedType = proofFile.type === "image/jpg"
-          ? "image/jpeg"
-          : proofFile.type;
-
-        const { error: uploadError } = await supabase.storage
-          .from("deposit-proofs")
-          .upload(proofPath, proofFile, {
-            contentType: normalizedType,
-            upsert: false,
-          });
-
-        if (uploadError) {
-          // Surface the real error to the console so we can debug Storage
-          // RLS / bucket / size issues that the toast doesn't show.
-          console.error("[whish-manual] proof upload failed", uploadError);
-          toast.error(tt("receiptUploadFailed"));
-          setStatus("idle");
-          return;
-        }
+      const putRes = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": normalizedType },
+        body: proofFile,
+      });
+      if (!putRes.ok) {
+        console.error("[whish-manual] S3 PUT failed", putRes.status);
+        toast.error(tt("receiptUploadFailed"));
+        setStatus("idle");
+        return;
       }
 
-      // Step 2: Submit manual deposit RPC
+      // Step 2: Submit manual deposit row.
       setStatus("submitting");
-      const { error: rpcError } = await supabase.rpc(
-        "submit_manual_deposit" as any,
-        {
-          p_amount: 0,
-          p_whish_number: null,
-          p_proof_image_url: proofPath,
-        }
-      );
-
-      if (rpcError) {
-        console.error("[whish-manual] submit_manual_deposit failed", rpcError);
+      const submitRes = await fetch("/api/deposit/manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proof_key: key }),
+      });
+      if (!submitRes.ok) {
+        const data = (await submitRes.json().catch(() => ({}))) as { error?: string };
+        console.error("[whish-manual] submit failed", data);
         toast.error(tt("depositSubmitFailed"));
         setStatus("idle");
         return;

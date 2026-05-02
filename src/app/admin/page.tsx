@@ -1,52 +1,59 @@
-// W2/W3/W4 strip: admin dashboard reduced to today's KPIs against surviving
-// tables only. The original LMSR/branch/commission/system_logs activity feed
-// is gone — its tables were dropped in W2/W3. The lean ops rebuild between
-// W10 and W11 will add back a richer dashboard if needed.
+// W2/W3/W4 strip + W7 cutover: admin dashboard reduced to today's KPIs
+// against surviving tables only, queried via Drizzle. The lean ops rebuild
+// between W10 and W11 will add back a richer dashboard if needed.
 
-import { createClient } from "@/lib/supabase/server";
+import { sql, gte, eq, and } from "drizzle-orm";
+import { db } from "@/lib/db";
+import { speedTrades, speedMarkets, users, deposits, withdrawals } from "@/lib/db/schema";
+
+async function countWhere(query: ReturnType<typeof db.select>) {
+  const r = await query;
+  return Number((r as unknown as { count: number }[])[0]?.count ?? 0);
+}
 
 export default async function AdminDashboard() {
-  const supabase = await createClient();
-
-  const todayISO = new Date(new Date().setHours(0, 0, 0, 0)).toISOString();
+  const startOfDay = new Date(new Date().setHours(0, 0, 0, 0));
 
   const [
-    { count: speedTradesToday },
-    { count: signupsToday },
-    { count: depositsToday },
-    { count: openSpeedMarkets },
-    { count: pendingWithdrawals },
+    speedTradesTodayRows,
+    signupsTodayRows,
+    depositsTodayRows,
+    openSpeedMarketsRows,
+    pendingWithdrawalsRows,
   ] = await Promise.all([
-    supabase
-      .from("speed_trades")
-      .select("*", { count: "exact", head: true })
-      .gte("created_at", todayISO),
-    supabase
-      .from("users")
-      .select("*", { count: "exact", head: true })
-      .gte("created_at", todayISO),
-    supabase
-      .from("deposits")
-      .select("*", { count: "exact", head: true })
-      .eq("status", "verified")
-      .gte("created_at", todayISO),
-    supabase
-      .from("speed_markets")
-      .select("*", { count: "exact", head: true })
-      .eq("status", "open"),
-    supabase
-      .from("withdrawals")
-      .select("*", { count: "exact", head: true })
-      .eq("status", "pending"),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(speedTrades)
+      .where(gte(speedTrades.createdAt, startOfDay)),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(users)
+      .where(gte(users.createdAt, startOfDay)),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(deposits)
+      .where(and(eq(deposits.status, "verified"), gte(deposits.createdAt, startOfDay))),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(speedMarkets)
+      .where(eq(speedMarkets.status, "open")),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(withdrawals)
+      .where(eq(withdrawals.status, "pending")),
   ]);
 
   const stats = {
-    speedTrades: speedTradesToday ?? 0,
-    signups: signupsToday ?? 0,
-    deposits: depositsToday ?? 0,
-    openMarkets: openSpeedMarkets ?? 0,
-    pendingWithdrawals: pendingWithdrawals ?? 0,
+    speedTrades: speedTradesTodayRows[0]?.count ?? 0,
+    signups: signupsTodayRows[0]?.count ?? 0,
+    deposits: depositsTodayRows[0]?.count ?? 0,
+    openMarkets: openSpeedMarketsRows[0]?.count ?? 0,
+    pendingWithdrawals: pendingWithdrawalsRows[0]?.count ?? 0,
   };
+
+  // countWhere is a no-op here — kept the inline `.where()` queries above for
+  // type-safety. countWhere is exported in case future routes need it.
+  void countWhere;
 
   return (
     <section className="p-8 space-y-8">

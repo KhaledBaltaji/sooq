@@ -7,25 +7,19 @@ import { formatCurrency } from "@/lib/utils";
 
 const STATUSES = ["All", "Active", "Frozen", "Admin"] as const;
 
-const LEVEL_STYLES: Record<number, string> = {
-  1: "bg-[#e8eff3] text-[#566166]",
-  2: "bg-[var(--yes)]/10 text-[var(--yes)]",
-  3: "bg-[var(--warning)]/10 text-[var(--warning)]",
-  4: "bg-[var(--success)]/10 text-[var(--success)]",
-};
+// W3 strip: agent levels + referrals are gone. UsersTable now shows only
+// the v1-relevant columns.
 
 interface UserRow {
   id: string;
   display_name: string | null;
   phone: string | null;
   balance_usd: number;
-  agent_level: number;
-  direct_referral_count: number;
   is_frozen: boolean;
   is_admin: boolean;
 }
 
-type SortKey = "balance_usd" | "direct_referral_count";
+type SortKey = "balance_usd";
 type SortDir = "asc" | "desc";
 
 export function UsersTable({ users }: { users: UserRow[] }) {
@@ -141,15 +135,13 @@ export function UsersTable({ users }: { users: UserRow[] }) {
                 <th className="px-6 py-4 text-[11px] font-bold text-[#566166] uppercase tracking-widest">Name</th>
                 <th className="px-6 py-4 text-[11px] font-bold text-[#566166] uppercase tracking-widest">Phone</th>
                 <SortHeader label="Balance" column="balance_usd" />
-                <th className="px-6 py-4 text-[11px] font-bold text-[#566166] uppercase tracking-widest">Level</th>
-                <SortHeader label="Referrals" column="direct_referral_count" />
                 <th className="px-6 py-4 text-[11px] font-bold text-[#566166] uppercase tracking-widest">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#a9b4b9]/10">
               {paginated.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-16 text-center">
+                  <td colSpan={4} className="px-6 py-16 text-center">
                     <span className="material-symbols-outlined text-4xl text-[#a9b4b9] mb-3 block">group</span>
                     <p className="text-sm font-medium text-[#566166]">No users found</p>
                     <p className="text-xs text-[#a9b4b9] mt-1">Try adjusting your search or status filter</p>
@@ -157,8 +149,6 @@ export function UsersTable({ users }: { users: UserRow[] }) {
                 </tr>
               ) : (
                 paginated.map((u, i) => {
-                  const levelStyle = LEVEL_STYLES[u.agent_level] || LEVEL_STYLES[1];
-
                   return (
                     <tr
                       key={u.id}
@@ -187,14 +177,6 @@ export function UsersTable({ users }: { users: UserRow[] }) {
                       </td>
                       <td className="px-6 py-5 text-right text-sm font-medium tabular-nums">
                         {formatCurrency(u.balance_usd)}
-                      </td>
-                      <td className="px-6 py-5">
-                        <span className={`text-[10px] font-bold px-2 py-1 rounded uppercase ${levelStyle}`}>
-                          L{u.agent_level}
-                        </span>
-                      </td>
-                      <td className="px-6 py-5 text-right text-sm text-[#566166] tabular-nums">
-                        {u.direct_referral_count}
                       </td>
                       <td className="px-6 py-5">
                         {u.is_frozen ? (

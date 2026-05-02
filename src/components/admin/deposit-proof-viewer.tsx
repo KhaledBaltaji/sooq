@@ -1,11 +1,12 @@
 "use client";
 
+// W7 cutover: signed URLs come from /api/storage/view-url backed by S3.
+
 import { useState, useEffect } from "react";
-import { createBrowserClient } from "@supabase/ssr";
 import { X, Loader2, ImageIcon } from "lucide-react";
 
 interface DepositProofViewerProps {
-  /** Storage path, e.g. "{userId}/{uuid}.jpg" */
+  /** S3 object key, e.g. "{userId}/{uuid}.jpg" */
   path: string;
 }
 
@@ -19,28 +20,22 @@ export function DepositProofViewer({ path }: DepositProofViewerProps) {
     async function fetchUrl() {
       setLoading(true);
       try {
-        const supabase = createBrowserClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-        );
-        const { data, error } = await supabase.storage
-          .from("deposit-proofs")
-          .createSignedUrl(path, 3600);
-
-        if (!cancelled && data?.signedUrl) {
-          setSignedUrl(data.signedUrl);
+        const res = await fetch(`/api/storage/view-url?key=${encodeURIComponent(path)}`);
+        if (!res.ok) throw new Error("Failed to load receipt");
+        const data = (await res.json()) as { url: string };
+        if (!cancelled && data.url) {
+          setSignedUrl(data.url);
         }
-        if (error) {
-          console.error("Failed to get signed URL:", error);
-        }
-      } catch {
-        // Silently fail — admin will see placeholder
+      } catch (err) {
+        console.error("Failed to get signed URL:", err);
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
     fetchUrl();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [path]);
 
   if (loading) {
@@ -53,7 +48,10 @@ export function DepositProofViewer({ path }: DepositProofViewerProps) {
 
   if (!signedUrl) {
     return (
-      <div className="w-10 h-10 rounded-lg bg-[#f0f4f7] flex items-center justify-center" title="Receipt unavailable">
+      <div
+        className="w-10 h-10 rounded-lg bg-[#f0f4f7] flex items-center justify-center"
+        title="Receipt unavailable"
+      >
         <ImageIcon className="w-4 h-4 text-[#a9b4b9]" />
       </div>
     );
@@ -61,20 +59,14 @@ export function DepositProofViewer({ path }: DepositProofViewerProps) {
 
   return (
     <>
-      {/* Thumbnail */}
       <button
         onClick={() => setLightbox(true)}
         className="w-10 h-10 rounded-lg overflow-hidden border border-[#a9b4b9]/20 hover:border-[var(--yes)]/50 transition-all flex-shrink-0"
         title="View receipt"
       >
-        <img
-          src={signedUrl}
-          alt="Receipt"
-          className="w-full h-full object-cover"
-        />
+        <img src={signedUrl} alt="Receipt" className="w-full h-full object-cover" />
       </button>
 
-      {/* Lightbox */}
       {lightbox && (
         <div
           className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"

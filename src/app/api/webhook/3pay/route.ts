@@ -1,22 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
+import { sql } from "drizzle-orm";
+import { db } from "@/lib/db";
+import { deposits } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
 import { sendSlackAlert } from "@/lib/slack";
-import type { ThreePayWebhookPayload } from "@/lib/3pay";
+import type { ThreePayWebhookPayload } from "@/lib/3pay/types";
 
-// Service role client for webhook processing (not user-facing)
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// 3pay webhook → process_deposit RPC.
+//
+// Flow:
+//   1. HMAC-SHA256 verify signature with THREEPAY_WEBHOOK_SECRET.
+//   2. Filter: only confirmed deposits (ignore withdrawal/payout/pending).
+//   3. Resolve user via `clientId` field — this is the userId we sent to
+//      3pay when generating their wallet (echoed back on every webhook).
+//   4. Idempotent process_deposit RPC. Re-deliveries return
+//      { status: 'already_processed' }.
+//
+// Service-role mode: this route does NOT call runAs(), so `app.user_id()`
+// inside process_deposit returns NULL — that's our trusted-caller signal.
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.text();
     const signature = request.headers.get("X-Webhook-Signature");
 
-    // HMAC-SHA256 verification (3pay sends "sha256=<hex>" in X-Webhook-Signature)
     const hmacSecret = process.env.THREEPAY_WEBHOOK_SECRET;
     if (!hmacSecret) {
       logger.error("3pay webhook secret not configured — rejecting request", {
@@ -46,14 +54,12 @@ export async function POST(request: NextRequest) {
 
     const envelope: ThreePayWebhookPayload = JSON.parse(body);
 
-    // Log raw payload for debugging during initial integration
     logger.info("3pay webhook received", {
       source: "webhook/3pay",
       success: envelope.success,
       message: envelope.message,
     });
 
-    // Validate envelope structure
     if (!envelope.data) {
       logger.error("3pay webhook: missing data field in payload", {
         source: "webhook/3pay",
@@ -63,109 +69,94 @@ export async function POST(request: NextRequest) {
 
     const payload = envelope.data;
 
-    // Only process deposit webhooks (ignore withdrawal/payout)
     if (payload.type !== "deposit") {
       return NextResponse.json({ status: "ignored", reason: `type: ${payload.type}` });
     }
 
-    // Only process confirmed deposits
     if (payload.status !== "confirmed") {
       return NextResponse.json({ status: "ignored", reason: `status: ${payload.status}` });
     }
 
-    // Resolve the user by walletAddress lookup in user_wallets
-    let userId: string | null = null;
-
-    if (payload.walletAddress) {
-      const { data: wallet } = await supabase
-        .from("user_wallets")
-        .select("user_id")
-        .or(
-          `wallet_address_trc20.eq.${payload.walletAddress},wallet_address_erc20.eq.${payload.walletAddress}`
-        )
-        .single();
-
-      if (wallet) {
-        userId = wallet.user_id;
-      }
-    }
+    const userId = payload.clientId;
 
     if (!userId) {
-      logger.error("3pay webhook: could not resolve user", {
+      logger.error("3pay webhook: no clientId in payload", {
         source: "webhook/3pay",
         transactionId: payload.transactionId,
         walletAddress: payload.walletAddress,
       });
-      // Record orphaned deposit for admin reconciliation
-      await supabase.from("deposits").insert({
-        provider: "3pay",
-        provider_ref: payload.transactionId,
-        amount: payload.amount,
-        currency: payload.currencyType?.split("-")[0] || "USDT",
-        status: "pending_review",
-        metadata: { walletAddress: payload.walletAddress, orphaned: true },
-      }).then(() => {}, () => {}); // best-effort insert
+      // Orphan record so ops can reconcile manually. providerRef must still
+      // be unique — if 3pay redelivers, the unique constraint stops a dupe.
+      await db
+        .insert(deposits)
+        .values({
+          userId: "00000000-0000-0000-0000-000000000000",
+          provider: "3pay",
+          providerRef: payload.transactionId,
+          amount: String(payload.amount),
+          currency: payload.currencyType?.split("-")[0] || "USDT",
+          status: "pending",
+          rawPayload: payload as unknown as Record<string, unknown>,
+        })
+        .onConflictDoNothing();
       await sendSlackAlert([
-        `3pay deposit: could not resolve user. txn=${payload.transactionId}, wallet=${payload.walletAddress}, amount=$${payload.amount}. Recorded as pending_review.`,
+        `3pay deposit: missing clientId. txn=${payload.transactionId}, wallet=${payload.walletAddress}, amount=$${payload.amount}. Recorded as pending.`,
       ]);
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
+      return NextResponse.json({ error: "User not identified" }, { status: 404 });
     }
 
-    // Determine currency from currencyType (e.g. "USDT-TRC20" → "USDT")
     const currency = payload.currencyType
       ? payload.currencyType.split("-")[0]
       : "USDT";
 
-    // Call process_deposit (idempotent via provider_ref = transactionId)
-    const { data, error } = await supabase.rpc("process_deposit", {
-      p_user_id: userId,
-      p_amount: payload.amount,
-      p_currency: currency,
-      p_provider_ref: payload.transactionId,
-      p_provider: "3pay",
-    });
+    try {
+      const result = await db.execute<{
+        deposit_id: string;
+        amount: number;
+        new_balance: number;
+        status: string;
+      }>(sql`SELECT (process_deposit(
+        ${userId}::uuid,
+        ${payload.amount}::numeric,
+        ${currency}::text,
+        ${payload.transactionId}::text,
+        '3pay'::text
+      ))::jsonb AS result`);
 
-    if (error) {
+      const data = (result.rows[0] as unknown as { result: { status?: string; deposit_id?: string } } | undefined)?.result;
+
+      if (data?.status === "already_processed") {
+        logger.info("3pay webhook duplicate delivery (idempotent)", {
+          source: "webhook/3pay",
+          userId,
+          transactionId: payload.transactionId,
+        });
+        return NextResponse.json({ success: true, duplicate: true, data });
+      }
+
+      logger.info("3pay deposit processed", {
+        source: "webhook/3pay",
+        userId,
+        amount: payload.amount,
+        transactionId: payload.transactionId,
+        depositId: data?.deposit_id,
+      });
+
+      return NextResponse.json({ success: true, data });
+    } catch (rpcErr) {
+      const errorMessage = rpcErr instanceof Error ? rpcErr.message : String(rpcErr);
       logger.error("3pay deposit processing failed", {
         source: "webhook/3pay",
         userId,
         amount: payload.amount,
         transactionId: payload.transactionId,
-        errorMessage: error.message,
-        errorCode: error.code,
+        errorMessage,
       });
       await sendSlackAlert([
-        `3pay deposit FAILED: user=${userId}, amount=$${payload.amount}, txn=${payload.transactionId}, error=${error.message}`,
+        `3pay deposit FAILED: user=${userId}, amount=$${payload.amount}, txn=${payload.transactionId}, error=${errorMessage}`,
       ]);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: errorMessage }, { status: 500 });
     }
-
-    // process_deposit is idempotent: if the same provider_ref arrives twice,
-    // the RPC returns { status: 'already_processed' } instead of double-crediting.
-    // Previously we logged success identically in both cases, which meant
-    // duplicate webhook deliveries looked like a genuine second confirmation
-    // in logs + could trigger downstream side-effects (realtime notify, etc).
-    // Now we surface the distinction: still return 200 (3pay stops retrying)
-    // but log as duplicate and skip the "processed" log so dashboards stay clean.
-    const rpcStatus = (data as { status?: string } | null)?.status;
-    if (rpcStatus === "already_processed") {
-      logger.info("3pay webhook duplicate delivery (idempotent)", {
-        source: "webhook/3pay",
-        userId,
-        transactionId: payload.transactionId,
-      });
-      return NextResponse.json({ success: true, duplicate: true, data });
-    }
-
-    logger.info("3pay deposit processed", {
-      source: "webhook/3pay",
-      userId,
-      amount: payload.amount,
-      transactionId: payload.transactionId,
-      depositId: (data as { deposit_id?: string } | null)?.deposit_id,
-    });
-
-    return NextResponse.json({ success: true, data });
   } catch (err) {
     logger.error("3pay webhook unhandled error", { source: "webhook/3pay" }, err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });

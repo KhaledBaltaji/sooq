@@ -22,6 +22,34 @@
       "when": 1777750000000,
       "tag": "0002_speed_rpcs",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1777800000000,
+      "tag": "0003_money_rpcs",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1777801000000,
+      "tag": "0004_speed_cron",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1777802000000,
+      "tag": "0005_user_wallets",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1777803000000,
+      "tag": "0006_admin_rpcs",
+      "breakpoints": true
     }
   ]
 }

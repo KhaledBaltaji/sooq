@@ -1,17 +1,30 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { sql } from "drizzle-orm";
+import { runAs } from "@/lib/db/run-as";
+import { requireAdminApi, authErrorToResponse } from "@/lib/auth/api-guards";
 import { sendSlackAlert } from "@/lib/slack";
 import { logger } from "@/lib/logger";
 
-// Wraps admin_mark_withdrawal_sent RPC. Called after ops has manually sent
-// the money externally (Whish app, bank wire, or 3pay payout). Records the
-// external reference id (tx hash / whish id / wire ref) and transitions
-// approved → sent. PIN-gated. Sends Slack confirmation so the team knows
-// the transfer cycle is closed.
+// admin_mark_withdrawal_sent RPC wrapper. Records the external reference
+// (whish tx id, blockchain tx hash, bank wire ref) and transitions the
+// withdrawal: approved → sent. PIN-gated server-side.
+
+interface MarkSentBody {
+  withdrawal_id: string;
+  external_reference_id: string;
+  pin: string;
+}
+
+interface MarkSentResult {
+  status: string;
+  withdrawal_id: string;
+  external_reference: string;
+}
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    const admin = await requireAdminApi();
+    const body = (await req.json()) as MarkSentBody;
     const { withdrawal_id, external_reference_id, pin } = body;
 
     if (!withdrawal_id || !external_reference_id || !pin) {
@@ -21,23 +34,21 @@ export async function POST(req: Request) {
       );
     }
 
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const data = await runAs(admin.id, async (tx) => {
+      const r = await tx.execute<{ result: MarkSentResult }>(sql`
+        SELECT (admin_mark_withdrawal_sent(
+          ${withdrawal_id}::uuid,
+          ${external_reference_id}::text,
+          ${pin}::text
+        ))::jsonb AS result
+      `);
+      return (r.rows[0] as { result: MarkSentResult } | undefined)?.result ?? null;
+    });
+
+    if (!data) {
+      return NextResponse.json({ error: "RPC returned no result" }, { status: 500 });
     }
 
-    const { data, error } = await supabase.rpc("admin_mark_withdrawal_sent" as never, {
-      p_withdrawal_id: withdrawal_id,
-      p_external_reference_id: external_reference_id,
-      p_pin: pin,
-    } as never);
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-
-    // Fire-and-forget Slack confirmation
     const msg = `Withdrawal marked sent — ref: \`${external_reference_id}\` — withdrawal ID: ${withdrawal_id}`;
     sendSlackAlert([msg]).catch((err) =>
       logger.warn("Slack alert failed on withdrawal mark-sent", {
@@ -48,10 +59,15 @@ export async function POST(req: Request) {
 
     return NextResponse.json(data);
   } catch (err) {
-    logger.error("Withdrawal mark-sent failed", { source: "api/admin/withdrawal/mark-sent" }, err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Internal error" },
-      { status: 500 }
+    const authResp = authErrorToResponse(err);
+    if (authResp) return authResp;
+
+    const errorMessage = err instanceof Error ? err.message : "Internal error";
+    logger.error(
+      "Withdrawal mark-sent failed",
+      { source: "api/admin/withdrawal/mark-sent", errorMessage },
+      err
     );
+    return NextResponse.json({ error: errorMessage }, { status: 400 });
   }
 }

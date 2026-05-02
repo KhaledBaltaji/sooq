@@ -1,5 +1,4 @@
 import type { Viewport } from "next";
-import Script from "next/script";
 import { getLocale, getMessages, getTranslations } from "next-intl/server";
 import { auth } from "@/auth";
 import { db } from "@/lib/db";
@@ -100,16 +99,14 @@ export default async function RootLayout({
       data-theme="light"
       suppressHydrationWarning
     >
-      <head>
-        {/* Theme bootstrap — static file in /public, loaded with
-            beforeInteractive so it sets data-theme before first paint
-            (no FOUC). React 19 / Next 16 rejects inline <script> children
-            in component trees as a hard error; using `src=` bypasses that. */}
-        <Script src="/theme-bootstrap.js" strategy="beforeInteractive" />
-      </head>
       <body
         className={`${satoshi.variable} ${dmSans.variable} ${notoSansArabic.variable} ${geist.variable} ${geistMono.variable} antialiased`}
       >
+        {/* Theme bootstrap — static file in /public. React 19 treats
+            <script src=...> as a hoistable resource and lifts it to
+            <head> automatically. next/script + beforeInteractive trips
+            React 19's "no <script> in component tree" error in Next 16. */}
+        <script src="/theme-bootstrap.js" async={false} />
         <a
           href="#main"
           className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[200] focus:px-4 focus:py-2 focus:bg-yes focus:text-white focus:rounded-lg focus:text-sm focus:font-medium"

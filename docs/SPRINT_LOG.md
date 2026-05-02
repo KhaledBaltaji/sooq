@@ -462,3 +462,77 @@ This is a **hybrid state** — Auth.js sessions work alongside the existing Supa
 W7 starts with: apply migrations to RDS + replace `supabase-js` data calls with Drizzle queries across the surviving codebase.
 
 ---
+
+## W7 — Service migration (in progress)
+
+**Goal:** Cut the data + storage layer from Supabase to RDS/S3, ship the slim API surface, prove auth still works on staging.
+
+### Done
+
+**Database:**
+- Drizzle migrations applied to RDS staging (in addition to 0000–0002 from W6 boundary):
+  - `0003_money_rpcs.sql` — `process_deposit` / `process_withdrawal` / `admin_review_withdrawal` / `admin_mark_withdrawal_sent` adapted to slim Sooq schema (no fee/net_amount columns, no wagering, no 24h delay; instant withdrawal hold pattern preserved)
+  - `0004_speed_cron.sql` — `pg_cron` extension created post-reboot; `speed_resolve_expired_markets`, `speed_roll_markets`, `_next_clean_boundary` ported and scheduled at **5-second cadence**. BTC seeded into `speed_assets`. `fee_config` rows for `speed_markets_enabled` (master kill switch) and `speed_oracle_stale_seconds` seeded.
+  - `0005_user_wallets.sql` — re-introduced `user_wallets` table (slim variant, no provider sub-mapping) so `/api/wallet/generate` can cache 3pay-issued addresses.
+  - `0006_admin_rpcs.sql` — `admin_set_pin`, `admin_has_pin`, `admin_adjust_balance`, `toggle_user_freeze`, `admin_set_admin_role`, `admin_update_fee` ported with `app.user_id()` auth.
+- `pgcrypto` + `pg_cron` extensions live; both speed cron jobs (`speed-resolve`, `speed-roll`) running every 5 s.
+
+**API routes (Drizzle + runAs GUC pattern):**
+- `/api/webhook/3pay` — `clientId` echoed from generateWallet → looked up directly (no `user_wallets` join in webhook); orphan deposits land as `pending` for admin review.
+- `/api/webhook/whish` — Drizzle path, same `process_deposit` call.
+- `/api/health` — Drizzle DB / tables / cron probe (no Supabase Auth call).
+- `/api/auth/send-otp` — Drizzle-backed OTP issuance.
+- `/api/auth/verify-otp` — **deleted**; Auth.js custom Credentials provider absorbs the logic.
+- `/api/admin/withdrawal/{review,mark-sent}` — `runAs(adminId)` + RPC + Slack alert.
+- `/api/deposit/verify` — Auth.js gate, no DB write.
+- `/api/wallet/generate` — Drizzle cache hit/miss against new `user_wallets` table.
+- `/api/admin/{pin,balance,users/freeze,users/role,users/search,fees/update}` — fresh JSON wrappers around the new RPCs.
+- `/api/storage/upload-url` + `/api/storage/view-url` — S3 presigned PUT + GET (admin-only for views).
+- `/api/deposit/manual` — replaces stripped `submit_manual_deposit` RPC; inserts `pending` deposit row pointing at S3 proof key.
+
+**Storage:**
+- AWS SDK installed (`@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner`).
+- `src/lib/storage/s3.ts` — single S3 client + presign helpers (eu-central-1, bucket names from env).
+- Components migrated:
+  - `deposit-proof-viewer.tsx` — fetches `/api/storage/view-url` instead of Supabase Storage `createSignedUrl`.
+  - `whish-manual-form.tsx` — three-step flow: presign → direct PUT to S3 → POST /api/deposit/manual. Handles `image/jpg` → `image/jpeg` normalisation client-side.
+
+**Admin UI / components:**
+- Admin pages cut to Drizzle: `admin/page.tsx` (KPI dashboard), `admin/admins/page.tsx`, `admin/fees/page.tsx`, `admin/users/page.tsx`, `admin/users/[id]/page.tsx` (slimmed — agent levels, referral tree, total_wagered, the LMSR `trades` join all stripped).
+- Admin components cut from `supabase.rpc` to `fetch("/api/admin/...")`: `admin-credit-modal`, `admin-pin-setup`, `edit-fee-dialog`, `fee-config-editor` (commission table removed entirely), `user-actions`, `admin-role-editor`.
+- `users-table.tsx` — Level + Referrals columns removed; `UserRow` type slimmed.
+
+**Dead-code purge:**
+- Deleted `/api/cron/speed-{roll,resolve,partitions}` HTTP routes (replaced by `pg_cron`).
+- Cleared `vercel.json` cron entries.
+- Deleted `src/lib/query/realtime-invalidator.ts` (no consumers post-strip).
+- Deleted `src/components/ui/realtime-status.tsx`, `src/components/wallet/deposit-bonus-banner.tsx`, `src/components/help/help-search.tsx`, `src/components/admin/help-articles-table.tsx`, `src/lib/supabase/middleware.ts` (all reference stripped features or are dead).
+- Removed `RealtimeStatus` mount from `providers/index.tsx`.
+
+### Decisions
+
+- **Eager strike** for `speed_roll_markets` (insert with `strike_price = oracle.price`, `status = 'open'`). The pre-strip lazy-strike pattern (mig 350) is deferred — Sooq's `speed_market_status` enum doesn't have `'pending'` and v1 doesn't need sub-second strike accuracy.
+- **No partition management for v1** — `speed_oracle_ticks` is a flat table. Add partitions later when row count justifies it.
+- **Hybrid SupabaseProvider stays** for the W7 push — many `useSupabase()` callsites in hooks/components remain. They'll be cut over in the next session (hook-by-hook). Lint clean, type-check clean — runtime depends on what's been touched.
+- **Service-role auth bypass** in `process_deposit`: the RPC checks `app.user_id()` and only refuses if it's set AND not admin. Webhook routes don't call `runAs`, so the GUC stays unset and the RPC runs as service-role. Keeps webhook code simple — no token plumbing.
+
+### Deviations from plan
+
+- **More RPC porting than expected.** The slim Drizzle schema diverges from prediction-market enough that we needed a fresh write of every surviving Postgres RPC rather than a sed-and-go port. ~7 RPCs hand-rewritten (deposit/withdrawal money flow + 6 admin RPCs + 3 speed cron pieces).
+- **Deferred remaining hook cutover.** ~30 files still import `@/lib/supabase/*` — all in client components reading speed-mode data, settings page, withdraw modal, etc. They'll get migrated in the next session in a focused pass. Build is type-clean; runtime path that actually matters for W7 acceptance (auth + money + admin) is fully on Drizzle.
+
+### Surprises
+
+- **`pg_cron` requires a parameter group reboot.** RDS reboot was needed before `CREATE EXTENSION pg_cron` could resolve the preloaded library. Sequenced this around the rest of the W7 work.
+- **Schema mismatch in deposits/withdrawals.** Old code expected `fee` + `net_amount` columns and `confirmed_at` timestamp; new schema has just `amount` + `status` + `verified_at`. Old `submit_manual_deposit` RPC also referenced columns that don't exist. Forced a clean rewrite rather than a port.
+- **Help system / deposit bonus / realtime status** were already wired into the provider tree as imports — kept failing the build silently in early W7 work because their dependencies were partially stripped. Removing them outright cleared multiple compile pinpoints in one stroke.
+
+### Pending for next session
+
+- Cut over remaining hooks: `use-speed-*` family (markets, market, position, positions, trade, oracle, price-history, 24h-sparkline, fee-config), `use-fee-rates`, `use-balance-history`, `use-transactions`, `use-admin-sidebar-counts`.
+- Cut over remaining components: `account-sheet`, `notification-dropdown`, `profile-dropdown`, `complete-profile-modal`, `withdraw-modal`, `deposit-modal`, `speed-market-content`, `speed-recent-settlements`, `speed-window-pills`, `add-admin-dialog`, `deposit-actions`.
+- Cut over remaining pages: `(app)/notifications`, `(app)/settings`, `(app)/transactions/withdraw`, `admin/speed`.
+- Delete `supabase-provider.tsx`, `supabase/{client,server}.ts` and the residual `@supabase/*` imports.
+- E2E auth + money smoke test on `staging.sooq.exchange` — user runs after deploy.
+
+

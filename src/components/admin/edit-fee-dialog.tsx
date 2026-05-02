@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { createBrowserClient } from "@supabase/ssr";
 import {
   Dialog,
   DialogContent,
@@ -16,7 +15,8 @@ import { useTranslations } from "next-intl";
 import { AdminPinSetup } from "./admin-pin-setup";
 
 interface EditFeeDialogProps {
-  fee: { id: string; fee_type: string; rate: number; description: string | null };
+  // PK is fee_type — no `id` on fee_config in v1.
+  fee: { fee_type: string; rate: number; description: string | null };
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -96,19 +96,17 @@ export function EditFeeDialog({ fee, open, onOpenChange }: EditFeeDialogProps) {
   }, [open, fee.rate, constraints.warning]);
 
   const checkPin = async () => {
-    const supabase = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
-    const { data, error } = await supabase.rpc("admin_has_pin");
-    if (error) {
-      console.error("Failed to check admin PIN:", error.message);
-      return;
-    }
-    setHasPin(!!data);
-    setHasPinChecked(true);
-    if (!data) {
-      setShowPinSetup(true);
+    try {
+      const res = await fetch("/api/admin/pin");
+      if (!res.ok) return;
+      const data = (await res.json()) as { has_pin: boolean };
+      setHasPin(data.has_pin);
+      setHasPinChecked(true);
+      if (!data.has_pin) {
+        setShowPinSetup(true);
+      }
+    } catch (err) {
+      console.error("Failed to check admin PIN:", err);
     }
   };
 
@@ -128,25 +126,22 @@ export function EditFeeDialog({ fee, open, onOpenChange }: EditFeeDialogProps) {
 
     setLoading(true);
     try {
-      const supabase = createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      );
-
-      const { data, error } = await supabase.rpc("admin_update_fee", {
-        p_fee_id: fee.id,
-        p_new_rate: parsed,
-        p_pin: pin,
+      const res = await fetch("/api/admin/fees/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fee_type: fee.fee_type, rate: parsed, pin }),
       });
 
-      if (error) throw error;
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(err.error || "Failed to update fee");
+      }
 
-      const result = data as { old_rate: number; new_rate: number } | null;
       toast.success(
         t("feeUpdated", {
           feeType: fee.fee_type,
-          oldValue: formatValue(result?.old_rate ?? fee.rate, constraints.format),
-          newValue: formatValue(result?.new_rate ?? parsed, constraints.format),
+          oldValue: formatValue(fee.rate, constraints.format),
+          newValue: formatValue(parsed, constraints.format),
         })
       );
       onOpenChange(false);

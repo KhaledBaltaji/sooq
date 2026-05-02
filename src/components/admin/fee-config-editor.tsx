@@ -9,10 +9,8 @@ import {
 } from "@/components/ui/collapsible";
 
 interface FeeRow {
-  id: string;
+  // v1 fee_config has no `id`, no `level`/`depth` (commission system stripped).
   fee_type: string;
-  level: number | null;
-  depth: number | null;
   rate: number;
   description: string | null;
 }
@@ -36,8 +34,6 @@ const FEE_LABELS: Record<string, { label: string; hint: string }> = {
   min_trade_amount:          { label: "Minimum Trade",          hint: "Smallest allowed buy amount" },
 };
 
-const RAW_VALUE_FEES = new Set(["amm_default_b", "dynamic_spread_multiplier", "min_trade_amount"]);
-
 function formatRate(fee: FeeRow): string {
   if (fee.fee_type === "dynamic_spread_multiplier") return `${Number(fee.rate)}x`;
   if (fee.fee_type === "amm_default_b" || fee.fee_type === "min_trade_amount")
@@ -54,20 +50,9 @@ function getHintForFee(fee: FeeRow): string {
 }
 
 // ── Group definitions ──────────────────────────────────────────
-
-const TIER_NAMES: Record<number, string> = {
-  1: "Starter",
-  2: "Active",
-  3: "Power",
-  4: "Elite",
-};
-
-const TIER_VOLUME: Record<number, string> = {
-  1: "< $10K",
-  2: "$10K+",
-  3: "$50K+",
-  4: "$200K+",
-};
+//
+// W3 strip: agent commissions removed entirely (branches, multi-level
+// referral system gone). Speed-mode runtime knobs added.
 
 interface FeeGroup {
   key: string;
@@ -75,17 +60,9 @@ interface FeeGroup {
   subtitle: string;
   icon: string;
   types: string[];
-  isCommission?: boolean;
 }
 
 const FEE_GROUPS: FeeGroup[] = [
-  {
-    key: "trading",
-    title: "Trading Fees",
-    subtitle: "Fees on buying, selling, and winning payouts",
-    icon: "swap_horiz",
-    types: ["explicit_fee", "cash_out_premium", "resolution_fee"],
-  },
   {
     key: "money",
     title: "Deposits & Withdrawals",
@@ -94,19 +71,11 @@ const FEE_GROUPS: FeeGroup[] = [
     types: ["deposit_fee", "withdrawal_fee"],
   },
   {
-    key: "amm",
-    title: "AMM Settings",
-    subtitle: "Market maker parameters that control pricing behavior",
-    icon: "tune",
-    types: ["amm_default_b", "max_trade_pct", "dynamic_spread_threshold", "dynamic_spread_multiplier", "min_trade_amount"],
-  },
-  {
-    key: "commissions",
-    title: "Agent Commissions",
-    subtitle: "Revenue share by agent tier and referral layer",
-    icon: "group",
-    types: [],
-    isCommission: true,
+    key: "speed",
+    title: "Speed Mode",
+    subtitle: "Master kill switch + oracle freshness gate",
+    icon: "bolt",
+    types: ["speed_markets_enabled", "speed_oracle_stale_seconds"],
   },
 ];
 
@@ -139,16 +108,14 @@ function CollapsibleSection({
   fees,
   defaultOpen,
   onEditFee,
-  commissionFees,
 }: {
   group: FeeGroup;
   fees: FeeRow[];
   defaultOpen: boolean;
   onEditFee: (fee: FeeRow) => void;
-  commissionFees?: FeeRow[];
 }) {
   const [open, setOpen] = useState(defaultOpen);
-  const count = group.isCommission ? (commissionFees?.length || 0) : fees.length;
+  const count = fees.length;
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -177,140 +144,19 @@ function CollapsibleSection({
         </CollapsibleTrigger>
 
         <CollapsibleContent>
-          {group.isCommission ? (
-            <CommissionTable fees={commissionFees || []} onEditFee={onEditFee} />
-          ) : (
-            <div className="border-t border-[#a9b4b9]/10 divide-y divide-[#a9b4b9]/10">
-              {fees.map((fee) => (
-                <FeeItem key={fee.id} fee={fee} onClick={() => onEditFee(fee)} />
-              ))}
-              {fees.length === 0 && (
-                <div className="px-6 py-8 text-center">
-                  <p className="text-sm text-[#566166]">No fees configured</p>
-                </div>
-              )}
-            </div>
-          )}
+          <div className="border-t border-[#a9b4b9]/10 divide-y divide-[#a9b4b9]/10">
+            {fees.map((fee) => (
+              <FeeItem key={fee.fee_type} fee={fee} onClick={() => onEditFee(fee)} />
+            ))}
+            {fees.length === 0 && (
+              <div className="px-6 py-8 text-center">
+                <p className="text-sm text-[#566166]">No fees configured</p>
+              </div>
+            )}
+          </div>
         </CollapsibleContent>
       </div>
     </Collapsible>
-  );
-}
-
-function CommissionTable({ fees, onEditFee }: { fees: FeeRow[]; onEditFee: (fee: FeeRow) => void }) {
-  // Group by commission type (trade vs resolution), then by level
-  const tradeFees = fees.filter(f => f.fee_type === "ngr_commission");
-  const resolutionFees = fees.filter(f => f.fee_type === "ngr_resolution_commission");
-
-  // Group trade fees by level
-  const tiers = [1, 2, 3, 4];
-
-  return (
-    <div className="border-t border-[#a9b4b9]/10">
-      {/* Trade commissions */}
-      <div className="px-5 pt-4 pb-2">
-        <p className="text-[10px] font-bold uppercase tracking-widest text-[#566166]">Trade Commissions</p>
-        <p className="text-[11px] text-[#a9b4b9] mt-0.5">Share of platform revenue per trade</p>
-      </div>
-      <div className="divide-y divide-[#a9b4b9]/10">
-        {tiers.map((level) => {
-          const direct = tradeFees.find(f => f.level === level && f.depth === 1);
-          const indirect = tradeFees.find(f => f.level === level && f.depth === 2);
-          return (
-            <div key={`trade-${level}`} className="px-5 py-3">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-bold text-[#2a3439]">
-                  L{level} &middot; {TIER_NAMES[level]}
-                </span>
-                <span className="text-[10px] text-[#a9b4b9]">{TIER_VOLUME[level]} volume</span>
-              </div>
-              <div className="flex gap-2">
-                {direct && (
-                  <button
-                    onClick={() => onEditFee(direct)}
-                    className="flex-1 flex items-center justify-between bg-[#f0f4f7]/60 hover:bg-[#e8eff3] rounded-lg px-3 py-2.5 transition-colors cursor-pointer group"
-                  >
-                    <span className="text-xs text-[#566166]">Direct</span>
-                    <span className="text-sm font-bold font-[family-name:var(--font-manrope)] text-[var(--yes)] tabular-nums group-hover:underline">
-                      {(direct.rate * 100).toFixed(0)}%
-                    </span>
-                  </button>
-                )}
-                {indirect && (
-                  <button
-                    onClick={() => onEditFee(indirect)}
-                    className="flex-1 flex items-center justify-between bg-[#f0f4f7]/60 hover:bg-[#e8eff3] rounded-lg px-3 py-2.5 transition-colors cursor-pointer group"
-                  >
-                    <span className="text-xs text-[#566166]">Indirect</span>
-                    <span className="text-sm font-bold font-[family-name:var(--font-manrope)] text-[var(--yes)] tabular-nums group-hover:underline">
-                      {(indirect.rate * 100).toFixed(0)}%
-                    </span>
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Resolution commissions */}
-      {resolutionFees.length > 0 && (
-        <>
-          <div className="px-5 pt-4 pb-2 border-t border-[#a9b4b9]/10">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-[#566166]">Resolution Commissions</p>
-            <p className="text-[11px] text-[#a9b4b9] mt-0.5">Share of resolution fee revenue at payout</p>
-          </div>
-          <div className="divide-y divide-[#a9b4b9]/10">
-            {tiers.map((level) => {
-              const direct = resolutionFees.find(f => f.level === level && f.depth === 1);
-              const indirect = resolutionFees.find(f => f.level === level && f.depth === 2);
-              if (!direct && !indirect) return null;
-              return (
-                <div key={`res-${level}`} className="px-5 py-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-bold text-[#2a3439]">
-                      L{level} &middot; {TIER_NAMES[level]}
-                    </span>
-                    <span className="text-[10px] text-[#a9b4b9]">{TIER_VOLUME[level]} volume</span>
-                  </div>
-                  <div className="flex gap-2">
-                    {direct && (
-                      <button
-                        onClick={() => onEditFee(direct)}
-                        className="flex-1 flex items-center justify-between bg-[#f0f4f7]/60 hover:bg-[#e8eff3] rounded-lg px-3 py-2.5 transition-colors cursor-pointer group"
-                      >
-                        <span className="text-xs text-[#566166]">Direct</span>
-                        <span className="text-sm font-bold font-[family-name:var(--font-manrope)] text-[var(--yes)] tabular-nums group-hover:underline">
-                          {(direct.rate * 100).toFixed(0)}%
-                        </span>
-                      </button>
-                    )}
-                    {indirect && (
-                      <button
-                        onClick={() => onEditFee(indirect)}
-                        className="flex-1 flex items-center justify-between bg-[#f0f4f7]/60 hover:bg-[#e8eff3] rounded-lg px-3 py-2.5 transition-colors cursor-pointer group"
-                      >
-                        <span className="text-xs text-[#566166]">Indirect</span>
-                        <span className="text-sm font-bold font-[family-name:var(--font-manrope)] text-[var(--yes)] tabular-nums group-hover:underline">
-                          {(indirect.rate * 100).toFixed(0)}%
-                        </span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-
-      {/* Info note */}
-      <div className="px-5 py-3 bg-[#f0f4f7]/40 border-t border-[#a9b4b9]/10">
-        <p className="text-[11px] text-[#566166]">
-          Agents earn a share of platform revenue on each trade their referrals make. Rates vary by agent tier (network volume) and referral layer (direct or indirect).
-        </p>
-      </div>
-    </div>
   );
 }
 
@@ -319,25 +165,14 @@ function CommissionTable({ fees, onEditFee }: { fees: FeeRow[]; onEditFee: (fee:
 export function FeeConfigEditor({ fees }: FeeConfigEditorProps) {
   const [editingFee, setEditingFee] = useState<FeeRow | null>(null);
 
-  // Split fees into groups
-  const commissionFees = fees.filter(f =>
-    f.fee_type === "ngr_commission" || f.fee_type === "ngr_resolution_commission"
-  );
-  const platformFees = fees.filter(f =>
-    f.fee_type !== "ngr_commission" && f.fee_type !== "ngr_resolution_commission"
-  );
-
-  // Build a lookup for each group
   function getFeesForGroup(group: FeeGroup): FeeRow[] {
-    if (group.isCommission) return [];
     return group.types
-      .map(type => platformFees.find(f => f.fee_type === type))
+      .map((type) => fees.find((f) => f.fee_type === type))
       .filter((f): f is FeeRow => f !== undefined);
   }
 
-  // Catch any platform fees not in a defined group
-  const groupedTypes = new Set(FEE_GROUPS.flatMap(g => g.types));
-  const ungrouped = platformFees.filter(f => !groupedTypes.has(f.fee_type));
+  const groupedTypes = new Set(FEE_GROUPS.flatMap((g) => g.types));
+  const ungrouped = fees.filter((f) => !groupedTypes.has(f.fee_type));
 
   return (
     <>
@@ -349,11 +184,9 @@ export function FeeConfigEditor({ fees }: FeeConfigEditorProps) {
             fees={getFeesForGroup(group)}
             defaultOpen={i === 0}
             onEditFee={setEditingFee}
-            commissionFees={group.isCommission ? commissionFees : undefined}
           />
         ))}
 
-        {/* Any ungrouped fees (safety net) */}
         {ungrouped.length > 0 && (
           <CollapsibleSection
             group={{
@@ -370,7 +203,6 @@ export function FeeConfigEditor({ fees }: FeeConfigEditorProps) {
         )}
       </div>
 
-      {/* Edit dialog */}
       {editingFee && (
         <EditFeeDialog
           fee={editingFee}

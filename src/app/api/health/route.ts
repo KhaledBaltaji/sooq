@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { sql } from "drizzle-orm";
+import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { sendSlackAlert } from "@/lib/slack";
 
-// Use service role — health checks run without user auth
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// W7 cutover: Drizzle/RDS-backed health check. Auth.js status is implicit
+// in the DB check (sessions live in the same database).
 
 interface CheckResult {
   status: "ok" | "error";
@@ -15,10 +13,7 @@ interface CheckResult {
   error?: string;
 }
 
-async function runCheck(
-  name: string,
-  fn: () => Promise<void>
-): Promise<CheckResult> {
+async function runCheck(fn: () => Promise<void>): Promise<CheckResult> {
   const start = Date.now();
   try {
     await fn();
@@ -33,38 +28,33 @@ async function runCheck(
 }
 
 export async function GET() {
-  const [database, tables, auth, envVars] = await Promise.all([
-    runCheck("database", async () => {
-      const { error } = await supabase.from("users").select("id").limit(1);
-      if (error) throw new Error(error.message);
+  const [database, tables, cron, envVars] = await Promise.all([
+    runCheck(async () => {
+      const r = await db.execute<{ ok: number }>(sql`SELECT 1 AS ok`);
+      if (r.rows[0]?.ok !== 1) throw new Error("SELECT 1 returned unexpected result");
     }),
-    runCheck("tables", async () => {
-      // W2 strip: LMSR `markets` table dropped. Speed mode is the v1 product.
-      const { error: speedMarketsErr } = await supabase
-        .from("speed_markets")
-        .select("id")
-        .limit(1);
-      if (speedMarketsErr) throw new Error(`speed_markets: ${speedMarketsErr.message}`);
-
-      const { error: feeErr } = await supabase
-        .from("fee_config")
-        .select("fee_type")
-        .limit(1);
-      if (feeErr) throw new Error(`fee_config: ${feeErr.message}`);
+    runCheck(async () => {
+      // Probe core tables exist + are readable.
+      await db.execute(sql`SELECT id FROM speed_markets LIMIT 1`);
+      await db.execute(sql`SELECT fee_type FROM fee_config LIMIT 1`);
+      await db.execute(sql`SELECT id FROM users LIMIT 1`);
     }),
-    runCheck("auth", async () => {
-      const { error } = await supabase.auth.getSession();
-      if (error) throw new Error(error.message);
+    runCheck(async () => {
+      const r = await db.execute<{ count: string }>(
+        sql`SELECT COUNT(*)::text AS count FROM cron.job WHERE jobname LIKE 'speed-%'`
+      );
+      const count = parseInt(r.rows[0]?.count ?? "0", 10);
+      if (count < 2) throw new Error(`expected 2 speed cron jobs, found ${count}`);
     }),
-    runCheck("env_vars", async () => {
+    runCheck(async () => {
       const missing: string[] = [];
-      if (!process.env.NEXT_PUBLIC_SUPABASE_URL) missing.push("NEXT_PUBLIC_SUPABASE_URL");
-      if (!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) missing.push("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+      if (!process.env.DATABASE_URL) missing.push("DATABASE_URL");
+      if (!process.env.AUTH_SECRET) missing.push("AUTH_SECRET");
       if (missing.length > 0) throw new Error(`Missing: ${missing.join(", ")}`);
     }),
   ]);
 
-  const checks = { database, tables, auth, envVars };
+  const checks = { database, tables, cron, envVars };
   const allOk = Object.values(checks).every((c) => c.status === "ok");
   const status = allOk ? "healthy" : "degraded";
 
@@ -80,10 +70,7 @@ export async function GET() {
       checks,
     });
 
-    await sendSlackAlert([
-      "Health check DEGRADED",
-      `Failed: ${failedChecks}`,
-    ]);
+    await sendSlackAlert(["Health check DEGRADED", `Failed: ${failedChecks}`]);
   }
 
   return NextResponse.json(

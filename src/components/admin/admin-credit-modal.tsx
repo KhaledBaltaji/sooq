@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { createBrowserClient } from "@supabase/ssr";
 import {
   Dialog,
   DialogContent,
@@ -63,19 +62,20 @@ export function AdminCreditModal({ open, onOpenChange, prefillUser }: AdminCredi
   }, [open, prefillUser]);
 
   const checkPin = async () => {
-    const supabase = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
-    const { data, error } = await supabase.rpc("admin_has_pin");
-    if (error) {
-      console.error("Failed to check admin PIN:", error.message);
-      return;
-    }
-    setHasPin(!!data);
-    setHasPinChecked(true);
-    if (!data) {
-      setShowPinSetup(true);
+    try {
+      const res = await fetch("/api/admin/pin");
+      if (!res.ok) {
+        console.error("Failed to check admin PIN:", res.statusText);
+        return;
+      }
+      const data = (await res.json()) as { has_pin: boolean };
+      setHasPin(data.has_pin);
+      setHasPinChecked(true);
+      if (!data.has_pin) {
+        setShowPinSetup(true);
+      }
+    } catch (err) {
+      console.error("Failed to check admin PIN:", err);
     }
   };
 
@@ -87,16 +87,13 @@ export function AdminCreditModal({ open, onOpenChange, prefillUser }: AdminCredi
     }
     setSearching(true);
     try {
-      const supabase = createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      );
-      const { data } = await supabase
-        .from("users")
-        .select("id, display_name, phone, balance_usd")
-        .or(`display_name.ilike.%${query}%,phone.ilike.%${query}%`)
-        .limit(5);
-      setSearchResults(data || []);
+      const res = await fetch(`/api/admin/users/search?q=${encodeURIComponent(query)}`);
+      if (res.ok) {
+        const data = (await res.json()) as { users: typeof searchResults };
+        setSearchResults(data.users || []);
+      } else {
+        setSearchResults([]);
+      }
     } finally {
       setSearching(false);
     }
@@ -123,25 +120,29 @@ export function AdminCreditModal({ open, onOpenChange, prefillUser }: AdminCredi
 
     setLoading(true);
     try {
-      const supabase = createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      );
-
       const finalAmount = mode === "debit" ? -numAmount : numAmount;
-      const { data, error } = await supabase.rpc("admin_adjust_balance", {
-        p_user_id: targetUser.id,
-        p_amount: finalAmount,
-        p_description: description || `Admin ${mode}`,
-      p_pin: pin,
+      const res = await fetch("/api/admin/balance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: targetUser.id,
+          amount: finalAmount,
+          description: description || `Admin ${mode}`,
+          pin,
+        }),
       });
 
-      if (error) throw error;
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(err.error || "Failed to adjust balance");
+      }
 
-      const result = data as { new_balance: number; type: string } | null;
+      const data = (await res.json()) as { new_balance: number; type: string };
       toast.success(
         mode === "credit" ? t("creditApplied") : t("debitApplied"),
-        { description: `${formatCurrency(numAmount)} ${mode === "credit" ? "to" : "from"} ${targetUser.display_name || targetUser.phone}. New balance: ${formatCurrency(result?.new_balance ?? 0)}` }
+        {
+          description: `${formatCurrency(numAmount)} ${mode === "credit" ? "to" : "from"} ${targetUser.display_name || targetUser.phone}. New balance: ${formatCurrency(data.new_balance ?? 0)}`,
+        }
       );
       onOpenChange(false);
       router.refresh();
