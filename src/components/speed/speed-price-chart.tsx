@@ -287,6 +287,11 @@ export function SpeedPriceChart({
         priceFormat: { type: "price", precision: 2, minMove: 0.01 },
         lastValueVisible: false,
         priceLineVisible: false,
+        // Hide the crosshair marker — lightweight-charts otherwise draws
+        // a small filled circle on the line at the cursor's x whenever
+        // the user hovers over the chart, which collided visually with
+        // our HTML pulsing dot at the live edge (looked like two dots).
+        crosshairMarkerVisible: false,
       });
     }
 
