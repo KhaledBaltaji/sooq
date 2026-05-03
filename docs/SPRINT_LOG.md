@@ -535,4 +535,146 @@ W7 starts with: apply migrations to RDS + replace `supabase-js` data calls with 
 - Delete `supabase-provider.tsx`, `supabase/{client,server}.ts` and the residual `@supabase/*` imports.
 - E2E auth + money smoke test on `staging.sooq.exchange` — user runs after deploy.
 
+---
+
+## W7 cleanup pass — done (2026-05-03 evening)
+
+Single-session sweep that finished the W7+W8 plan ("zero supabase in `src/`,
+all reads via Drizzle/API + polling"). Master plan section "W7 cleanup
+detail" describes the original 6-phase approach; below is what actually shipped.
+
+### Done
+
+**Phase A — backfill RPCs (`drizzle/migrations/0007_chart_rpcs.sql`):**
+- `get_admin_sidebar_counts` — auth.uid() → app.user_id(); slim deposit
+  status set ('pending' only).
+- `get_speed_price_history(asset TEXT, ...)` — straight port; `speed_asset`
+  enum → TEXT.
+- `get_speed_klines(asset TEXT, ...)` — synthesized OHLC from
+  `speed_oracle_ticks` rather than a non-existent `speed_oracle_klines`
+  table (the dual-write kline worker is v2 work).
+- `get_speed_volatility(asset TEXT)` — fallback-only path; reads
+  `fee_config.speed_iv_btc` (seeded to 0.6). RV cache rebuilt in v2.
+
+**Phase B — 17 new API routes (Drizzle/RPC wrappers, snake_case at boundary):**
+- `/api/notifications` + `/[id]/read` + `/read-all`
+- `/api/transactions`, `/api/balance-history` (drops `trades`/`amm_state` —
+  reconstructs balance from `transactions.balance_after` only)
+- `/api/fees` (FeeRates type extended with withdrawal + deposit)
+- `/api/speed/{markets,markets/[id],positions,positions/[id],oracle,
+  price-history,klines,volatility,trade,cashout}` (positions endpoint
+  joins markets server-side)
+- `/api/withdrawal/process` (instant-hold via `process_withdrawal`)
+- `/api/users/profile` (PATCH for display_name/bio/locale/avatar)
+- `/api/admin/sidebar-counts`
+- `/api/admin/users/search` extended with `is_admin` + `admin_allowed_views`
+
+**Phase C — 13 hooks rewritten as TanStack Query polling:**
+Polling cadence per master plan:
+- 2s — speed market detail, oracle, position detail
+- 5s — notifications, transactions, positions list
+- 10s — speed markets list, sidebar counts
+- 30s — chart data
+- 5min — fees / speed-fee-config
+Hooks: `use-notifications` (new), `use-transactions`, `use-balance-history`
+(stripped LMSR positions + AMM live-price math), `use-fee-rates`,
+`use-speed-fee-config`, `use-admin-sidebar-counts`,
+`use-speed-{markets,market,positions,position,oracle,trade,price-history,
+24h-sparkline}`.
+
+**Phase D — 11 client components + 4 pages cut off Supabase:**
+- `notification-dropdown` + `(app)/notifications` page: TanStack Query
+  with `markRead` mutation. CSP error gone.
+- `(app)/settings`: **MFA section stripped entirely** (locked decision —
+  passwordless throughout for v1). Profile updates via PATCH; delete
+  account uses Auth.js signOut. Referral + Demo cards removed (both
+  systems gone in W2/W3).
+- `(app)/transactions/withdraw` + `withdraw-modal`: `useFeeRates()` +
+  `/api/withdrawal/process`.
+- `complete-profile-modal`: PATCH /api/users/profile; email-link step
+  dropped (Auth.js doesn't own email update for v1).
+- `deposit-modal`: poll `/api/users/me` to detect balance increase —
+  replaces realtime subscription on deposits table.
+- `add-admin-dialog`: /api/admin/users/search.
+- `speed-market-content`: removed `supabase` ref; uses fetch for
+  next-market polling. settlement_price → twap_at_close.
+- `speed-window-pills` + `speed-recent-settlements`: TanStack Query
+  against /api/speed/markets with new `since`/`sort`/`duration` filters.
+- `account-sheet` + `profile-dropdown`: signOut via lib/auth/actions.
+- `admin/speed/page.tsx`: 561-LOC overview slimmed to a placeholder
+  showing open market/position counts. Per-asset / per-duration / RV
+  cache / kill-switches view rebuilds in W10 lean-ops phase.
+- `deposit-actions.tsx` (orphan, 0 callers, depended on stripped
+  `admin_review_deposit` RPC and `pending_review` status): deleted.
+
+**Phase E — wrappers, CSP, deps:**
+- Deleted `src/components/providers/supabase-provider.tsx`,
+  `src/lib/supabase/{client,server}.ts`, `src/lib/admin/pin.ts` (orphan).
+- `providers/index.tsx` no longer wraps with `<SupabaseProvider>`.
+- `next.config.ts`:
+  - image `remotePatterns`: `*.supabase.co` → CloudFront
+    `d36u9ggi9no1rl.cloudfront.net`
+  - CSP `connect-src`: dropped `https://*.supabase.co` +
+    `wss://*.supabase.co`; added S3 buckets + CloudFront for direct
+    presigned PUT and signed reads.
+- `npm uninstall @supabase/supabase-js @supabase/ssr`.
+- `tsconfig.json` excludes `services/**` (separate workspace for the
+  speed-oracle worker — Railway-deployed, not part of the Next build).
+
+**Phase F — verification:**
+- `grep -rE "@supabase|useSupabase|supabase\\.(from|rpc|channel|auth|storage)"
+  src/` → only matches are descriptive code comments documenting what
+  was replaced. Zero actual calls.
+- `npx tsc --noEmit` → clean.
+- `npm run lint` → 0 errors (18 pre-existing warnings).
+- `npm run build` → success; ~50 routes prerendered or marked dynamic.
+
+### Deviations vs the W7 cleanup detail in the plan
+
+- `admin/speed/page.tsx` was meant to be "refactored to Drizzle" — instead
+  it's stubbed to a placeholder with open-market / open-position counts
+  only. The full 561-LOC overview depends on stripped systems (branches,
+  pool ledger, RV cache, kill switches with monitoring) that aren't in
+  the slim schema. Will rebuild lean in W10.
+- `deposit-actions.tsx` was meant to be refactored to use
+  `/api/admin/balance` — but the file had zero consumers AND depended on
+  a stripped RPC + status. Deleted instead. Manual deposit review can
+  rebuild in W10 if needed.
+- `lib/admin/pin.ts` — same story: bcrypt-based PIN verifier the plan
+  expected to keep. The new admin RPCs in `0006_admin_rpcs.sql` use
+  pgcrypto.crypt() with a separate UPDATE that commits independently
+  (the original bug the file was working around is fixed). Deleted.
+
+### Surprises
+
+- `services/speed-oracle/` is a separate Railway workspace that still
+  imports `@supabase/supabase-js`. Tsconfig was including it via `**/*.ts`,
+  causing tsc to fail after uninstalling supabase. Excluded the directory
+  from root tsconfig — the worker has its own package.json and gets built
+  independently when (eventually) re-deployed.
+- The `1h` duration was littered through 4 files (chart, hero, about,
+  pricing.ts) but the Drizzle enum only has 5m/15m/24h. Cleanup removed
+  all 1h cases.
+- `speed-market-content.tsx` had a leftover `supabase` reference in a
+  next-market-finder useEffect — easy miss because the variable was used
+  inside a setInterval callback rather than at the top of the function.
+
+### Live testing target
+
+`staging.sooq.exchange` (auto-deploys when commit `ad44f19` lands on
+Vercel sooq project). Browser console should be silent on CSP errors
+now that the supabase host is removed.
+
+### Phase boundary checkpoint (W7+W8 → W9)
+
+Per master plan ritual:
+- [x] Zero `supabase-js` references remain (grep clean except code comments)
+- [x] Webhooks (3pay, Whish) hit RDS via process_deposit (W7 first push)
+- [x] S3 upload flow for deposit proofs works end-to-end
+- [x] All previously-realtime hooks now poll
+- [x] Crons fire correctly (pg_cron 5s + Vercel cron for HTTP — checked
+  via /api/health which probes cron.job)
+- [ ] User explicitly approves "ready for W9"
+
+
 
