@@ -185,10 +185,12 @@ export function SpeedPriceChart({
         // is 0 which pins the right edge to the latest bar and makes
         // forward-drag impossible.
         rightOffset: 20,
-        // Don't auto-shift the visible range when a new bar arrives —
-        // lets the user's pan stick. New data still appends; if it lands
-        // outside the visible range the user can pan to it.
-        shiftVisibleRangeOnNewBar: false,
+        // Keep the default `shiftVisibleRangeOnNewBar: true` so when a
+        // new bucket rolls, the visible range moves with it — otherwise
+        // last.time advances past the right edge and the dot drifts off
+        // the line into empty space. With rightOffset:20 above, the user
+        // still has 20 bars of headroom and can drag forward; we just
+        // don't freeze the auto-follow.
         // Render axis labels and crosshair tooltips in the user's local
         // timezone so they line up with the page header (e.g. "6:00 PM"
         // instead of UTC "15:00") which uses the browser's locale formatter.
