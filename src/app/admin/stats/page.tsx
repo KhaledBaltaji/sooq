@@ -1,0 +1,27 @@
+// Admin stats / revenue dashboard.
+// Server-rendered shell + auth gate; the live dashboard is the client
+// component below. KPIs + per-market P&L table + per-user tabs.
+
+export const dynamic = "force-dynamic";
+
+import { requireAdmin } from "@/lib/auth/guards";
+import { StatsClient } from "@/components/admin/stats-client";
+
+export default async function AdminStatsPage() {
+  await requireAdmin();
+  return (
+    <div className="p-8 space-y-6">
+      <header>
+        <h2 className="text-4xl font-extrabold tracking-tight text-[#2a3439] font-[family-name:var(--font-manrope)]">
+          Stats
+        </h2>
+        <p className="text-[#566166] mt-2 max-w-2xl">
+          Platform commission = stakes&nbsp;−&nbsp;payouts on resolved markets.
+          The cash pool is open positions still in play (not yet revenue).
+          Cashout premium is what we keep when users exit early.
+        </p>
+      </header>
+      <StatsClient />
+    </div>
+  );
+}

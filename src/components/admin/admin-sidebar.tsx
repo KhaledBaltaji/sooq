@@ -45,6 +45,7 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     group: "Overview",
     items: [
       { key: "dashboard", href: "/admin", icon: "dashboard", label: "Dashboard" },
+      { key: "stats", href: "/admin/stats", icon: "bar_chart", label: "Stats" },
     ],
   },
   {
