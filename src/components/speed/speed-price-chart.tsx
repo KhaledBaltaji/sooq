@@ -510,7 +510,15 @@ export function SpeedPriceChart({
       // Closed markets snap the dot to the last bar's close so it sits on
       // the line endpoint, not above/below it tracking the still-ticking
       // oracle. Live markets follow the oracle as before.
-      const livePrice = isLive && oracle ? Number(oracle.price) : last.close;
+      // Read last.close (the bucket data the chart actually rendered)
+      // instead of oracle.price directly. This guarantees dot Y and line
+      // endpoint Y are computed from the SAME number, eliminating the
+      // "dot leads line" lag the user spotted: previously the dot polled
+      // oracle.price every 100ms and rendered immediately, while the
+      // line had to wait for the live-tail effect to run series.update
+      // and lightweight-charts to redraw on the next animation frame.
+      // Now both move when last.close moves.
+      const livePrice = last.close;
       const y = series.priceToCoordinate(livePrice);
       // X is pinned to the right edge of the time scale. With
       // fixRightEdge: true on the chart, the right edge IS the latest
