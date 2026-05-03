@@ -28,10 +28,11 @@ const nextConfig: NextConfig = {
   },
   images: {
     remotePatterns: [
+      // CloudFront distribution in front of S3 (sooq-staging-deposits +
+      // sooq-staging-thumbnails). Replaces the old supabase.co storage host.
       {
         protocol: "https",
-        hostname: "*.supabase.co",
-        pathname: "/storage/v1/object/public/**",
+        hostname: "d36u9ggi9no1rl.cloudfront.net",
       },
     ],
   },
@@ -60,7 +61,11 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "font-src 'self' https://fonts.gstatic.com",
               "img-src 'self' data: blob: https:",
-              "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.sentry.io https://*.vercel-insights.com",
+              // connect-src restricted to: self (API + Auth.js callbacks),
+              // Sentry telemetry, Vercel Insights, S3 presigned PUT for
+              // direct uploads (deposit-proof images), CloudFront for
+              // signed reads of those same images.
+              "connect-src 'self' https://*.sentry.io https://*.vercel-insights.com https://sooq-staging-deposits.s3.eu-central-1.amazonaws.com https://sooq-staging-thumbnails.s3.eu-central-1.amazonaws.com https://d36u9ggi9no1rl.cloudfront.net",
               "frame-src 'self'",
             ].join("; "),
           },

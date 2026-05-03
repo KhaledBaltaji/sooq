@@ -19,7 +19,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Avatar } from "@/components/ui/avatar";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useUser } from "@/lib/auth/hooks";
-import { useSupabase } from "@/components/providers/supabase-provider";
+import { signOut as authSignOut } from "@/lib/auth/actions";
 import { useTheme } from "@/components/providers/theme-provider";
 import { useAuthModal } from "@/components/auth/auth-modal-provider";
 import { useDepositModal } from "@/components/wallet/deposit-modal-provider";
@@ -39,7 +39,6 @@ export function AccountSheet({ open, onOpenChange }: AccountSheetProps) {
   const side = locale === "ar" ? "left" : "right";
 
   const { user } = useUser();
-  const supabase = useSupabase();
   const router = useRouter();
   const pathname = usePathname();
   const { theme, toggleTheme } = useTheme();
@@ -64,7 +63,7 @@ export function AccountSheet({ open, onOpenChange }: AccountSheetProps) {
 
   const handleLogout = async () => {
     close();
-    await supabase.auth.signOut();
+    await authSignOut();
     router.push("/");
   };
 

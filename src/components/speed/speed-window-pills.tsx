@@ -6,13 +6,14 @@ import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, X } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useSupabase } from "@/components/providers/supabase-provider";
+import { useQuery } from "@tanstack/react-query";
 import { useIsDesktop } from "@/hooks/use-is-desktop";
 import { cn } from "@/lib/utils";
 import { isMarketAligned } from "@/lib/speed/pricing";
 import type {
   SpeedAsset,
   SpeedDuration,
+  SpeedMarket,
   SpeedMarketOutcome,
   SpeedMarketStatus,
 } from "@/types/database";
@@ -36,56 +37,51 @@ export function SpeedWindowPills({
   duration: SpeedDuration;
   currentId: string;
 }) {
-  const supabase = useSupabase();
   const t = useTranslations("speed");
   const isDesktop = useIsDesktop();
-  const [rows, setRows] = useState<PillRow[]>([]);
   const [now, setNow] = useState<number>(Date.now());
   const [pastOpen, setPastOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      const todayMidnight = new Date();
-      todayMidnight.setHours(0, 0, 0, 0);
+  // Today's midnight as the lower bound — recomputed each render is fine,
+  // the value only changes when the day rolls over.
+  const todayMidnightIso = (() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString();
+  })();
 
-      // Order DESC + small limit so the LIVE market is always included.
-      // Previously: .order("closes_at", asc) + .limit(300) returned the
-      // OLDEST 300 markets — once today's count exceeded 300 (which happens
-      // with off-clock test artifacts inflating the row count), the live
-      // market was truncated out and the live pill silently disappeared.
-      // 50 most-recent markets covers ~4 hours of 5m windows, plenty for
-      // the dropdown UI; reversed client-side back to ASC for display.
-      const { data } = await supabase
-        .from("speed_markets" as never)
-        .select("id, opens_at, closes_at, status, outcome")
-        .eq("asset", asset)
-        .eq("duration", duration)
-        .gte("opens_at", todayMidnight.toISOString())
-        .order("closes_at", { ascending: false })
-        .limit(50);
-      if (cancelled) return;
-      // Filter out off-clock markets (test artifacts that bypass cron). The
-      // cron-created rows always align to the duration's clean boundary; a
-      // test row inserted with NOW() leaves sub-second precision and
-      // arbitrary minutes. Defense in depth — even if a test cleanup misses
-      // something, the live UI never shows it.
-      const aligned = ((data as PillRow[] | null) ?? [])
-        .filter((r) => isMarketAligned(r.opens_at, duration))
-        // Reverse to ascending so liveIdx + slicing logic below works as
-        // it always has (oldest → newest).
-        .slice()
-        .reverse();
-      setRows(aligned);
-    }
-    load();
-    const id = setInterval(load, 30_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [supabase, asset, duration]);
+  const query = useQuery<{ markets: SpeedMarket[] }>({
+    queryKey: ["speed-window-pills", asset, duration, todayMidnightIso],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        asset,
+        duration,
+        since: todayMidnightIso,
+        sort: "desc",
+        limit: "50",
+      });
+      const res = await fetch(`/api/speed/markets?${params.toString()}`);
+      if (!res.ok) throw new Error(`Failed to load window pills (${res.status})`);
+      return res.json();
+    },
+    refetchInterval: 30_000,
+    staleTime: 25_000,
+  });
+
+  // Convert API rows to the local PillRow shape, filter off-clock test
+  // artifacts, then reverse to ascending so liveIdx + slicing below works.
+  const rows: PillRow[] = (query.data?.markets ?? [])
+    .filter((m) => isMarketAligned(m.opens_at, duration))
+    .map((m) => ({
+      id: m.id,
+      opens_at: m.opens_at,
+      closes_at: m.closes_at,
+      status: m.status,
+      outcome: m.outcome,
+    }))
+    .slice()
+    .reverse();
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);

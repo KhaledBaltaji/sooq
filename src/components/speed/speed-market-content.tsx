@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { CheckCircle2, MinusCircle, XCircle, Share2, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useSupabase } from "@/components/providers/supabase-provider";
 import { useSpeedMarket } from "@/hooks/use-speed-market";
 import { useSpeedOracleLatest } from "@/hooks/use-speed-oracle";
 import { useSpeedPosition } from "@/hooks/use-speed-position";
@@ -58,7 +57,6 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
   const t = useTranslations("speed");
   const tMarket = useTranslations("market");
   const router = useRouter();
-  const supabase = useSupabase();
   const { market, loading: mLoading } = useSpeedMarket(id);
   const { price, isStale, loading: oLoading } = useSpeedOracleLatest("BTC");
   const { position } = useSpeedPosition(id);
@@ -168,23 +166,38 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
     // catches the next market the moment it opens.
     async function findAndGo() {
       if (cancelled) return;
-      const nowIso = new Date().toISOString();
-      const { data } = await supabase
-        .from("speed_markets" as never)
-        .select("id, opens_at")
-        .eq("asset", market!.asset)
-        .eq("duration", market!.duration)
-        .eq("status", "open")
-        .lte("opens_at", nowIso)
-        .gt("closes_at", nowIso)
-        .order("closes_at", { ascending: true })
-        .limit(5);
+      const params = new URLSearchParams({
+        asset: market!.asset,
+        duration: market!.duration,
+        status: "open",
+        sort: "asc",
+        limit: "10",
+      });
+      let candidates: { id: string; opens_at: string; closes_at: string }[] = [];
+      try {
+        const res = await fetch(`/api/speed/markets?${params.toString()}`);
+        if (cancelled) return;
+        if (res.ok) {
+          const json = (await res.json()) as {
+            markets: { id: string; opens_at: string; closes_at: string }[];
+          };
+          candidates = json.markets ?? [];
+        }
+      } catch {
+        // transient network error — retry on next tick
+      }
       if (cancelled) return;
-      const candidates = (data ?? []) as { id: string; opens_at: string }[];
-      const next = candidates.find(
-        (c) =>
-          c.id !== market!.id && isMarketAligned(c.opens_at, market!.duration),
-      );
+      const nowMs = Date.now();
+      const next = candidates.find((c) => {
+        if (c.id === market!.id) return false;
+        const opensMs = new Date(c.opens_at).getTime();
+        const closesMs = new Date(c.closes_at).getTime();
+        return (
+          opensMs <= nowMs &&
+          closesMs > nowMs &&
+          isMarketAligned(c.opens_at, market!.duration)
+        );
+      });
       if (next) {
         // Phase 12D: tell the next mount of the modal route to skip the
         // slide-in animation. The card stays static; only the data swaps.
@@ -215,7 +228,7 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
       clearTimeout(giveUp);
       if (pollId) clearTimeout(pollId);
     };
-  }, [market, position, supabase, router]);
+  }, [market, position, router]);
 
   // Loading: show only the chart container with its internal loader.
   // No header skeleton, no pills skeleton, no about-section skeleton — the
@@ -313,7 +326,7 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
         status={market.status}
         livePrice={price}
         strikePrice={Number(market.strike_price)}
-        twap={market.settlement_price ? Number(market.settlement_price) : null}
+        twap={market.twap_at_close}
         isStale={isStale}
         shareSlot={shareSlot}
       />
@@ -474,7 +487,10 @@ function ExpiredView({ market }: { market: SpeedMarket }) {
   const t = useTranslations("speed");
   const isResolved = market.status === "resolved" && !!market.outcome;
   const isVoided = market.status === "voided";
-  const isHalted = market.status === "halted";
+  // 'halted' was a transient status in the prediction-market era; the
+  // slim Sooq schema doesn't include it. Keeping the variable as `false`
+  // until we drop the branch in the JSX below in a follow-up cleanup.
+  const isHalted = false;
 
   if (isResolved) {
     const outcome = market.outcome!;
@@ -485,8 +501,8 @@ function ExpiredView({ market }: { market: SpeedMarket }) {
           ? "text-destructive"
           : "text-muted-custom";
     const outcomeKey = outcome === "at_strike" ? "atStrike" : outcome;
-    const twap = market.settlement_price
-      ? `Close $${Number(market.settlement_price).toLocaleString()}`
+    const twap = market.twap_at_close
+      ? `Close $${market.twap_at_close.toLocaleString()}`
       : null;
 
     return (

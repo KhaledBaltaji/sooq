@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@/lib/auth/hooks";
-import { useSupabase } from "@/components/providers/supabase-provider";
+import { signOut as authSignOut } from "@/lib/auth/actions";
 import { useTheme } from "@/components/providers/theme-provider";
 import { useDepositModal } from "@/components/wallet/deposit-modal-provider";
 import { useWithdrawModal } from "@/components/wallet/withdraw-modal-provider";
@@ -30,7 +30,6 @@ const managedBranch = null;
 
 export function ProfileDropdown() {
   const { user } = useUser();
-  const supabase = useSupabase();
   const router = useRouter();
   const { theme, toggleTheme } = useTheme();
   const { openDepositModal } = useDepositModal();
@@ -60,7 +59,7 @@ export function ProfileDropdown() {
 
   const handleLogout = async () => {
     setOpen(false);
-    await supabase.auth.signOut();
+    await authSignOut();
     router.push("/");
   };
 

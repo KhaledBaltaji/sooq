@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { useSupabase } from "@/components/providers/supabase-provider";
 import { AdminRoleEditor } from "./admin-role-editor";
 
 interface UserResult {
@@ -12,8 +11,11 @@ interface UserResult {
   admin_allowed_views: string[] | null;
 }
 
+interface SearchResponse {
+  users: UserResult[];
+}
+
 export function AddAdminDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const supabase = useSupabase();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<UserResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -22,18 +24,18 @@ export function AddAdminDialog({ open, onClose }: { open: boolean; onClose: () =
   const handleSearch = useCallback(async () => {
     if (!query.trim()) return;
     setSearching(true);
-    const q = query.trim();
-
-    // Search by phone or display name
-    const { data } = await supabase
-      .from("users")
-      .select("id, display_name, phone, is_admin, admin_allowed_views")
-      .or(`phone.ilike.%${q}%,display_name.ilike.%${q}%`)
-      .limit(10);
-
-    setResults((data as UserResult[]) || []);
-    setSearching(false);
-  }, [query, supabase]);
+    try {
+      const res = await fetch(`/api/admin/users/search?q=${encodeURIComponent(query.trim())}`);
+      if (!res.ok) {
+        setResults([]);
+        return;
+      }
+      const data = (await res.json()) as SearchResponse;
+      setResults(data.users ?? []);
+    } finally {
+      setSearching(false);
+    }
+  }, [query]);
 
   if (!open) return null;
 

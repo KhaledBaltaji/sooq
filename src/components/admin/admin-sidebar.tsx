@@ -101,7 +101,7 @@ function NavItems({ onNavigate, allowedViews }: { onNavigate?: () => void; allow
                 ? pathname === "/admin"
                 : pathname.startsWith(href);
 
-            const badgeCount = badgeKey ? counts[badgeKey] : 0;
+            const badgeCount = (badgeKey ? counts[badgeKey] : 0) ?? 0;
             const showBadge = badgeCount > 0;
 
             return (

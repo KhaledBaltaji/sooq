@@ -1,4 +1,7 @@
-// Admin user search — by display_name or phone (ilike). 5 results max.
+// GET /api/admin/users/search?q=… — admin-only user search by display_name
+// or phone. Returns 10 results max with is_admin + admin_allowed_views so
+// the AddAdminDialog can decide which role the user already has.
+
 import { NextResponse } from "next/server";
 import { ilike, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
@@ -22,6 +25,8 @@ export async function GET(req: Request) {
         display_name: users.displayName,
         phone: users.phone,
         balance_usd: users.balanceUsd,
+        is_admin: users.isAdmin,
+        admin_allowed_views: users.adminAllowedViews,
       })
       .from(users)
       .where(
@@ -30,7 +35,7 @@ export async function GET(req: Request) {
           ilike(sql`coalesce(${users.phone}, '')`, pattern)
         )
       )
-      .limit(5);
+      .limit(10);
 
     return NextResponse.json({
       users: rows.map((u) => ({

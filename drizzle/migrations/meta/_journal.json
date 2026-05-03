@@ -50,6 +50,13 @@
       "when": 1777803000000,
       "tag": "0006_admin_rpcs",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1777840000000,
+      "tag": "0007_chart_rpcs",
+      "breakpoints": true
     }
   ]
 }

@@ -1,50 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useSupabase } from "@/components/providers/supabase-provider";
-import { useSession } from "@/lib/auth/hooks";
+// W7 cutover: TanStack Query hooks (useNotifications + useMarkNotificationRead).
+
 import { useLocale } from "next-intl";
 import { cn } from "@/lib/utils";
 import { Bell } from "lucide-react";
 import { SignInPrompt } from "@/components/auth/sign-in-prompt";
-
-interface Notification {
-  id: string;
-  type: string;
-  title_en: string;
-  title_ar: string;
-  body_en: string | null;
-  body_ar: string | null;
-  is_read: boolean;
-  created_at: string;
-}
+import { useSession } from "@/lib/auth/hooks";
+import {
+  useNotifications,
+  useMarkNotificationRead,
+} from "@/hooks/use-notifications";
 
 export default function NotificationsPage() {
-  const supabase = useSupabase();
   const { user, loading: authLoading } = useSession();
   const locale = useLocale();
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { notifications, loading } = useNotifications(50);
+  const markRead = useMarkNotificationRead();
 
-  useEffect(() => {
-    if (!user) {
-      setLoading(false);
-      return;
-    }
-    async function fetch() {
-      const { data } = await supabase
-        .from("notifications")
-        .select("*")
-        .eq("user_id", user!.id)
-        .order("created_at", { ascending: false })
-        .limit(50);
-      setNotifications((data as Notification[]) || []);
-      setLoading(false);
-    }
-    fetch();
-  }, [supabase, user]);
-
-  // Anonymous — show sign-in prompt instead of empty notifications list
   if (!authLoading && !user) {
     return (
       <SignInPrompt
@@ -54,16 +27,6 @@ export default function NotificationsPage() {
       />
     );
   }
-
-  const markAsRead = async (id: string) => {
-    await (supabase
-      .from("notifications") as any)
-      .update({ is_read: true })
-      .eq("id", id);
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, is_read: true } : n))
-    );
-  };
 
   return (
     <div className="px-md py-lg space-y-lg max-w-lg mx-auto">
@@ -82,33 +45,36 @@ export default function NotificationsPage() {
         </div>
       ) : (
         <div className="space-y-xs">
-          {notifications.map((n) => (
-            <button
-              key={n.id}
-              onClick={() => !n.is_read && markAsRead(n.id)}
-              className={cn(
-                "w-full text-left px-sm py-sm rounded-lg transition-colors",
-                n.is_read ? "bg-surface" : "bg-yes/5 hover:bg-yes/10"
-              )}
-            >
-              <div className="flex items-start gap-sm">
-                {!n.is_read && <span className="w-2 h-2 rounded-full bg-yes mt-1.5 flex-shrink-0" />}
-                <div>
-                  <p className="text-sm font-dm-sans text-text">
-                    {locale === "ar" ? n.title_ar : n.title_en}
-                  </p>
-                  {(locale === "ar" ? n.body_ar : n.body_en) && (
-                    <p className="text-xs text-muted mt-0.5">
-                      {locale === "ar" ? n.body_ar : n.body_en}
+          {notifications.map((n) => {
+            const isRead = Boolean(n.read_at);
+            return (
+              <button
+                key={n.id}
+                onClick={() => !isRead && markRead.mutate(n.id)}
+                className={cn(
+                  "w-full text-left px-sm py-sm rounded-lg transition-colors",
+                  isRead ? "bg-surface" : "bg-yes/5 hover:bg-yes/10"
+                )}
+              >
+                <div className="flex items-start gap-sm">
+                  {!isRead && <span className="w-2 h-2 rounded-full bg-yes mt-1.5 flex-shrink-0" />}
+                  <div>
+                    <p className="text-sm font-dm-sans text-text">
+                      {locale === "ar" ? n.title_ar : n.title_en}
                     </p>
-                  )}
-                  <p className="text-xs text-muted mt-1">
-                    {new Date(n.created_at).toLocaleDateString()}
-                  </p>
+                    {(locale === "ar" ? n.body_ar : n.body_en) && (
+                      <p className="text-xs text-muted mt-0.5">
+                        {locale === "ar" ? n.body_ar : n.body_en}
+                      </p>
+                    )}
+                    <p className="text-xs text-muted mt-1">
+                      {new Date(n.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            </button>
-          ))}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

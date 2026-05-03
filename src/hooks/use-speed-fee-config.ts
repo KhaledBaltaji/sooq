@@ -1,7 +1,6 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useSupabase } from "@/components/providers/supabase-provider";
 import { queryKeys } from "@/lib/query/keys";
 import {
   fetchSpeedFeeConfig,
@@ -10,16 +9,14 @@ import {
 } from "@/lib/query/speed-fees/queries";
 
 /**
- * Live speed-market fee config from `fee_config` (rows `speed_*`):
- * IV per asset, spread, handle fee, cashout multipliers. Falls back to
- * defaults that match mig 317 seeds, so the UI never shows NaN before the
- * first fetch. Admin edits propagate via React Query invalidation.
+ * Live speed-market fee config sourced from /api/fees + /api/speed/volatility.
+ * Falls back to defaults that match the v1 seed, so the UI never shows NaN
+ * before the first fetch.
  */
 export function useSpeedFeeConfig(): SpeedFeeConfig {
-  const supabase = useSupabase();
   const { data } = useQuery({
     queryKey: queryKeys.speedFees.config(),
-    queryFn: () => fetchSpeedFeeConfig(supabase),
+    queryFn: () => fetchSpeedFeeConfig(),
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
   });

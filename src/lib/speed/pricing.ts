@@ -229,8 +229,6 @@ export function durationToSeconds(d: SpeedDuration): number {
       return 5 * 60;
     case "15m":
       return 15 * 60;
-    case "1h":
-      return 60 * 60;
     case "24h":
       return 24 * 60 * 60;
   }
@@ -291,8 +289,6 @@ export function isMarketAligned(
       return minutes % 5 === 0;
     case "15m":
       return minutes % 15 === 0;
-    case "1h":
-      return minutes === 0;
     case "24h":
       return minutes === 0 && ts.getUTCHours() === 0;
   }

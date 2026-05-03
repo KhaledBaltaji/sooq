@@ -1,26 +1,15 @@
-// Slim type shim post-W2/W3/W4 strip.
-// Original auto-generated Supabase Database type was full of LMSR / branch /
-// commission / demo / prelaunch tables that no longer exist. Until W7 cuts
-// the supabase-js client over to Drizzle, this file exposes just the speed
-// types the components import.
+// W7 cutover: types here mirror the JSON returned by the new /api/* routes.
+// snake_case to match the API boundary; numbers stay numbers (the API
+// converts NUMERIC columns to JS numbers for us).
 //
-// W7 service migration: replace these with `typeof speedX.$inferSelect` from
-// `@/lib/db/schema.ts` and delete this file.
+// `Database` placeholder kept so the few remaining typed `db` references
+// type-check until they're cut over to Drizzle proper.
 
 // ---- Speed enums ----
-// SpeedDuration kept permissive because some legacy code paths reference
-// "1h" (dropped in mig 361). Tightening to the live enum is W7 cleanup.
 export type SpeedAsset = "BTC";
-export type SpeedDuration = "5m" | "15m" | "1h" | "24h";
+export type SpeedDuration = "5m" | "15m" | "24h";
 export type SpeedSide = "over" | "under";
-// SpeedMarketStatus permissive ('pending' / 'halted' from older code paths).
-export type SpeedMarketStatus =
-  | "open"
-  | "resolving"
-  | "resolved"
-  | "voided"
-  | "pending"
-  | "halted";
+export type SpeedMarketStatus = "open" | "resolving" | "resolved" | "voided";
 export type SpeedMarketOutcome = "over" | "under" | "at_strike";
 export type SpeedPositionStatus =
   | "open"
@@ -30,27 +19,24 @@ export type SpeedPositionStatus =
   | "refunded";
 export type SpeedTradeKind = "open" | "cashout";
 
-// LMSR side type kept as a stub for agent.ts and other surviving lib types.
-// Never used by live code post-W2 strip.
+// LMSR side type kept as a stub for legacy lib types.
 export type Side = "yes" | "no";
 
-// ---- Speed row shapes (snake_case to match supabase-js responses pre-W7) ----
+// ---- Speed row shapes (snake_case from /api/speed/*) ----
 
 export interface SpeedMarket {
   id: string;
   asset: SpeedAsset;
   duration: SpeedDuration;
-  strike_price: string;
-  settlement_price: string | null;
+  strike_price: number | null;
   opens_at: string;
   closes_at: string;
   status: SpeedMarketStatus;
   outcome: SpeedMarketOutcome | null;
-  twap_at_close: string | null;
+  twap_at_close: number | null;
   void_reason: string | null;
   resolved_at: string | null;
   created_at: string;
-  updated_at: string;
 }
 
 export interface SpeedPosition {
@@ -58,12 +44,12 @@ export interface SpeedPosition {
   user_id: string;
   market_id: string;
   side: SpeedSide;
-  stake: string;
-  entry_price: string;
-  entry_fair_prob: string;
-  entry_offered_prob: string;
+  stake: number;
+  entry_price: number;
+  entry_fair_prob: number;
+  entry_offered_prob: number;
   status: SpeedPositionStatus;
-  payout_amount: string | null;
+  payout_amount: number | null;
   closed_at: string | null;
   created_at: string;
 }
@@ -74,17 +60,17 @@ export interface SpeedTrade {
   user_id: string;
   market_id: string;
   kind: SpeedTradeKind;
-  amount: string;
-  spot_price: string;
-  fair_prob: string;
-  offered_prob: string;
-  handle_fee: string | null;
-  cashout_multiplier: string | null;
+  amount: number;
+  spot_price: number;
+  fair_prob: number;
+  offered_prob: number;
+  handle_fee: number | null;
+  cashout_multiplier: number | null;
   idempotency_key: string | null;
   created_at: string;
 }
 
-// ---- Speed RPC return shapes ----
+// ---- RPC return shapes (jsonb) ----
 
 export interface SpeedExecuteTradeResult {
   success: boolean;
@@ -118,9 +104,7 @@ export interface SpeedExecuteCashoutResult {
 
 export interface SpeedOracleLatest {
   asset: SpeedAsset;
-  source: string;
-  price: string;
-  ts: string;
+  price: number;
   received_at: string;
 }
 
@@ -128,19 +112,18 @@ export interface SpeedOracleLatest {
 
 export interface AdminSidebarCounts {
   pending_finance: number;
-  [key: string]: number;
+  pending_deposits?: number;
+  pending_withdrawals?: number;
 }
 
 // Branch system stripped W3 — kept as type stub for future re-add.
 export type AgentLevel = 1 | 2 | 3 | 4;
 
-// LMSR stripped W2 — kept as type stub. Direction was 'buy' | 'sell' for trades.
+// LMSR stripped W2 — kept as type stub. Direction was 'buy' | 'sell'.
 export type TradeDirection = "buy" | "sell";
 
-// ---- Database root (placeholder for the supabase-js client) ----
-// supabase-js uses this to type query responses. We're not maintaining
-// the full schema here — just give it a permissive shape so the client
-// type-checks. W7 replaces supabase-js with Drizzle and this can go.
-//
+// ---- Database root placeholder ----
+// Pre-W7 the supabase-js client used this. Post-W7 only used as a name in
+// a couple of orphaned imports until those files are deleted in Phase E.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Database = any;

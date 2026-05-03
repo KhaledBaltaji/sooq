@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSupabase } from "@/components/providers/supabase-provider";
 import { useBalance } from "@/hooks/use-balance";
+import { useFeeRates } from "@/hooks/use-fee-rates";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { MIN_WITHDRAWAL } from "@/lib/constants";
@@ -33,7 +33,6 @@ interface WithdrawModalProps {
 }
 
 export function WithdrawModal({ open, onClose }: WithdrawModalProps) {
-  const supabase = useSupabase();
   const { balance } = useBalance();
   const t = useTranslations("wallet");
   const tc = useTranslations("common");
@@ -43,26 +42,10 @@ export function WithdrawModal({ open, onClose }: WithdrawModalProps) {
   const [destination, setDestination] = useState("");
   const [showTypeDropdown, setShowTypeDropdown] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [feeRate, setFeeRate] = useState(0.01);
+  // Fee rate from /api/fees (cached + 5min staleTime). Fallback in DEFAULT_FEE_RATES.
+  const feeRate = useFeeRates().withdrawal;
   const [status, setStatus] = useState<"idle" | "confirmed">("idle");
   const [validationError, setValidationError] = useState<string | null>(null);
-
-  // Fetch fee rate
-  useEffect(() => {
-    if (!open) return;
-    supabase
-      .from("fee_config")
-      .select("rate")
-      .eq("fee_type", "withdrawal_fee")
-      .single()
-      .then(({ data, error }) => {
-        if (error) {
-          console.error("Failed to fetch withdrawal fee rate:", error.message);
-          return;
-        }
-        if (data) setFeeRate(data.rate);
-      });
-  }, [open, supabase]);
 
   // Reset state when modal closes
   useEffect(() => {
@@ -136,20 +119,37 @@ export function WithdrawModal({ open, onClose }: WithdrawModalProps) {
     }
     setValidationError(null);
     setLoading(true);
-    const { error } = await supabase.rpc("process_withdrawal" as never, {
-      p_amount: numAmount,
-      p_destination: destination.trim(),
-      p_currency: destinationType === "crypto" ? "USDT" : "USD",
-      p_destination_type: destinationType,
-      p_network: destinationType === "crypto" ? "TRC20" : null,
-    } as never);
 
-    if (error) {
-      toast.error(error.message);
-      setLoading(false);
-    } else {
+    // Map old destinationType + currency/network to the new
+    // process_withdrawal signature: (amount, method, account_details).
+    const accountDetails: Record<string, string> =
+      destinationType === "crypto"
+        ? { network: "TRC20", address: destination.trim() }
+        : { phone: destination.trim() };
+
+    try {
+      const res = await fetch("/api/withdrawal/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: numAmount,
+          method: destinationType === "crypto" ? "crypto" : "whish",
+          account_details: accountDetails,
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        toast.error(errBody.error || "Withdrawal failed");
+        setLoading(false);
+        return;
+      }
+
       toast.success(tToast("withdrawalSubmitted"));
       setStatus("confirmed");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Network error");
+    } finally {
       setLoading(false);
     }
   };

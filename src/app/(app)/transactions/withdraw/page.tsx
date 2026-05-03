@@ -1,10 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
+// W7 cutover: standalone withdraw page now uses /api/fees + /api/withdrawal/process.
+// Kept simple — only USDT TRC20 supported here. The richer destination
+// flow (with whish phone option) lives in WithdrawModal.
+
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useSupabase } from "@/components/providers/supabase-provider";
 import { useBalance } from "@/hooks/use-balance";
+import { useFeeRates } from "@/hooks/use-fee-rates";
 import { useSession } from "@/lib/auth/hooks";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,27 +21,13 @@ import { SignInPrompt } from "@/components/auth/sign-in-prompt";
 export default function WithdrawPage() {
   const router = useRouter();
   const t = useTranslations("wallet");
-  const supabase = useSupabase();
   const { user, loading: authLoading } = useSession();
   const { balance } = useBalance();
+  const feeRate = useFeeRates().withdrawal;
   const [amount, setAmount] = useState("");
   const [destination, setDestination] = useState("");
   const [loading, setLoading] = useState(false);
-  const [feeRate, setFeeRate] = useState(0.01);
 
-  useEffect(() => {
-    if (!user) return;
-    supabase
-      .from("fee_config")
-      .select("rate")
-      .eq("fee_type", "withdrawal_fee")
-      .single()
-      .then(({ data }) => {
-        if (data) setFeeRate(data.rate);
-      });
-  }, [supabase, user]);
-
-  // Anonymous — show sign-in prompt instead of the withdrawal form
   if (!authLoading && !user) {
     return (
       <SignInPrompt
@@ -54,19 +44,28 @@ export default function WithdrawPage() {
 
   const handleWithdraw = async () => {
     setLoading(true);
-    const { data, error } = await supabase.rpc("process_withdrawal", {
-      p_amount: numAmount,
-      p_destination: destination,
-      p_currency: "USDT",
-    });
-
-    if (error) {
-      toast.error(error.message);
-    } else {
-      toast.success("Withdrawal submitted");
-      router.push("/transactions");
+    try {
+      const res = await fetch("/api/withdrawal/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: numAmount,
+          method: "crypto",
+          account_details: { network: "TRC20", address: destination.trim() },
+        }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        toast.error(data.error || "Withdrawal failed");
+      } else {
+        toast.success("Withdrawal submitted");
+        router.push("/transactions");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (

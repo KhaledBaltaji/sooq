@@ -1,80 +1,30 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
-import { useSupabase } from "@/components/providers/supabase-provider";
-import { useSession } from "@/lib/auth/hooks";
-import { useLocale, useTranslations } from "next-intl";
-import { cn } from "@/lib/utils";
-import { Bell, BellOff } from "lucide-react";
+// W7 cutover: TanStack Query hooks (useNotifications + mark-read mutations)
+// replace the prior supabase.from + realtime channel pattern.
 
-interface Notification {
-  id: string;
-  type: string;
-  title_en: string;
-  title_ar: string;
-  body_en: string | null;
-  body_ar: string | null;
-  is_read: boolean;
-  created_at: string;
-}
+import { useEffect, useState, useRef } from "react";
+import { useLocale, useTranslations } from "next-intl";
+import { Bell, BellOff } from "lucide-react";
+import { cn } from "@/lib/utils";
+import {
+  useNotifications,
+  useMarkNotificationRead,
+  useMarkAllNotificationsRead,
+} from "@/hooks/use-notifications";
 
 export function NotificationDropdown({ onOpen }: { onOpen?: () => void } = {}) {
-  const supabase = useSupabase();
-  const { user } = useSession();
   const locale = useLocale();
   const t = useTranslations("notifications");
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const unreadCount = notifications.filter((n) => !n.is_read).length;
+  const { notifications, loading } = useNotifications(20);
+  const markRead = useMarkNotificationRead();
+  const markAll = useMarkAllNotificationsRead();
 
-  // Fetch notifications
-  useEffect(() => {
-    if (!user) return;
-    async function fetch() {
-      const { data } = await supabase
-        .from("notifications")
-        .select("*")
-        .eq("user_id", user!.id)
-        .order("created_at", { ascending: false })
-        .limit(20);
-      setNotifications((data as Notification[]) || []);
-      setLoading(false);
-    }
-    fetch();
-  }, [supabase, user]);
+  const unreadCount = notifications.filter((n) => !n.read_at).length;
 
-  // Realtime: new notifications
-  useEffect(() => {
-    if (!user) return;
-    const channel = supabase
-      .channel(`notifs-${user.id}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "notifications",
-          filter: `user_id=eq.${user.id}`,
-        },
-        (payload) => {
-          setNotifications((prev) => [payload.new as Notification, ...prev].slice(0, 20));
-        }
-      )
-      .subscribe((status) => {
-        if (status === "CHANNEL_ERROR") {
-          console.error("Notifications realtime subscription error");
-        }
-      });
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [supabase, user]);
-
-  // Close on outside click
   useEffect(() => {
     if (!open) return;
     function handleClick(e: MouseEvent) {
@@ -86,9 +36,7 @@ export function NotificationDropdown({ onOpen }: { onOpen?: () => void } = {}) {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
 
-  // Close on mouse leave with a small delay (so user can move to dropdown)
   const closeTimer = useRef<NodeJS.Timeout | null>(null);
-  // Listen for close events from other dropdowns
   useEffect(() => {
     const handler = () => setOpen(false);
     window.addEventListener("close-notifications", handler);
@@ -103,36 +51,6 @@ export function NotificationDropdown({ onOpen }: { onOpen?: () => void } = {}) {
   };
   const handleMouseLeave = () => {
     closeTimer.current = setTimeout(() => setOpen(false), 200);
-  };
-
-  const markAsRead = async (id: string) => {
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, is_read: true } : n))
-    );
-    const { error } = await (supabase.from("notifications") as any)
-      .update({ is_read: true })
-      .eq("id", id);
-    if (error) {
-      // Rollback optimistic update
-      setNotifications((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, is_read: false } : n))
-      );
-    }
-  };
-
-  const markAllRead = async () => {
-    const unreadIds = notifications.filter((n) => !n.is_read).map((n) => n.id);
-    if (unreadIds.length === 0) return;
-    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-    const { error } = await (supabase.from("notifications") as any)
-      .update({ is_read: true })
-      .in("id", unreadIds);
-    if (error) {
-      // Rollback
-      setNotifications((prev) =>
-        prev.map((n) => (unreadIds.includes(n.id) ? { ...n, is_read: false } : n))
-      );
-    }
   };
 
   function formatTime(dateStr: string) {
@@ -151,7 +69,6 @@ export function NotificationDropdown({ onOpen }: { onOpen?: () => void } = {}) {
 
   return (
     <div className="relative" ref={dropdownRef} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
-      {/* Bell button */}
       <button
         onClick={() => setOpen(!open)}
         aria-label="Notifications"
@@ -166,7 +83,6 @@ export function NotificationDropdown({ onOpen }: { onOpen?: () => void } = {}) {
         )}
       </button>
 
-      {/* Dropdown */}
       <div
         className={cn(
           "absolute end-0 top-full mt-2 w-80 bg-bg border border-border-custom rounded-2xl shadow-xl z-[60] overflow-hidden",
@@ -176,20 +92,19 @@ export function NotificationDropdown({ onOpen }: { onOpen?: () => void } = {}) {
             : "opacity-0 scale-95 -translate-y-1 pointer-events-none"
         )}
       >
-        {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border-custom">
           <h3 className="font-satoshi font-medium text-sm text-text">{t("title")}</h3>
           {unreadCount > 0 && (
             <button
-              onClick={markAllRead}
-              className="text-[11px] text-yes font-medium hover:underline cursor-pointer"
+              onClick={() => markAll.mutate()}
+              disabled={markAll.isPending}
+              className="text-[11px] text-yes font-medium hover:underline cursor-pointer disabled:opacity-50"
             >
               {t("markAllRead")}
             </button>
           )}
         </div>
 
-        {/* Content */}
         <div className="max-h-80 overflow-y-auto">
           {loading ? (
             <div className="p-4 space-y-3">
@@ -203,37 +118,40 @@ export function NotificationDropdown({ onOpen }: { onOpen?: () => void } = {}) {
               <p className="text-sm text-muted-custom">{t("noNotifications")}</p>
             </div>
           ) : (
-            notifications.map((n) => (
-              <button
-                key={n.id}
-                onClick={() => !n.is_read && markAsRead(n.id)}
-                className={cn(
-                  "w-full text-left px-4 py-3 transition-colors border-b border-border-custom/20 last:border-0",
-                  n.is_read ? "hover:bg-surface/50" : "bg-yes/[0.03] hover:bg-yes/[0.06]"
-                )}
-              >
-                <div className="flex items-start gap-2.5">
-                  {!n.is_read && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-yes mt-1.5 shrink-0" />
+            notifications.map((n) => {
+              const isRead = Boolean(n.read_at);
+              return (
+                <button
+                  key={n.id}
+                  onClick={() => !isRead && markRead.mutate(n.id)}
+                  className={cn(
+                    "w-full text-left px-4 py-3 transition-colors border-b border-border-custom/20 last:border-0",
+                    isRead ? "hover:bg-surface/50" : "bg-yes/[0.03] hover:bg-yes/[0.06]"
                   )}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-medium text-text truncate">
-                        {locale === "ar" ? n.title_ar : n.title_en}
-                      </p>
-                      <span className="text-[10px] text-dim shrink-0">
-                        {formatTime(n.created_at)}
-                      </span>
-                    </div>
-                    {(locale === "ar" ? n.body_ar : n.body_en) && (
-                      <p className="text-xs text-muted-custom mt-0.5 line-clamp-2">
-                        {locale === "ar" ? n.body_ar : n.body_en}
-                      </p>
+                >
+                  <div className="flex items-start gap-2.5">
+                    {!isRead && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-yes mt-1.5 shrink-0" />
                     )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-text truncate">
+                          {locale === "ar" ? n.title_ar : n.title_en}
+                        </p>
+                        <span className="text-[10px] text-dim shrink-0">
+                          {formatTime(n.created_at)}
+                        </span>
+                      </div>
+                      {(locale === "ar" ? n.body_ar : n.body_en) && (
+                        <p className="text-xs text-muted-custom mt-0.5 line-clamp-2">
+                          {locale === "ar" ? n.body_ar : n.body_en}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </button>
-            ))
+                </button>
+              );
+            })
           )}
         </div>
       </div>

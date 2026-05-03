@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { MIN_DEPOSIT } from "@/lib/constants";
 import { formatCurrency, cn } from "@/lib/utils";
-import { useSupabase } from "@/components/providers/supabase-provider";
+import { useUser } from "@/lib/auth/hooks";
 import { useSession } from "@/lib/auth/hooks";
 import Image from "next/image";
 import { ArrowLeft, X, ChevronRight, Info, Lock, ShieldCheck, Copy, Check, Loader2 } from "lucide-react";
@@ -295,14 +295,21 @@ function CryptoStep({ network, onBack, onDepositDetected }: {
   onBack: () => void;
   onDepositDetected: () => void;
 }) {
-  const supabase = useSupabase();
   const { user } = useSession();
+  const { user: profile, refetch: refetchProfile } = useUser();
   const t = useTranslations("wallet");
   const tc = useTranslations("common");
   const [copied, setCopied] = useState(false);
   const [walletAddresses, setWalletAddresses] = useState<{ trc20: string | null; erc20: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Snapshot the balance when the deposit modal opens so we can detect a
+  // confirmed deposit (process_deposit credits balance + writes a tx row).
+  const startingBalanceRef = useRef<number | null>(null);
+  if (startingBalanceRef.current === null && profile && typeof profile.balance_usd === "number") {
+    startingBalanceRef.current = profile.balance_usd;
+  }
 
   // Fetch or generate wallet addresses
   useEffect(() => {
@@ -332,33 +339,29 @@ function CryptoStep({ network, onBack, onDepositDetected }: {
     return () => { cancelled = true; };
   }, []);
 
-  // Subscribe to deposits table for real-time deposit detection
+  // Poll the user profile every 5s. When balance ticks up vs the snapshot
+  // we took on mount, the 3pay webhook has credited the deposit and we
+  // can flip the modal to the success state.
   useEffect(() => {
     if (!user) return;
-    const channel = supabase
-      .channel("deposit-watch")
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "deposits",
-          filter: `user_id=eq.${user.id}`,
-        },
-        (payload) => {
-          if (payload.new.status === "confirmed" && payload.new.provider === "3pay") {
-            onDepositDetected();
-          }
-        }
-      )
-      .subscribe((status) => {
-        if (status === "CHANNEL_ERROR") {
-          console.error("Deposit watch realtime subscription error");
-        }
-      });
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      if (cancelled) return;
+      await refetchProfile();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [user, refetchProfile]);
 
-    return () => { supabase.removeChannel(channel); };
-  }, [supabase, user, onDepositDetected]);
+  useEffect(() => {
+    if (!profile) return;
+    const start = startingBalanceRef.current;
+    if (start !== null && profile.balance_usd > start + 0.001) {
+      onDepositDetected();
+    }
+  }, [profile, onDepositDetected]);
 
   const address = network === "TRC20" ? walletAddresses?.trc20 : walletAddresses?.erc20;
 
