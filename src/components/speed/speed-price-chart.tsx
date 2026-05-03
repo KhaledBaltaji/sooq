@@ -478,36 +478,18 @@ export function SpeedPriceChart({
       // oracle. Live markets follow the oracle as before.
       const livePrice = isLive && oracle ? Number(oracle.price) : last.close;
       const y = series.priceToCoordinate(livePrice);
-      // X anchors at the last bar's time (bucket start of the most-recent
-      // candle). For live markets we then project forward by the fraction
-      // of the bucket that's already elapsed × the chart's barSpacing
-      // pixel width, so the dot sits at the live edge of the line rather
-      // than pinned to the bucket start. timeToCoordinate(NOW) doesn't
-      // work — lightweight-charts returns null for any time past the last
-      // data point, hiding the dot entirely.
-      const baseX = chart.timeScale().timeToCoordinate(last.time);
-      if (typeof baseX !== "number" || !Number.isFinite(baseX) || typeof y !== "number" || !Number.isFinite(y)) {
+      // X = the pixel for last.time, which is always inside the chart's
+      // data range so timeToCoordinate returns a valid number. The dot
+      // sits at the rightmost point of the rendered line — for live
+      // markets it'll "jump" 8px every 15s when a new bucket rolls,
+      // which is fine and predictable. (Earlier projection-based
+      // attempts pushed the dot outside the chart bounds.)
+      const x = chart.timeScale().timeToCoordinate(last.time);
+      if (
+        typeof x !== "number" || !Number.isFinite(x) ||
+        typeof y !== "number" || !Number.isFinite(y)
+      ) {
         return;
-      }
-      // baseX is a `Coordinate` (branded number); we treat as plain number
-      // for the projection arithmetic below.
-      let x = baseX as unknown as number;
-      if (isLive) {
-        const nowSecs = Math.floor(Date.now() / 1000);
-        const elapsedInBucket = Math.max(
-          0,
-          Math.min(resolvedBucket, nowSecs - (last.time as number)),
-        );
-        const fraction = resolvedBucket > 0 ? elapsedInBucket / resolvedBucket : 0;
-        // barSpacing is the pixel distance between two adjacent bars at
-        // the current zoom. Multiplying by `fraction` gives the pixel
-        // offset from the last bar to NOW within the current bucket.
-        const ts = chart.timeScale() as unknown as {
-          options?: () => { barSpacing?: number };
-        };
-        const opts = typeof ts.options === "function" ? ts.options() : undefined;
-        const barSpacing = opts?.barSpacing ?? 8;
-        x = (baseX as unknown as number) + fraction * barSpacing;
       }
       const isOver = livePrice >= strikePrice;
       setLiveDot((prev) => {
