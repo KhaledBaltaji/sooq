@@ -349,6 +349,7 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
                 opensAt={market.opens_at}
                 closesAt={market.closes_at}
                 duration={market.duration}
+                status={market.status}
                 height={320}
                 chartType={chartType}
                 className="!h-[520px] md:!h-[320px]"

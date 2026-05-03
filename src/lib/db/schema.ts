@@ -453,6 +453,53 @@ export const notifications = pgTable(
 );
 
 // ============================================================================
+// Help center (mig 0012)
+// ============================================================================
+
+export const helpCollections = pgTable(
+  "help_collections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    slug: text("slug").notNull().unique(),
+    title: text("title").notNull(),
+    description: text("description"),
+    icon: text("icon").notNull().default("help-circle"),
+    locale: text("locale").notNull().default("en"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isPublished: boolean("is_published").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    localeSortIdx: index("idx_help_collections_locale").on(t.locale, t.sortOrder),
+  })
+);
+
+export const helpArticles = pgTable(
+  "help_articles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    collectionId: uuid("collection_id")
+      .notNull()
+      .references(() => helpCollections.id, { onDelete: "cascade" }),
+    slug: text("slug").notNull(),
+    title: text("title").notNull(),
+    content: text("content").notNull().default(""),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isPublished: boolean("is_published").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    collectionIdx: index("idx_help_articles_collection").on(t.collectionId, t.sortOrder),
+    collectionSlugUq: uniqueIndex("help_articles_collection_id_slug_unique").on(
+      t.collectionId,
+      t.slug
+    ),
+  })
+);
+
+// ============================================================================
 // Type exports for application use
 // ============================================================================
 
@@ -470,3 +517,7 @@ export type SpeedPosition = typeof speedPositions.$inferSelect;
 export type NewSpeedPosition = typeof speedPositions.$inferInsert;
 export type SpeedTrade = typeof speedTrades.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
+export type HelpCollection = typeof helpCollections.$inferSelect;
+export type NewHelpCollection = typeof helpCollections.$inferInsert;
+export type HelpArticle = typeof helpArticles.$inferSelect;
+export type NewHelpArticle = typeof helpArticles.$inferInsert;

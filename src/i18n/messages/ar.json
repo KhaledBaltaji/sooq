@@ -118,6 +118,23 @@
       }
     }
   },
+  "market": {
+    "aboutThisMarket": "عن هذا السوق",
+    "linkCopied": "تم نسخ الرابط"
+  },
+  "trade": {
+    "amount": "المبلغ",
+    "balanceLabel": "الرصيد:",
+    "depositToTrade": "أودِع للتداول",
+    "hintMinTrade": "أقل صفقة هي {min}",
+    "hintMaxTrade": "أقصى صفقة هي {max}",
+    "hintNeedMore": "تحتاج {needed} إضافية",
+    "insufficientBalance": "رصيد غير كافٍ",
+    "max": "الحد الأقصى",
+    "payoutIfWins": "العائد عند الفوز",
+    "processing": "جاري المعالجة…",
+    "toWin": "للفوز"
+  },
   "wallet": {
     "balance": "الرصيد",
     "depositFunds": "إيداع أموال",

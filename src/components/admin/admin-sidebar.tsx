@@ -67,6 +67,12 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    group: "Content",
+    items: [
+      { key: "help", href: "/admin/help", icon: "help", label: "Help Center" },
+    ],
+  },
+  {
     group: "Platform",
     items: [
       { key: "admins", href: "/admin/admins", icon: "shield_person", label: "Admins" },

@@ -85,6 +85,20 @@
       "when": 1777820000000,
       "tag": "0011_cron_gap_and_cashout_shape",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1777825000000,
+      "tag": "0012_help_center",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1777830000000,
+      "tag": "0013_drop_handle_fee_and_polish",
+      "breakpoints": true
     }
   ]
 }

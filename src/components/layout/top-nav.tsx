@@ -9,12 +9,13 @@ import { ProfileDropdown } from "./profile-dropdown";
 import { useUser } from "@/lib/auth/hooks";
 import { cn } from "@/lib/utils";
 
-// W10: speed-only v1 — strip nav back to live routes. Markets, agent
-// corner and help were design holdovers from the LMSR era; they 404 on
-// the slim build. Re-add them when we wire up real pages in W10 polish
-// or after launch.
+// W10: Featured / Markets / Help. Agent Corner stays out — its backend
+// (branches + commission tree) was stripped in W2/W3 and won't return
+// for v1.
 const NAV_LINKS = [
   { labelKey: "featured" as const, href: "/" },
+  { labelKey: "markets" as const, href: "/markets" },
+  { labelKey: "help" as const, href: "/help" },
 ];
 
 export function TopNav() {

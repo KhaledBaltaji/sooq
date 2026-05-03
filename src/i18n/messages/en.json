@@ -118,6 +118,23 @@
       }
     }
   },
+  "market": {
+    "aboutThisMarket": "About this market",
+    "linkCopied": "Link copied"
+  },
+  "trade": {
+    "amount": "Amount",
+    "balanceLabel": "Balance:",
+    "depositToTrade": "Deposit to trade",
+    "hintMinTrade": "Min trade is {min}",
+    "hintMaxTrade": "Max trade is {max}",
+    "hintNeedMore": "Need {needed} more",
+    "insufficientBalance": "Insufficient balance",
+    "max": "Max",
+    "payoutIfWins": "Payout if wins",
+    "processing": "Processing…",
+    "toWin": "to win"
+  },
   "wallet": {
     "balance": "Portfolio Balance",
     "depositFunds": "Deposit Funds",

@@ -1,9 +1,14 @@
 "use client";
 
-import Link from "next/link";
+// W10: speed-aware portfolio sidebar. Shows balance + open speed
+// positions count + total wagered when signed in; sign-in CTA otherwise.
+// Wired to the live useSpeedPositions polling hook so positions count
+// updates when the user opens or closes a position from the trade panel.
+
 import { useUser } from "@/lib/auth/hooks";
 import { useAuthModal } from "@/components/auth/auth-modal-provider";
 import { useDepositModal } from "@/components/wallet/deposit-modal-provider";
+import { useSpeedPositions } from "@/hooks/use-speed-positions";
 import { formatCurrency } from "@/lib/utils";
 import { PieChart } from "lucide-react";
 
@@ -11,6 +16,9 @@ export function PortfolioSidebar() {
   const { user, loading } = useUser();
   const { openLoginModal } = useAuthModal();
   const { openDepositModal } = useDepositModal();
+  const { positions, loading: positionsLoading } = useSpeedPositions({
+    onlyOpen: true,
+  });
 
   if (loading) {
     return (
@@ -28,7 +36,9 @@ export function PortfolioSidebar() {
         <h3 className="font-satoshi font-black text-xs uppercase tracking-widest text-muted-custom mb-4">
           Your Portfolio
         </h3>
-        <p className="text-sm text-muted-custom mb-4">Sign in to track your positions and P&L.</p>
+        <p className="text-sm text-muted-custom mb-4">
+          Sign in to track your positions and P&amp;L.
+        </p>
         <button
           onClick={openLoginModal}
           className="w-full py-2.5 bg-yes/10 text-yes rounded-md font-satoshi font-bold text-xs text-center hover:bg-yes/20 transition-colors"
@@ -38,6 +48,13 @@ export function PortfolioSidebar() {
       </div>
     );
   }
+
+  // Live stats from open speed positions
+  const openCount = positions.length;
+  const totalStaked = positions.reduce(
+    (sum, p) => sum + Number(p.stake ?? 0),
+    0
+  );
 
   return (
     <div className="bg-surface rounded-lg p-5 border border-border-custom/30">
@@ -52,7 +69,7 @@ export function PortfolioSidebar() {
         {/* Net worth */}
         <div className="flex flex-col">
           <span className="text-[10px] text-muted-custom uppercase font-bold tracking-widest">
-            PORTFOLIO BALANCE
+            Cash balance
           </span>
           <div className="flex items-end gap-2">
             <span className="text-3xl font-satoshi font-black tracking-tighter text-text tabular-nums">
@@ -61,17 +78,23 @@ export function PortfolioSidebar() {
           </div>
         </div>
 
-        {/* Agent Wallet was stripped in W3 (agent system). */}
-
-        {/* Stats grid */}
+        {/* Stats grid — live position count + staked */}
         <div className="grid grid-cols-2 gap-4 border-t border-border-custom pt-4">
           <div className="flex flex-col">
-            <span className="text-[9px] text-muted-custom uppercase font-bold">POSITIONS</span>
-            <span className="text-sm font-satoshi font-bold text-text">—</span>
+            <span className="text-[9px] text-muted-custom uppercase font-bold tracking-wider">
+              Open positions
+            </span>
+            <span className="text-sm font-satoshi font-bold text-text tabular-nums">
+              {positionsLoading ? "—" : openCount}
+            </span>
           </div>
           <div className="flex flex-col">
-            <span className="text-[9px] text-muted-custom uppercase font-bold">PNL (TOTAL)</span>
-            <span className="text-sm font-satoshi font-bold text-success">—</span>
+            <span className="text-[9px] text-muted-custom uppercase font-bold tracking-wider">
+              Total staked
+            </span>
+            <span className="text-sm font-satoshi font-bold text-text tabular-nums">
+              {positionsLoading ? "—" : formatCurrency(totalStaked)}
+            </span>
           </div>
         </div>
 

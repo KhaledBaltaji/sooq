@@ -988,4 +988,163 @@ Per master plan ritual:
 - [ ] User explicitly approves "ready for W10"
 
 
+## 2026-05-03 — W10 cleanup + W11 financial-flow lock-in
+
+### Goal
+
+User wanted: AWS + Vercel + RDS clean, broken nav fixed, Help admin
+CRUD restored, prediction-market-style home (hero + grid + right
+sidebar), profile rebuilt, /markets back, footer fixed. Plus a deep
+investigate on the speed RPC business logic — where Khaled was worried
+"some things are right, some are wrong, and some logic is overlapping."
+
+### Outcome
+
+#### Frontend
+
+- Home page: SpeedHomeView replaces W2 placeholder. Featured hero
+  card (locked to 520px desktop) + grid below + xl:right portfolio
+  sidebar (live position count + total staked, sign-in CTA when
+  logged out).
+- Top nav: Featured / Markets / Help. Agent Corner stays out (backend
+  stripped in W3).
+- New /markets page: status tabs + duration filter chips, footer
+  /markets?duration=Xm deep-links land here.
+- New /help, /help/[c], /help/[c]/[a] — Drizzle-fed, locale-aware,
+  WhatsApp deep link CTA.
+- Profile: full prediction-market port — avatar + portfolio value +
+  stats row (open / biggest_win / total_trades) + P&L chart with
+  range tabs + Positions / Activity tabs.
+- Footer: 4-column port (Brand / Markets / Links / Social) + the
+  broken `t("rights")` → `t("copyright", { year })` fix.
+- 13 missing i18n keys filled (`market.aboutThisMarket`, `trade.*`).
+- Speed price chart: `status` prop wired so resolved markets freeze
+  the live-tail + dot + recolor; was tracking live oracle past
+  closes_at.
+
+#### Help system
+
+- Mig 0012: `help_collections` + `help_articles` tables, indexes,
+  touch trigger.
+- 7 API routes: GET /api/help, GET /api/help/collections/[slug], GET
+  /api/help/articles/[slug] (public), plus GET/POST/PATCH/DELETE
+  under /api/admin/help.
+- 5 admin pages: list, collection create/edit (with nested article
+  list), article create/edit. Sidebar entry under "Content" group.
+
+#### Migration 0013 — financial-flow lock-in
+
+Locked-in decisions:
+
+- **Drop handle_fee.** `fee_config.speed_handle_fee_pct = 0`.
+  speed_execute_trade no longer reads or writes the field — new
+  speed_trades rows have `handle_fee = 0`. Existing rows keep their
+  historical values for accounting continuity. Per Khaled's "no
+  surprises" pricing — the AMM spread baked into offered_prob is the
+  sole revenue mechanism on hold-to-resolve.
+- **No resolution fee at settlement.** `speed_resolve_market` pays
+  winner exactly `stake / entry_offered_prob`. Master plan's "1%
+  resolution fee" line is dropped — winners get clean payouts.
+- **Fix void-refund-count bug** (was returning 0 in the void path
+  JSONB regardless of how many positions refunded). New `v_refunded`
+  counter, increment in the loop, return that.
+- **LN(0) guard on speed_fair_prob_over.** If a bad oracle tick lands
+  with `price = 0` or negative, return 0.5 instead of throwing.
+- **Cashout↔resolve deadlock prevention.** Cashout now takes the
+  same market-scoped advisory lock resolve uses, BEFORE any FOR
+  UPDATE work. Eliminates the deadlock window where cashout holds
+  position+user and waits on market while resolve holds market and
+  waits on position.
+
+#### Investigate findings (resolved or accepted)
+
+Running `/investigate`-style deep audit (Plan + Explore agents +
+live-RDS scripts/w10-ledger-audit.mjs + scripts/w10-trace-orphans.mjs):
+
+- 9-of-9 balance-write paths are paired with a transactions row.
+  No silent ledger drift in production code.
+- The "drift" the live audit caught was entirely test-script
+  infrastructure: `w9-load-suite@sooq.test` and `w9-trade-suite@sooq.test`
+  use `UPDATE users SET balance_usd = X` to top up bots, bypassing
+  the ledger. Wiped from staging via scripts/w11-wipe-test-users.mjs.
+- 25 settlements-missing-row positions traced to W10 cleanup script
+  (`w10-cleanup-test-markets.mjs`) flipping status without writing
+  settlement rows. Cleaned up with the same wipe.
+- Post-wipe ledger audit: 0 cache drift, 0 negative balances, 0
+  orphan trades, every won/cashout/refund has its tx + settlement.
+
+### Critical paths now in clean state
+
+```
+Trade open  → balance debit + speed_stake tx + position + trade row
+Cashout     → advisory lock + position FOR UPDATE + user/market FOR UPDATE +
+              balance credit (if amount > 0) + speed_cashout tx + position cashed_out
+Resolve     → advisory lock + market FOR UPDATE + per-position loop:
+              winner → balance + speed_payout + status=won
+              loser  → no balance change + status=lost
+              refund → balance + speed_refund + status=refunded
+              all   → speed_settlements row
+Voided      → refund all open positions, market status=voided, return
+              actual v_refunded count (not winners+losers ghost zeros)
+```
+
+### Files added
+
+- `drizzle/migrations/0013_drop_handle_fee_and_polish.sql`
+- `scripts/apply-drop-handle-fee.mjs`
+- `scripts/w10-rds-audit.mjs`
+- `scripts/w10-backfill-drizzle-journal.mjs`
+- `scripts/w10-cleanup-test-markets.mjs`
+- `scripts/w10-ledger-audit.mjs`
+- `scripts/w10-trace-orphans.mjs`
+- `scripts/w11-wipe-test-users.mjs`
+- `drizzle/migrations/0012_help_center.sql` + applier
+- 7 help API routes
+- 5 admin help pages
+- 3 public help pages
+- `/markets` page
+- `src/components/help/collection-card.tsx`, `delete-help-item.tsx`,
+  `help-collection-form.tsx`, `help-article-form.tsx`
+- `src/lib/help-utils.ts`, `src/types/help.ts`
+- `src/components/speed/speed-home-view.tsx`
+
+### Files changed
+
+- `src/app/(app)/page.tsx` (real home)
+- `src/app/(app)/profile/page.tsx` (full rebuild)
+- `src/app/(app)/help/page.tsx` (replaced W10 stub)
+- `src/components/layout/footer.tsx` (4-column port + fixed rights→copyright)
+- `src/components/layout/top-nav.tsx` (Featured / Markets / Help)
+- `src/components/layout/portfolio-sidebar.tsx` (live position count)
+- `src/components/admin/admin-sidebar.tsx` (Help Center entry)
+- `src/components/speed/speed-hero-card.tsx` (520px lock + i18n fix)
+- `src/components/speed/speed-price-chart.tsx` (status freeze)
+- `src/components/speed/speed-market-content.tsx` (pass status)
+- `src/lib/db/schema.ts` (helpCollections + helpArticles)
+- `src/i18n/messages/en.json` + `ar.json` (market + trade namespaces)
+- `src/app/api/health/route.ts` (single round-trip table probe)
+- `drizzle/migrations/meta/_journal.json` (entries 12 + 13)
+
+### Still pending the user's review
+
+1. UX hint about cashout-shows-spread-as-down-pnl — left for the
+   trade panel pass after the next round of designs.
+2. The "completed" enum value in withdrawal_status used by
+   w10-ledger-audit.mjs doesn't exist; cosmetic test-script fix.
+
+### Phase boundary checkpoint (W11)
+
+- [x] AWS + Vercel + RDS audited clean
+- [x] Help admin CRUD live (Khaled can publish FAQs without a deploy)
+- [x] Frontend speed flow renders end-to-end
+- [x] Ledger audit zero-issues post-wipe
+- [x] Mig 0013 applied: handle fee neutralized, resolution fee
+  confirmed-not-applied, void count fixed, oracle guard added,
+  cashout↔resolve deadlock prevented
+- [ ] User explicitly approves "staging is good to go"
+
+
+
+
+
 

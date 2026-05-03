@@ -57,6 +57,15 @@ interface SpeedPriceChartProps {
    * outside the chart (e.g. on the same row as window pills).
    */
   chartType?: SpeedChartType;
+  /**
+   * Market status. When this is anything other than "open" the chart
+   * freezes: live-tail oracle ticks stop appending past close, the
+   * pulsing dot snaps to the last historical bar instead of tracking
+   * the live oracle, and recoloring uses the final outcome rather than
+   * the still-ticking spot price. Without this the chart kept growing
+   * past closes_at and the dot drifted off the line.
+   */
+  status?: "open" | "resolving" | "resolved" | "voided";
 }
 
 /**
@@ -84,8 +93,14 @@ export function SpeedPriceChart({
   bucketSeconds,
   duration,
   chartType: chartTypeProp,
+  status,
 }: SpeedPriceChartProps) {
   const chartType: SpeedChartType = chartTypeProp ?? "candle";
+  // Anything past "open" means the market has closed (resolving / resolved /
+  // voided). Used by every effect that touches the live oracle so the
+  // chart visually freezes at closes_at instead of trailing the still-
+  // ticking spot.
+  const isLive = !status || status === "open";
   // Both candle and line modes use the same bucket size — 15s for 5m, 60s
   // for 1h. Previously line mode requested 1s buckets for "Polymarket
   // smoothness", but the get_speed_klines RPC's fast path returns raw
@@ -348,6 +363,9 @@ export function SpeedPriceChart({
   useEffect(() => {
     const series = seriesRef.current;
     if (!series || !mounted || !oracle || isStale) return;
+    // Freeze for closed markets — the line should end at closes_at, not
+    // keep growing forever as the oracle continues ticking.
+    if (!isLive) return;
     const last = lastBarRef.current;
     if (!last) return;
     const tickPrice = Number(oracle.price);
@@ -377,7 +395,7 @@ export function SpeedPriceChart({
       (series as ISeriesApi<"Area">).update({ time: next.time, value: tickPrice });
     }
     lastBarRef.current = next;
-  }, [oracle, isStale, mounted, resolvedBucket, chartType]);
+  }, [oracle, isStale, mounted, resolvedBucket, chartType, isLive]);
 
   // Track the target line's pixel Y so we can render an HTML label
   // overlay at that position. Both modes need this — the dotted line is
@@ -418,7 +436,10 @@ export function SpeedPriceChart({
       const chart = chartRef.current;
       const last = lastBarRef.current;
       if (!series || !chart || !last) return;
-      const livePrice = oracle ? Number(oracle.price) : last.close;
+      // Closed markets snap the dot to the last bar's close so it sits on
+      // the line endpoint, not above/below it tracking the still-ticking
+      // oracle. Live markets follow the oracle as before.
+      const livePrice = isLive && oracle ? Number(oracle.price) : last.close;
       const y = series.priceToCoordinate(livePrice);
       const x = chart.timeScale().timeToCoordinate(last.time);
       if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) {
@@ -438,7 +459,7 @@ export function SpeedPriceChart({
       cancelled = true;
       clearInterval(id);
     };
-  }, [chartType, mounted, oracle, strikePrice]);
+  }, [chartType, mounted, oracle, strikePrice, isLive]);
 
   // Recolor the AreaSeries based on live vs target. Green palette when
   // live >= target, red palette when below. Only runs in line mode —
@@ -446,8 +467,15 @@ export function SpeedPriceChart({
   useEffect(() => {
     if (chartType !== "line") return;
     const series = seriesRef.current as ISeriesApi<"Area"> | null;
-    if (!series || !oracle) return;
-    const livePrice = Number(oracle.price);
+    if (!series) return;
+    // Closed markets recolor against the chart's last historical close
+    // (the actual outcome shape) rather than the still-ticking spot. If
+    // the market is open, follow the oracle.
+    const last = lastBarRef.current;
+    const livePrice = isLive && oracle
+      ? Number(oracle.price)
+      : last?.close ?? null;
+    if (livePrice == null) return;
     const isOver = livePrice >= strikePrice;
     series.applyOptions(
       isOver
@@ -462,7 +490,7 @@ export function SpeedPriceChart({
             bottomColor: "rgba(239, 83, 80, 0.0)",
           },
     );
-  }, [oracle, strikePrice, chartType]);
+  }, [oracle, strikePrice, chartType, isLive]);
 
   // The container div MUST be rendered on first paint so the mount-once
   // useEffect at line 62 can read containerRef.current and call createChart.

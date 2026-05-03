@@ -73,7 +73,6 @@ const PLACEHOLDER_POINTS: number[] = [
  * the middle of the card is never blank or boxy.
  */
 export function SpeedHeroCard({ market }: { market: SpeedMarket }) {
-  const tHero = useTranslations("hero");
   const t = useTranslations("speed");
   const { points } = useSpeed24hSparkline(market.asset);
   const { price: livePrice, isStale } = useSpeedOracleLatest(market.asset);
@@ -124,10 +123,10 @@ export function SpeedHeroCard({ market }: { market: SpeedMarket }) {
     <Link
       href={`/speed/${market.id}`}
       onClick={handleClick}
-      className="block w-full bg-surface rounded-2xl overflow-hidden flex flex-col lg:flex-row border border-border-custom shadow-2xl lg:max-h-[520px]"
+      className="block w-full bg-surface rounded-2xl overflow-hidden flex flex-col lg:flex-row border border-border-custom shadow-2xl lg:min-h-[520px] lg:max-h-[520px]"
     >
       {/* Left column — title + chart + UP/DOWN. Mirrors HeroMarketCard. */}
-      <div className="lg:w-[50%] p-6 lg:p-8 flex flex-col justify-between lg:border-r border-border-custom min-h-[560px] lg:min-h-0">
+      <div className="lg:w-[50%] p-6 lg:p-8 flex flex-col justify-between lg:border-r border-border-custom min-h-[560px] lg:min-h-[520px]">
         <div>
           {/* Badge row */}
           <div className="flex items-center gap-3 mb-6 flex-wrap">
@@ -219,7 +218,7 @@ export function SpeedHeroCard({ market }: { market: SpeedMarket }) {
       <div className="hidden lg:flex lg:w-[50%] bg-surface p-6 lg:p-8 flex-col grid-dots">
         <div className="mb-6">
           <p className="text-[10px] text-muted-custom uppercase font-medium tracking-widest mb-1">
-            {tHero("instrumentPrice")}
+            Instrument price
           </p>
           <div className="font-satoshi font-bold text-2xl text-text">
             {market.asset}/USD
