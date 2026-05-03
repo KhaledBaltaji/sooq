@@ -494,34 +494,24 @@ export function SpeedPriceChart({
       // oracle. Live markets follow the oracle as before.
       const livePrice = isLive && oracle ? Number(oracle.price) : last.close;
       const y = series.priceToCoordinate(livePrice);
-      // X = the pixel for last.time, which is always inside the chart's
-      // data range so timeToCoordinate returns a valid number. The dot
-      // sits at the rightmost point of the rendered line — for live
-      // markets it'll "jump" 8px every 15s when a new bucket rolls,
-      // which is fine and predictable. (Earlier projection-based
-      // attempts pushed the dot outside the chart bounds.)
-      const rawX = chart.timeScale().timeToCoordinate(last.time);
-      if (
-        typeof rawX !== "number" || !Number.isFinite(rawX) ||
-        typeof y !== "number" || !Number.isFinite(y)
-      ) {
+      // X is pinned to the right edge of the time scale. With
+      // fixRightEdge: true on the chart, the right edge IS the latest
+      // data point's pixel — by definition. Going through
+      // `timeToCoordinate(last.time)` was making the dot drift behind
+      // the rendered line whenever lastBarRef.current's time desynced
+      // from the chart's series data (which happens during the
+      // 30-second API refresh ↔ live-tail handoff: setData() rewrites
+      // the chart's data while live-tail's ref still points at the
+      // previous bucket). Pinning to the right edge sidesteps the ref
+      // sync entirely — dot is always exactly where the line ends.
+      const x = chart.timeScale().width();
+      if (typeof y !== "number" || !Number.isFinite(y)) {
         return;
       }
-      // Only clamp X if it's actually off-screen (past the time scale's
-      // right edge). When in-range, use the raw coordinate so the dot
-      // center sits exactly on the line endpoint pixel. Clamping toward
-      // a margin offset would shift the dot off the line by `dotMargin`
-      // pixels — visible mismatch.
-      const chartWidth = chart.timeScale().width();
-      const x =
-        (rawX as unknown as number) > chartWidth
-          ? chartWidth
-          : (rawX as unknown as number);
       // Y is NOT clamped — priceToCoordinate already returns the same Y
-      // the line uses internally. Clamping here would offset the dot from
-      // the line endpoint when the live price approaches the chart's
-      // top/bottom margins. overflow-hidden on the wrapper still prevents
-      // the dot escaping the canvas if y is somehow extreme.
+      // the line uses internally. overflow-hidden on the wrapper
+      // contains the rare case where livePrice is briefly outside the
+      // auto-scaled price axis range.
       const isOver = livePrice >= strikePrice;
       setLiveDot((prev) => {
         if (prev && Math.abs(prev.x - x) < 0.5 && Math.abs(prev.y - y) < 0.5 && prev.isOver === isOver) {
