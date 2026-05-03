@@ -511,29 +511,27 @@ export function SpeedPriceChart({
       ) {
         return;
       }
-      // Clamp to chart bounds so the dot can never render outside the
-      // canvas (W11). lightweight-charts' timeToCoordinate is allowed to
-      // return values past the canvas width if last.time has drifted past
-      // the visible range — without this clamp the absolutely-positioned
-      // dot would escape into the page (overflow-hidden on the wrapper
-      // is the visual safety net; this is the data-level clamp).
+      // Only clamp X if it's actually off-screen (past the time scale's
+      // right edge). When in-range, use the raw coordinate so the dot
+      // center sits exactly on the line endpoint pixel. Clamping toward
+      // a margin offset would shift the dot off the line by `dotMargin`
+      // pixels — visible mismatch.
       const chartWidth = chart.timeScale().width();
-      const chartHeight = containerRef.current?.clientHeight ?? height;
-      const dotMargin = 8; // half the dot's outer ring so it stays fully visible
-      const x = Math.max(
-        dotMargin,
-        Math.min((rawX as unknown as number), chartWidth - dotMargin)
-      );
-      const yClamped = Math.max(
-        dotMargin,
-        Math.min((y as unknown as number), chartHeight - dotMargin)
-      );
+      const x =
+        (rawX as unknown as number) > chartWidth
+          ? chartWidth
+          : (rawX as unknown as number);
+      // Y is NOT clamped — priceToCoordinate already returns the same Y
+      // the line uses internally. Clamping here would offset the dot from
+      // the line endpoint when the live price approaches the chart's
+      // top/bottom margins. overflow-hidden on the wrapper still prevents
+      // the dot escaping the canvas if y is somehow extreme.
       const isOver = livePrice >= strikePrice;
       setLiveDot((prev) => {
-        if (prev && Math.abs(prev.x - x) < 0.5 && Math.abs(prev.y - yClamped) < 0.5 && prev.isOver === isOver) {
+        if (prev && Math.abs(prev.x - x) < 0.5 && Math.abs(prev.y - y) < 0.5 && prev.isOver === isOver) {
           return prev;
         }
-        return { x, y: yClamped, isOver };
+        return { x, y, isOver };
       });
     };
     tick();
