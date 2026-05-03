@@ -171,10 +171,12 @@ export function SpeedPriceChart({
       timeScale: {
         borderVisible: false,
         timeVisible: true,
-        // Hide seconds at the default zoom — too noisy. Lightweight-charts
-        // reveals them automatically when the user zooms in past the bucket
-        // size, so deep-zoom views still show second-precision.
-        secondsVisible: false,
+        // Show seconds at deep zoom — at 15s buckets, ticks within the
+        // same minute would all collide as "21:01" without this. The
+        // tickMarkFormatter below switches to HH:MM:SS when
+        // lightweight-charts asks for second-precision (TickMarkType=4),
+        // and stays at HH:MM at the default zoom.
+        secondsVisible: true,
         // Bigger barSpacing makes candles read as chunky bars instead of
         // thin lines. 8px (default 6) matches the Polymarket feel for our
         // 15s buckets on a 5m market.
@@ -187,12 +189,24 @@ export function SpeedPriceChart({
         // Lock the right edge so the user can't drag forward into
         // empty future space. Backward pan into history still works.
         fixRightEdge: true,
-        // Render axis labels and crosshair tooltips in the user's local
-        // timezone so they line up with the page header (e.g. "6:00 PM"
-        // instead of UTC "15:00") which uses the browser's locale formatter.
-        // tickMarkFormatter receives a UTC epoch in seconds; we convert.
-        tickMarkFormatter: (time: number) => {
+        // Render axis labels in the user's local timezone so they line
+        // up with the page header (e.g. "9:00 PM" instead of UTC
+        // "21:00"). The 2nd arg is a TickMarkType enum:
+        //   3 = Time (HH:MM) — default zoom on intraday views
+        //   4 = TimeWithSeconds (HH:MM:SS) — deep zoom inside a minute
+        // We pass through to the right Intl.DateTimeFormat options so
+        // duplicate "21:01" labels at 15s granularity become 21:01:00,
+        // 21:01:15, 21:01:30, 21:01:45 — distinct.
+        tickMarkFormatter: (time: number, tickMarkType: number) => {
           const d = new Date(time * 1000);
+          if (tickMarkType >= 4) {
+            return d.toLocaleTimeString(undefined, {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hour12: false,
+            });
+          }
           return d.toLocaleTimeString(undefined, {
             hour: "2-digit",
             minute: "2-digit",
