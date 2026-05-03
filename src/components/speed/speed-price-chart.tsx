@@ -179,18 +179,14 @@ export function SpeedPriceChart({
         // thin lines. 8px (default 6) matches the Polymarket feel for our
         // 15s buckets on a 5m market.
         barSpacing: 8,
-        // 20 bars of empty room to the right of the latest data so the
-        // user can drag the chart forward (pan right) to see "future"
-        // empty space and reposition the line on the left half. Default
-        // is 0 which pins the right edge to the latest bar and makes
-        // forward-drag impossible.
-        rightOffset: 20,
-        // Keep the default `shiftVisibleRangeOnNewBar: true` so when a
-        // new bucket rolls, the visible range moves with it — otherwise
-        // last.time advances past the right edge and the dot drifts off
-        // the line into empty space. With rightOffset:20 above, the user
-        // still has 20 bars of headroom and can drag forward; we just
-        // don't freeze the auto-follow.
+        // No empty headroom on the right (W11 — Khaled's call): the
+        // chart's right edge IS the latest data point. fixRightEdge
+        // below blocks forward-drag entirely. Users can only pan
+        // backward into history.
+        rightOffset: 0,
+        // Lock the right edge so the user can't drag forward into
+        // empty future space. Backward pan into history still works.
+        fixRightEdge: true,
         // Render axis labels and crosshair tooltips in the user's local
         // timezone so they line up with the page header (e.g. "6:00 PM"
         // instead of UTC "15:00") which uses the browser's locale formatter.
