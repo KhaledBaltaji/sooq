@@ -179,6 +179,16 @@ export function SpeedPriceChart({
         // thin lines. 8px (default 6) matches the Polymarket feel for our
         // 15s buckets on a 5m market.
         barSpacing: 8,
+        // 20 bars of empty room to the right of the latest data so the
+        // user can drag the chart forward (pan right) to see "future"
+        // empty space and reposition the line on the left half. Default
+        // is 0 which pins the right edge to the latest bar and makes
+        // forward-drag impossible.
+        rightOffset: 20,
+        // Don't auto-shift the visible range when a new bar arrives —
+        // lets the user's pan stick. New data still appends; if it lands
+        // outside the visible range the user can pan to it.
+        shiftVisibleRangeOnNewBar: false,
         // Render axis labels and crosshair tooltips in the user's local
         // timezone so they line up with the page header (e.g. "6:00 PM"
         // instead of UTC "15:00") which uses the browser's locale formatter.
