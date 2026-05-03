@@ -677,4 +677,117 @@ Per master plan ritual:
 - [ ] User explicitly approves "ready for W9"
 
 
+## 2026-05-03 — Speed-oracle worker migrated off Railway → AWS EC2
+
+### Why
+
+Last loose end of the Supabase strip. The W7 cleanup excluded
+`services/speed-oracle/` from the root tsconfig because it still
+imported `@supabase/supabase-js` and was hosted on Railway. With the
+slim Sooq schema running on RDS, the worker had to stop writing to
+Supabase and stop running on a vendor Sooq is leaving. Moving it onto
+the same AWS account that owns the RDS instance closes the loop:
+private SG-to-SG path (no public RDS egress for the hot path), one
+billing relationship, `pg_dump` portability.
+
+### What changed in the worker
+
+- `services/speed-oracle/src/index.ts` — full rewrite:
+  - `@supabase/supabase-js` → `pg` `Pool`. Same SSL trick as
+    `src/lib/db/index.ts` (strip `sslmode` from URL, set
+    `ssl: { rejectUnauthorized: false }` explicitly so AWS RDS chain
+    doesn't trip `verify-full`).
+  - Single transaction per closed kline writes both
+    `speed_oracle_ticks` (append-only history) and
+    `speed_oracle_latest` (cache). Drops the old
+    `speed_oracle_klines` write — that table doesn't exist in the slim
+    schema; chart RPC `get_speed_klines` synthesizes OHLC from ticks
+    at read time.
+  - Watchdog (10s no-tick → force reconnect), boot grace (30s after
+    open without any ticks → reconnect), exponential backoff capped
+    at 30s, Sentry alerts throttled to 1/min.
+- `services/speed-oracle/package.json` — removed `@supabase/supabase-js`,
+  added `pg` ^8.13.0 + `@types/pg`.
+- Deleted Railway artifacts: `railway.toml`, `Dockerfile`,
+  `.dockerignore`. Lock file regenerated.
+- `README.md` rewrote for AWS EC2 deploy flow.
+
+### Schema gap caught + fixed
+
+The worker uses `INSERT … ON CONFLICT (asset, ts, source) DO NOTHING`
+to dedupe Binance re-deliveries. The Drizzle `0001` migration only
+created a non-unique composite index — Postgres rejects the conflict
+target without a matching unique constraint.
+
+- New: `drizzle/migrations/0008_speed_oracle_ticks_unique.sql` —
+  `CREATE UNIQUE INDEX IF NOT EXISTS speed_oracle_ticks_dedupe ON
+  speed_oracle_ticks (asset, ts, source)`. Additive — old composite
+  index still serves time-range scans.
+- New: `scripts/apply-oracle-ticks-unique.mjs` — pg.Client applier
+  (matches existing `scripts/apply-*.mjs` pattern).
+- Journal updated.
+
+### AWS infra provisioned
+
+| Resource | ID / detail |
+|---|---|
+| Instance | `i-03411906c55af48af` (t4g.nano, ARM Graviton) |
+| AMI | Amazon Linux 2023 (ARM64) |
+| Region / AZ | `eu-central-1a` |
+| Subnet | `subnet-0eea01d61ca9976b9` |
+| Public IP | `63.183.214.217` |
+| Private IP | `172.31.25.184` |
+| SG | `sg-0a4270ac6977f474a` (`sooq-staging-oracle-sg`) |
+| RDS path | SG-to-SG ingress: oracle SG allowed on 5432 of `sg-0d2a509aed2180dd2` (private VPC path; no public RDS hop for the hot loop) |
+| SSH key | `~/.ssh/sooq-oracle.pem` (key pair `sooq-oracle`) |
+
+Service layout on the host:
+- `/opt/speed-oracle/` — rsync'd `dist/` + `node_modules/` +
+  `package.json`
+- `/etc/speed-oracle.env` — `root:root 0600` — DATABASE_URL,
+  SENTRY_DSN, PORT=3000, NODE_ENV=production
+- `/etc/systemd/system/speed-oracle.service` — `Restart=always`,
+  hardened (`ProtectSystem=strict`, `ProtectHome=true`,
+  `PrivateTmp=true`, `NoNewPrivileges=true`)
+
+Full operations cheat sheet appended to `docs/AWS_RESOURCES.md`.
+
+### Verification (live pipeline)
+
+- `systemctl status speed-oracle` → `active (running)`
+- `/health` → `{"healthy": true, "connected": true,
+  "last_tick_age_sec": 0, "ticks_since_start": 27,
+  "reconnect_attempts": 0, "consecutive_write_failures": 0}`
+- `scripts/check-oracle-state.mjs` (new helper) — dumps
+  `speed_oracle_latest` + last 5 ticks + count + last 5 markets:
+  - 64 ticks landed within first ~minute
+  - `speed_oracle_latest` BTC at $78,664.67
+  - 4 rows in `speed_markets`: one already voided 5m, plus open 15m,
+    new 5m at strike $78,704.20, and 24h — `pg_cron` is rolling on
+    schedule against the live ticks.
+
+### Cost
+
+t4g.nano: $3/mo if outside free tier; same-VPC writes to RDS = zero
+egress. RDS public ingress can stay tightly scoped (dev IP only) —
+the worker doesn't touch the public path.
+
+### Deviations vs the master plan
+
+The master plan locked Railway as the worker host through W11. Moved
+it to EC2 in W7+W8 instead because:
+- Closing out `@supabase/supabase-js` from the workspace was easier
+  combined with a clean re-deploy than a cross-vendor re-point.
+- Not running the worker in two places at once during the cutover
+  reduces the surface area for "which one wrote this tick" during W11.
+- Same-account billing review is cleaner.
+
+### Pending
+
+- Push these commits to `staging` (worker rewrite + migration 0008 +
+  scripts + docs) — needs explicit approval per repo rules.
+- W9: stress-test pg_cron 5s precision under load, validate TWAP
+  freshness gates, exposure cap concurrency, latency benchmarks.
+
+
 

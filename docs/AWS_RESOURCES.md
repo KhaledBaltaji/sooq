@@ -59,6 +59,46 @@ Resource IDs and ARNs for the Sooq AWS environment. **Connection strings, passwo
 - RDS-managed master password (referenced via `MasterUserSecret.SecretArn`):
   `arn:aws:secretsmanager:eu-central-1:940161469084:secret:rds!db-fc910551-747a-4b28-8abc-f9c271c3a2e7-gki8se`
 
+### EC2 — speed-oracle worker
+The Binance → RDS tick worker (`services/speed-oracle/`). Single-instance — running >1 replica races the `speed_oracle_latest` upsert. Migrated off Railway W7.
+
+- **Instance ID**: `i-03411906c55af48af`
+- **Type**: `t4g.nano` (ARM Graviton, 2 vCPU burst, 0.5 GB RAM) — fits in free tier; ~$3/mo otherwise
+- **AMI**: Amazon Linux 2023 (ARM64)
+- **AZ / subnet**: `eu-central-1a` / `subnet-0eea01d61ca9976b9`
+- **Public IP**: `63.183.214.217`
+- **Private IP**: `172.31.25.184`
+- **Public DNS**: `ec2-63-183-214-217.eu-central-1.compute.amazonaws.com`
+- **Security group**: `sg-0a4270ac6977f474a` (`sooq-staging-oracle-sg`)
+  - Inbound: 22/tcp from dev IP `149.3.154.247/32` (SSH); 3000/tcp from dev IP only (health check)
+  - Outbound: all (needs Binance WSS + RDS 5432)
+- **RDS path**: SG-to-SG — `sg-0a4270ac6977f474a` is allowed inbound on 5432 of `sg-0d2a509aed2180dd2`. Worker connects to RDS endpoint privately within the VPC; no public egress to RDS.
+- **SSH key**: `~/.ssh/sooq-oracle.pem` (key pair `sooq-oracle`; pem chmod 0400)
+- **SSH command**: `ssh -i ~/.ssh/sooq-oracle.pem ec2-user@63.183.214.217`
+
+**Service layout on the host:**
+- `/opt/speed-oracle/` — checked-out worker (rsync'd from `services/speed-oracle/dist/` + `node_modules/` + `package.json`)
+- `/etc/speed-oracle.env` — env file, `root:root 0600` (DATABASE_URL, SENTRY_DSN, PORT=3000, NODE_ENV=production)
+- `/etc/systemd/system/speed-oracle.service` — systemd unit, `Restart=always`, hardened (`ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `NoNewPrivileges=true`)
+
+**Operations:**
+```bash
+# health check (from dev IP only)
+curl -s http://63.183.214.217:3000/health | jq
+
+# remote status
+ssh -i ~/.ssh/sooq-oracle.pem ec2-user@63.183.214.217 'sudo systemctl status speed-oracle --no-pager'
+
+# remote logs (live)
+ssh -i ~/.ssh/sooq-oracle.pem ec2-user@63.183.214.217 'sudo journalctl -u speed-oracle -f'
+
+# deploy (after building locally with `npm run build` in services/speed-oracle/):
+rsync -avz -e 'ssh -i ~/.ssh/sooq-oracle.pem' \
+  services/speed-oracle/dist/ services/speed-oracle/package.json services/speed-oracle/node_modules/ \
+  ec2-user@63.183.214.217:/opt/speed-oracle/
+ssh -i ~/.ssh/sooq-oracle.pem ec2-user@63.183.214.217 'sudo systemctl restart speed-oracle'
+```
+
 ## Production environment
 
 Not yet provisioned. W11 (canary cutover) creates production RDS + S3 + CloudFront. Production will have:

@@ -2,7 +2,7 @@
   "name": "speed-oracle",
   "version": "1.0.0",
   "private": true,
-  "description": "Binance BTC/USDT WebSocket → Supabase tick stream for speed markets.",
+  "description": "Binance BTC/USDT WebSocket → RDS Postgres tick stream for Sooq speed markets.",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -11,11 +11,12 @@
   },
   "dependencies": {
     "@sentry/node": "^8.0.0",
-    "@supabase/supabase-js": "^2.45.0",
+    "pg": "^8.13.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/pg": "^8.11.0",
     "@types/ws": "^8.5.0",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0"
