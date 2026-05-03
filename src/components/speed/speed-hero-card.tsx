@@ -47,8 +47,7 @@ export function SpeedHeroCardSkeleton() {
 const ASSET_LABELS: Record<string, string> = { BTC: "Bitcoin" };
 const DURATION_LABELS: Record<SpeedDuration, string> = {
   "5m": "5 minutes",
-  "15m": "15 minutes",
-  "24h": "24 hours",
+  "1h": "1 hour",
 };
 
 // Stylized fallback wave so the chart slot never renders empty when the

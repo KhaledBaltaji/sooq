@@ -13,7 +13,9 @@ import {
 import { formatCurrency, cn } from "@/lib/utils";
 
 type Range = "today" | "7d" | "30d" | "all";
-type DurationFilter = "all" | "5m" | "15m" | "24h";
+// Admin keeps historical durations (15m/24h) as filter options so old data
+// is queryable. New markets are 5m + 1h only (mig 369).
+type DurationFilter = "all" | "5m" | "1h" | "15m" | "24h";
 type UserSort = "winners" | "losers" | "volume";
 
 interface RevenueSummary {
@@ -68,7 +70,7 @@ const RANGES: { key: Range; label: string }[] = [
   { key: "all", label: "All time" },
 ];
 
-const DURATION_FILTERS: DurationFilter[] = ["all", "5m", "15m", "24h"];
+const DURATION_FILTERS: DurationFilter[] = ["all", "5m", "1h", "15m", "24h"];
 const USER_SORTS: { key: UserSort; label: string }[] = [
   { key: "winners", label: "Top winners" },
   { key: "losers", label: "Top losers" },

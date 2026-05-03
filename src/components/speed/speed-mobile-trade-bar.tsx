@@ -5,9 +5,11 @@ import { Minus, Plus } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 import {
+  CASHOUT_REJECT_WINDOW_SECONDS,
   durationToSeconds,
   speedCashoutMultiplier,
   speedFairProbOver,
+  speedLiqDiscount,
   speedOfferedProb,
 } from "@/lib/speed/pricing";
 import { useSpeedExecuteTrade, useSpeedCashout } from "@/hooks/use-speed-trade";
@@ -94,7 +96,8 @@ export function SpeedMobileTradeBar({
 
     const handleBet = async (side: SpeedSide) => {
       if (!canBet) return;
-      const { error: err } = await placeBet(market.id, side, stake);
+      // Mig 369: send IV snapshot for quote/execute parity.
+      const { error: err } = await placeBet(market.id, side, stake, sigma);
       if (!err) onBetPlaced();
     };
 
@@ -195,39 +198,35 @@ export function SpeedMobileTradeBar({
   const strike = Number(market.strike_price);
   const stakeAmt = Number(position.stake);
   const entryProb = Number(position.entry_offered_prob);
-  const payoutPerDollar = 1 / entryProb;
+  // Mig 369: payoutPerDollar (=1/entryProb) is now baked into the cashout
+  // formula via (markProb / entryProb), no separate variable needed.
 
-  // Mig 352 (Seam 4): prefer realized-vol σ for the cashout fair-value preview.
+  // Mig 369: continuous mark-to-market formula
+  //   cashout = stake × (mark_prob / entry_offered) × decay × liq_discount
+  // Use realized vol when fresh; falls back to fee_config IV. Cashout is
+  // rejected entirely in the last 5 seconds.
   const cashoutSigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
+  const cashoutLocked = secondsLeft < CASHOUT_REJECT_WINDOW_SECONDS;
   const fairOver =
     livePrice && !isStale
       ? speedFairProbOver(livePrice, strike, secondsLeft, cashoutSigma)
       : null;
-  const fairForSide =
+  const markProb =
     fairOver !== null ? (position.side === "over" ? fairOver : 1 - fairOver) : null;
-  const fairValue = fairForSide !== null ? fairForSide * stakeAmt * payoutPerDollar : null;
-  const fairProfit = fairValue !== null ? fairValue - stakeAmt : null;
-  const role: "winner" | "loser" | null =
-    fairForSide !== null ? (fairForSide >= entryProb ? "winner" : "loser") : null;
 
-  // mig 351: continuous multiplier — linear interpolation between _low/_high
-  // fee_config keys. Replaces the bucket lookup so the cashout preview slides
-  // smoothly as time decays instead of snapping at 60%/20%.
   const pct = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
-  const multiplier = role
-    ? speedCashoutMultiplier(market.duration, role, pct, feeConfig)
-    : null;
+  const decay = speedCashoutMultiplier(market.duration, pct, feeConfig);
+  const liqDiscount = speedLiqDiscount(secondsLeft);
 
   let estCashout: number | null = null;
-  if (multiplier !== null && fairValue !== null && fairProfit !== null && role) {
-    estCashout =
-      role === "winner" ? stakeAmt + fairProfit * multiplier : fairValue * multiplier;
-    estCashout = Math.max(0, Math.round(estCashout * 100) / 100);
+  if (markProb !== null && decay !== null) {
+    const raw = stakeAmt * (markProb / entryProb) * decay * liqDiscount;
+    estCashout = Math.max(0, Math.round(raw * 100) / 100);
   }
 
   const handleCashout = async () => {
-    if (cashLoading || expired) return;
-    await cashout(position.id);
+    if (cashLoading || expired || cashoutLocked) return;
+    await cashout(position.id, cashoutSigma);
   };
 
   return (

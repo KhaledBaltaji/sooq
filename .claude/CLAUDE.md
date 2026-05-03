@@ -55,10 +55,14 @@ NEVER start implementing without understanding what you're touching first.
 - Phases W1–W11 are done. W12 (production cutover) is parked until Khaled greenlights relaunch.
 - LMSR / branches / commission / demo / prelaunch / handle_fee / resolution_fee are all stripped or never wired in. Don't re-add without a fresh spec.
 
-## Locked-in Financial Decisions
+## Locked-in Financial Decisions (current as of mig 369)
 
-- **No handle fee.** `fee_config.speed_handle_fee_pct = 0`. Trade RPC writes 0 to `speed_trades.handle_fee` for new trades.
+- **No handle fee.** Mig 369 deleted `speed_handle_fee_pct` from `fee_config` entirely; trade RPC no longer touches `speed_trades.handle_fee` (column kept for pre-mig-369 historical rows, new trades store NULL). The 1% phantom fee was rolled into the spread.
 - **No resolution fee.** Winners get exactly `stake / entry_offered_prob`. No haircut.
-- **Sole revenue:** AMM spread (4%, baked into `offered_prob`) + cashout premium (multiplier matrix in `fee_config`, graded by time-bucket).
-- **Cash pool ≠ revenue.** Open positions' stakes are held funds; the platform's `net = stakes_in − payouts_out` per resolved market.
-- **Withdrawals are no-PIN.** Admin auth via `is_admin` flag through Auth.js + `app.user_id` GUC. PIN flow stays in old RPCs (don't break) but new flow uses `admin_approve_withdrawal` / `admin_reject_withdrawal` / `admin_mark_withdrawal_sent_v2` from mig 0015.
+- **Sole revenue:** AMM spread (5% baseline, baked into `offered_prob` — raised from 4% in mig 369 to absorb the deleted handle fee) + cashout premium (continuous duration-specific decay × liq_discount, mig 369). Cashout premium is the casino moneymaker; no winner/loser branch.
+- **Active durations:** 5m + 1h only. Trade RPC rejects 15m / 24h at runtime. Enum values stay for historical FK integrity.
+- **Risk caps (mig 369):** per-side 25% of pool collateral, per-user-per-market $200, per-user-daily $500, same-strike-cluster 30% of pool, daily NGR floor -$500 (auto-resets at UTC midnight). All tunable via `fee_config`.
+- **Settlement:** exact oracle tick at-or-before `closes_at` (mig 369; pre-369 used 30s TWAP). Wick detector with 0.1% threshold falls back to median-of-30-ticks. Audit row to `speed_market_settlement_audit`.
+- **Late window (entries):** last 60s +20% spread, last 30s +30% spread, last 10s reject. Cashouts: last 5s reject (last-tick arbitrage protection).
+- **Cash pool ≠ revenue.** Open positions' stakes are held funds; the platform's `net = stakes_in − payouts_out − cashout_out − refund_out` per UTC day, cached in `speed_daily_ngr`.
+- **Withdrawals are no-PIN.** Admin auth via `is_admin` flag through Auth.js + `app.user_id` GUC. New flow uses `admin_approve_withdrawal` / `admin_reject_withdrawal` / `admin_mark_withdrawal_sent_v2` from mig 0015. **Withdrawal SLA is the moat — sub-2-min for amounts under $500. Casino-mode pricing is conditional on this staying solid.**

@@ -5,7 +5,9 @@ import { sql } from "drizzle-orm";
 import { runAs } from "@/lib/db/run-as";
 import { authErrorToResponse, requireAdminApi } from "@/lib/auth/api-guards";
 
-const ALLOWED_DURATIONS = ["5m", "15m", "24h"] as const;
+// Admin allows historical durations (15m/24h) as filter values so old data is
+// still queryable; new markets are 5m+1h only (mig 369).
+const ALLOWED_DURATIONS = ["5m", "15m", "1h", "24h"] as const;
 
 interface MarketPnlRow {
   [key: string]: unknown;

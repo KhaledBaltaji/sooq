@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Sooq Speed** — real-money BTC fast-cycle prediction trading for the MENA region. Single-product fintech: users predict BTC up/down on 5m / 15m / 24h durations. TWAP-resolved, oracle-fed, instant withdrawals. Forked from `prediction-market` (LMSR + branches + commission) on 2026-05-02 and stripped + rebuilt over W1–W11 of `~/.claude/plans/oh-my-how-much-giggly-crystal.md`.
+**Sooq Speed** — real-money BTC fast-cycle prediction trading for the MENA region. Single-product fintech: users predict BTC up/down on 5m + 1h durations. Exact-tick settlement with wick-detector safety net (mig 369), oracle-fed, instant withdrawals. Forked from `prediction-market` (LMSR + branches + commission) on 2026-05-02 and stripped + rebuilt over W1–W11. Casino-mode pricing/cashout overhaul landed in mig 369.
 
 **Current state:** AWS staging is live at `staging.sooq.exchange`. RDS PostgreSQL + Auth.js + EC2 oracle worker + S3/CloudFront all wired and validated. Speed RPCs ship trades end-to-end (W9 trade-suite passes 22/22). Admin withdrawals queue + stats dashboard landed in W11. Production cutover is parked until Khaled gives the go.
 
@@ -33,20 +33,22 @@
 ## Speed Mode Specifics
 
 - **Asset:** BTC only at launch; `speed_assets` table is extensible (room for ETH/SOL etc.)
-- **Durations:** `5m`, `15m`, `24h` (enum `speed_duration`)
+- **Durations:** `5m`, `1h` (active). The `speed_duration` enum still carries `15m` and `24h` for historical FK integrity, but the trade RPC rejects them at runtime. New markets are 5m + 1h only.
 - **Stake range:** $1–$25 per bet (hardcoded retail caps), $200 cap per side per market
-- **Pricing:** `speed_fair_prob_over` from BSM-style normal CDF (oracle price, strike, time-left, IV) + half-spread offset (`speed_spread_pct = 0.04`, so +2% per side baked into `offered_prob`)
-- **Resolution:** 30-second TWAP window before close. Voids if no oracle ticks in window. `at_strike` is a push (refund). NO resolution fee — winners get exactly `stake / entry_offered_prob` (locked in W11 with mig 0013).
-- **Cashout:** while market open, multiplier from `fee_config` indexed by `duration × winner|loser × time-bucket` (18-row matrix seeded in mig 0010). Advisory lock prevents cashout-vs-resolve deadlock (mig 0013).
-- **Strike capture:** market's strike is the oracle tick at-or-just-before `opens_at` (mig 0014), not the live oracle when the cron fired. Header label and chart price match exactly at the open boundary.
+- **Pricing:** `speed_fair_prob_over` from BSM-style normal CDF (oracle price, strike, time-left, IV) + half-spread offset (`speed_spread_pct = 0.05`, so +2.5% per side baked into `offered_prob`). Mig 369 raised spread 0.04 → 0.05 (absorbed the deleted phantom handle fee). IV from realized-vol cache (90s freshness) via `_speed_get_iv()`, falls back to `speed_iv_btc`. Spread layers: base + Seam 3 quadratic widening past ±0.45 + 3-tier late-window surcharge (last 60s +20%, last 30s +30%, last 10s reject).
+- **Resolution:** exact oracle tick at-or-before `closes_at` (mig 369; pre-369 used 30s TWAP). Wick detector compares to 5s-before tick — if delta >0.1% (`speed_wick_threshold_pct`), falls back to median-of-last-30-ticks. Voids if no ticks (or wick fallback can't compute). `at_strike` is a push (refund). NO resolution fee — winners get exactly `stake / entry_offered_prob`. Per-market audit row written to `speed_market_settlement_audit`.
+- **Cashout:** continuous mark-to-market formula (mig 369): `cashout = stake × (mark_prob / entry_offered_prob) × decay_curve(duration, pct) × liq_discount(seconds_left)`. No winner/loser branch. Decay endpoints in fee_config keyed `speed_cashout_decay_<dur>_<bucket>`. Last 5s rejected entirely (last-tick arbitrage protection).
+- **Strike capture:** market's strike is the oracle tick at-or-just-before `opens_at` (mig 0014). Header label and chart price match exactly at the open boundary.
+- **Risk caps (mig 369):** per-side 25% of pool collateral, per-user-per-market $200, per-user-daily-wager $500, same-strike-cluster 30% of pool, daily NGR floor -$500 (circuit breaker — halts new entries when settled NGR crosses; cashouts and resolution stay live; auto-resets at UTC midnight). Pool collateral configured via `speed_pool_collateral_usd` ($10k default).
+- **IV snapshot pattern:** trade and cashout RPCs accept optional `expected_iv`. If client snapshot drifts >10% from server's `_speed_get_iv()`, RPC returns `IV_DRIFT` so UI can re-render. Closes the quote/execute parity hole around RV cache expiry. IV used is recorded on `speed_trades.iv_used`.
 
 ## Revenue model (locked in W11)
 
 | Source | How | Visible to user? |
 |---|---|---|
-| **AMM spread** | 4% baked into `offered_prob` at trade open | Implicit (in the price) |
-| **Cashout premium** | Multiplier <1 on early exits, graded by time-bucket | Visible — user sees exact cashout amount before confirming |
-| **Handle fee** | DROPPED (mig 0013). `speed_handle_fee_pct = 0`. | n/a |
+| **AMM spread** | 5% baked into `offered_prob` at trade open (mig 369: was 4%, raised to absorb the deleted phantom handle fee) | Implicit (in the price) |
+| **Cashout premium** | Continuous decay × liq_discount on early exits, duration-specific (mig 369). Replaces the old winner/loser × bucket matrix. | Visible — user sees the cashout amount on the button. Fair_value display removed (casino framing — user compares cashout to stake, not to fair_value). |
+| **Handle fee** | DELETED (mig 369). Phantom row removed from `fee_config`. `speed_trades.handle_fee` column kept for historical rows; new trades store NULL. | n/a |
 | **Resolution fee** | NEVER ADDED. Winners get clean `stake/offered_prob` payout. | n/a |
 
 **Math per market:** `platform_net = stakes_in − payouts_out` (industry-standard AMM accounting). Spread + cashout premium fall out as the platform's edge. Loser stakes flow into the cash pool that funds winner payouts; the loss itself is NOT direct revenue. See `/admin/stats` page.

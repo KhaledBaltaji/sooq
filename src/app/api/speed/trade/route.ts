@@ -14,6 +14,9 @@ interface TradeBody {
   side: "over" | "under";
   stake: number;
   idempotency_key?: string;
+  // Mig 369: client-side IV snapshot for quote/execute parity. If present,
+  // server checks drift and either uses it for pricing or returns IV_DRIFT.
+  expected_iv?: number;
 }
 
 export async function POST(req: Request) {
@@ -24,7 +27,7 @@ export async function POST(req: Request) {
     }
 
     const body = (await req.json()) as TradeBody;
-    const { market_id, side, stake, idempotency_key } = body;
+    const { market_id, side, stake, idempotency_key, expected_iv } = body;
 
     if (!market_id || !side || !stake) {
       return NextResponse.json(
@@ -42,7 +45,8 @@ export async function POST(req: Request) {
           ${market_id}::uuid,
           ${side}::text,
           ${stake}::numeric,
-          ${idempotency_key ?? null}::text
+          ${idempotency_key ?? null}::text,
+          ${expected_iv ?? null}::decimal
         ))::jsonb AS result
       `);
       return (r.rows[0] as { result: unknown } | undefined)?.result ?? null;

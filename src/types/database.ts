@@ -7,7 +7,7 @@
 
 // ---- Speed enums ----
 export type SpeedAsset = "BTC";
-export type SpeedDuration = "5m" | "15m" | "24h";
+export type SpeedDuration = "5m" | "1h";
 export type SpeedSide = "over" | "under";
 export type SpeedMarketStatus = "open" | "resolving" | "resolved" | "voided";
 export type SpeedMarketOutcome = "over" | "under" | "at_strike";
@@ -83,20 +83,23 @@ export interface SpeedExecuteTradeResult {
   fair_prob: number;
   offered_prob: number;
   payout_if_won: number;
-  handle_fee: number;
+  // Mig 369: handle_fee removed from RPC return shape (phantom field deleted).
+  iv_used?: number;
+  late_window_pct?: number;
   idempotent?: boolean;
   message?: string;
 }
 
+// Mig 369: continuous formula — no winner/loser branch, no buckets.
+//   cashout = stake × (mark_prob / entry_offered) × decay × liq_discount
 export interface SpeedExecuteCashoutResult {
   success: boolean;
   trade_id: string;
   cashout_amount: number;
-  fair_value: number;
-  fair_profit: number;
-  role: "winner" | "loser";
-  bucket: string;
-  multiplier: number;
+  mark_prob: number;
+  decay: number;
+  liq_discount: number;
+  iv_used: number;
   pct_time_left: number;
   idempotent?: boolean;
   message?: string;

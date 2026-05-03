@@ -1,12 +1,16 @@
 // GET /api/speed/markets — list speed markets with filters.
 //   asset       — restrict to a single asset (e.g. BTC)
-//   duration    — restrict to a single duration (5m / 15m / 24h)
+//   duration    — restrict to a single duration (5m / 1h)
 //   status      — restrict to one status (open / resolving / resolved / voided)
 //   since       — opens_at >= ISO timestamp
 //   sort        — "asc" (default) | "desc" by opens_at
 //   limit       — max rows (default 50, cap 200)
 // Public endpoint. Polled by use-speed-markets, speed-window-pills,
 // speed-recent-settlements.
+//
+// Mig 369: durations are 5m + 1h only. 15m and 24h were removed in mig 361 +
+// mig 363; the trade RPC explicitly rejects them. Historical markets keep
+// their enum value but new ones aren't created.
 
 import { NextResponse } from "next/server";
 import { and, asc, desc, eq, gte } from "drizzle-orm";
@@ -17,7 +21,7 @@ import { speedMarkets } from "@/lib/db/schema";
 const STATUSES = ["open", "resolving", "resolved", "voided"] as const;
 type SpeedStatus = (typeof STATUSES)[number];
 
-const DURATIONS = ["5m", "15m", "24h"] as const;
+const DURATIONS = ["5m", "1h"] as const;
 type SpeedDuration = (typeof DURATIONS)[number];
 
 export async function GET(req: Request) {

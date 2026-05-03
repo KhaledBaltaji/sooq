@@ -6,11 +6,7 @@ import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { ChevronDown, Info } from "lucide-react";
 import { cn, formatCurrency, formatNumber, triggerHapticConfirm } from "@/lib/utils";
-import {
-  durationToSeconds,
-  speedFairProbOver,
-  speedOfferedProb,
-} from "@/lib/speed/pricing";
+import { speedFairProbOver, speedOfferedProb } from "@/lib/speed/pricing";
 import type { SpeedMarket, SpeedSide } from "@/types/database";
 import { useSpeedExecuteTrade } from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
@@ -48,7 +44,6 @@ export function SpeedTradePanel({
   const [showFeeBreakdown, setShowFeeBreakdown] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const totalSeconds = durationToSeconds(market.duration);
   const closesAt = new Date(market.closes_at).getTime();
   const [now, setNow] = useState<number>(Date.now());
 
@@ -201,7 +196,9 @@ export function SpeedTradePanel({
       return;
     }
     if (!canTrade) return;
-    const { error: err } = await placeBet(market.id, side, amount);
+    // Mig 369: send the IV we used to compute the displayed odds so the server
+    // can detect drift and either honour the snapshot or return IV_DRIFT.
+    const { error: err } = await placeBet(market.id, side, amount, sigma);
     if (!err) onBetPlaced();
   }
 

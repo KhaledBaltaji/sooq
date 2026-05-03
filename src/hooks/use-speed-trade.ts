@@ -20,7 +20,12 @@ export function useSpeedExecuteTrade() {
   const [error, setError] = useState<string | null>(null);
 
   const placeBet = useCallback(
-    async (marketId: string, side: SpeedSide, stake: number) => {
+    async (
+      marketId: string,
+      side: SpeedSide,
+      stake: number,
+      expectedIv?: number,
+    ) => {
       setLoading(true);
       setError(null);
       // Stable per-intent key: (market, side, stake) within a 5s bucket
@@ -38,6 +43,7 @@ export function useSpeedExecuteTrade() {
             side,
             stake,
             idempotency_key: idempotencyKey,
+            expected_iv: expectedIv,
           }),
         });
 
@@ -78,7 +84,7 @@ export function useSpeedCashout() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const cashout = useCallback(async (positionId: string) => {
+  const cashout = useCallback(async (positionId: string, expectedIv?: number) => {
     setLoading(true);
     setError(null);
     const bucket = Math.floor(Date.now() / 5000);
@@ -91,6 +97,7 @@ export function useSpeedCashout() {
         body: JSON.stringify({
           position_id: positionId,
           idempotency_key: idempotencyKey,
+          expected_iv: expectedIv,
         }),
       });
 

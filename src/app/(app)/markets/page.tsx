@@ -1,6 +1,7 @@
 // /markets — full speed-markets list, filtered by duration.
 // Slim Sooq port of the prediction-market /markets page. The footer
-// /markets?duration=5m|15m|24h links land here pre-filtered.
+// /markets?duration=5m|1h links land here pre-filtered. Mig 369: 15m and
+// 24h are no longer offered (mig 361 + mig 363); old links fall back to "all".
 
 "use client";
 
@@ -11,7 +12,7 @@ import { SpeedMarketCard } from "@/components/speed/speed-market-card";
 import type { SpeedMarket } from "@/types/database";
 import { cn } from "@/lib/utils";
 
-const DURATION_FILTERS = ["all", "5m", "15m", "24h"] as const;
+const DURATION_FILTERS = ["all", "5m", "1h"] as const;
 type DurationFilter = (typeof DURATION_FILTERS)[number];
 
 interface MarketsResponse {

@@ -29,7 +29,10 @@ import {
 // Enums
 // ============================================================================
 
-export const speedDuration = pgEnum("speed_duration", ["5m", "15m", "24h"]);
+// Mig 369: enum mirrors the DB type (which has 5m / 15m / 1h / 24h — keeping
+// historical values for FK integrity). User-facing SpeedDuration type narrows
+// to '5m' | '1h' (mig 361 + 363 + 369). Trade RPC rejects 15m / 24h at runtime.
+export const speedDuration = pgEnum("speed_duration", ["5m", "15m", "1h", "24h"]);
 export const speedSide = pgEnum("speed_side", ["over", "under"]);
 export const speedMarketStatus = pgEnum("speed_market_status", [
   "open",

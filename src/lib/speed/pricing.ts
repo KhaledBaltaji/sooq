@@ -83,130 +83,111 @@ export function speedFairProbOver(
 }
 
 /**
- * Continuous cashout multiplier — linear interpolation between the
- * `_low` and `_high` keys in fee_config. Mirrors the server-side
- * `speed_cashout_multiplier(duration, role, pct)` helper added in mig 351.
+ * Continuous cashout decay multiplier — duration-specific (mig 369).
  *
- * Replaces the bucket-based lookup (high/mid/low) which produced visible
- * cliffs at pct=0.6 and pct=0.2. The `_mid` keys remain in fee_config but
- * are no longer read.
+ * Mirrors `speed_cashout_multiplier(duration, pct)` in mig 369. One formula
+ * for both winners and losers — no role branch, no role-boundary
+ * discontinuity. Linear interpolation between five endpoints stored in
+ * fee_config as `speed_cashout_decay_<duration>_<bucket>`.
  *
- * Returns `null` if the endpoint keys aren't loaded yet (caller falls back
- * to "—" in the UI). This is intentionally distinct from `0` (which would
- * be a valid multiplier).
+ * Endpoint stop list (in increasing pct):
+ *   pct=0.00 → ${dur}_lt20         (anchor at 0% time-left)
+ *   pct=0.20 → ${dur}_lt20 / ${dur}_20to40 boundary
+ *   pct=0.40 → ${dur}_20to40 / ${dur}_40to60 boundary
+ *   pct=0.60 → ${dur}_40to60 / ${dur}_60to80 boundary
+ *   pct=0.80 → ${dur}_60to80 / ${dur}_ge80 boundary
+ *   pct≥0.80 → ${dur}_ge80 (flat)
  *
- * @param duration Speed market duration ('5m' | '15m' | '1h' | '24h')
- * @param role 'winner' (fair >= entry) or 'loser' (fair < entry)
- * @param pct Fraction of duration remaining = secondsLeft / secondsTotal
- * @param config Speed fee config (uses cashoutMultipliers[*_high|*_low])
+ * Returns `null` if endpoints aren't loaded yet — caller renders "—" until
+ * fee_config arrives.
  */
 export function speedCashoutMultiplier(
   duration: SpeedDuration,
-  role: "winner" | "loser",
   pct: number,
   config: SpeedFeeConfig,
 ): number | null {
-  const lowKey = `speed_cashout_${duration}_${role}_low`;
-  const highKey = `speed_cashout_${duration}_${role}_high`;
-  const low = config.cashoutMultipliers[lowKey];
-  const high = config.cashoutMultipliers[highKey];
-  if (low === undefined || high === undefined) return null;
-  const clampedPct = Math.max(0, Math.min(1, pct));
-  return low + (high - low) * clampedPct;
-}
-
-/**
- * @deprecated Replaced by `speedCashoutMultiplier` (mig 351). This function
- *   maps a continuous time-remaining ratio to one of three discrete buckets,
- *   which is what produced the cashout-preview cliffs at pct=0.6 / pct=0.2.
- *   The server-side helper is the authoritative source after mig 351.
- *
- *   Kept exported for one release so any external callers (none known
- *   in-tree as of mig 351) don't break instantly. Will be removed in a
- *   follow-up cleanup migration.
- *
- * Time-remaining bucket per the original Round 2.Q3 decision:
- *   high: >=60% of duration left
- *   mid:  20-60% left (inclusive lower)
- *   low:  <20% left
- */
-export function speedTimeBucket(
-  secondsTotal: number,
-  secondsLeft: number,
-): "high" | "mid" | "low" {
-  if (secondsTotal <= 0) return "low";
-  const pct = secondsLeft / secondsTotal;
-  if (pct >= 0.6) return "high";
-  if (pct >= 0.2) return "mid";
-  return "low";
-}
-
-/**
- * Late-window surcharge constants — mirror fee_config rows
- * `speed_late_window_threshold` and `speed_late_window_surcharge` set in
- * mig 356. Update both client and server when tuning these dials.
- */
-export const LATE_WINDOW_THRESHOLD_SECONDS = 30;
-export const LATE_WINDOW_SURCHARGE = 0.15;
-
-/**
- * Returns true when `secondsLeft` is inside the late-window threshold.
- * Used by UI to display the "watch only — last 30s pricing" indicator.
- */
-export function isInLateWindow(secondsLeft: number): boolean {
-  return secondsLeft < LATE_WINDOW_THRESHOLD_SECONDS;
-}
-
-/**
- * Apply the late-window spread surcharge.
- *
- * Mirrors mig 356 helper `speed_apply_late_window_surcharge`:
- *   - When secondsLeft < threshold (default 30): widens spread by surcharge (+15%)
- *   - Otherwise: returns base spread unchanged
- *
- * Applied INSIDE `speedOfferedProb` so the offered prob shown to users in
- * the last 30s reflects the brutal pricing they'll be charged. Casino
- * aesthetic — the button stays clickable but the math punishes it.
- */
-export function applyLateWindowSurcharge(
-  baseSpread: number,
-  secondsLeft: number | null,
-): number {
-  if (secondsLeft !== null && secondsLeft < LATE_WINDOW_THRESHOLD_SECONDS) {
-    return baseSpread + LATE_WINDOW_SURCHARGE;
+  const ge80   = config.cashoutMultipliers[`speed_cashout_decay_${duration}_ge80`];
+  const _60to80 = config.cashoutMultipliers[`speed_cashout_decay_${duration}_60to80`];
+  const _40to60 = config.cashoutMultipliers[`speed_cashout_decay_${duration}_40to60`];
+  const _20to40 = config.cashoutMultipliers[`speed_cashout_decay_${duration}_20to40`];
+  const lt20   = config.cashoutMultipliers[`speed_cashout_decay_${duration}_lt20`];
+  if (
+    ge80 === undefined || _60to80 === undefined || _40to60 === undefined ||
+    _20to40 === undefined || lt20 === undefined
+  ) {
+    return null;
   }
-  return baseSpread;
+  const p = Math.max(0, Math.min(1, pct));
+  if (p >= 0.80) return ge80;
+  if (p >= 0.60) return _60to80 + (ge80    - _60to80) * ((p - 0.60) / 0.20);
+  if (p >= 0.40) return _40to60 + (_60to80 - _40to60) * ((p - 0.40) / 0.20);
+  if (p >= 0.20) return _20to40 + (_40to60 - _20to40) * ((p - 0.20) / 0.20);
+  return lt20 + (_20to40 - lt20) * (p / 0.20);
+}
+
+/**
+ * Liquidation discount — applied multiplicatively on top of the decay curve
+ * (mig 369). Mirrors `speed_liq_discount(secondsLeft)`. Sharp drops near
+ * expiry. < 5s returns 0 — the RPC also rejects, but defense-in-depth.
+ */
+export function speedLiqDiscount(secondsLeft: number): number {
+  if (secondsLeft < 5) return 0;
+  if (secondsLeft >= 30) return 1.0;
+  if (secondsLeft >= 10) return 0.85;
+  return 0.6; // 5-10s
+}
+
+/**
+ * Mig 369: hard reject window for cashouts (last 5s).
+ */
+export const CASHOUT_REJECT_WINDOW_SECONDS = 5;
+
+/**
+ * Mig 369: 3-tier late-window surcharge on entries.
+ * 60s window → +20%, 30s window → +30%, < 10s → reject (handled at call site).
+ * Mirrors `speed_late_window_surcharge_pct(secondsLeft)` in mig 369.
+ */
+export const ENTRY_LATE_WINDOW_60S_PCT = 0.20;
+export const ENTRY_LATE_WINDOW_30S_PCT = 0.30;
+export const ENTRY_LATE_WINDOW_REJECT_S = 10;
+
+export function isInLateWindow(secondsLeft: number): boolean {
+  return secondsLeft < 60;
+}
+
+export function entryLateWindowSurchargePct(secondsLeft: number | null): number {
+  if (secondsLeft === null) return 0;
+  if (secondsLeft < 30) return ENTRY_LATE_WINDOW_30S_PCT;
+  if (secondsLeft < 60) return ENTRY_LATE_WINDOW_60S_PCT;
+  return 0;
+}
+
+/**
+ * Returns true when entries are rejected entirely (last 10s).
+ */
+export function isEntryRejectedLate(secondsLeft: number): boolean {
+  return secondsLeft < ENTRY_LATE_WINDOW_REJECT_S;
 }
 
 /**
  * Offered probability — fair probability adjusted by a spread that widens
- * quadratically as fair approaches 0 or 1, plus a late-window surcharge in
- * the last 30 seconds before close.
+ * quadratically as fair approaches 0 or 1, plus the 3-tier late-window
+ * surcharge (mig 369).
  *
- * Mig 352 (Seam 3): no longer returns `null`. The server-side reject
- * ("Market too imbalanced") is gone — the trade button stays enabled and
- * the spread widens instead.
- *
- * Mig 356: late-window surcharge in last 30s. Adds +15% spread on top of
- * Seam 3 widening when secondsLeft < 30. User EV becomes negative at every
- * fair_prob level. Pass `secondsLeft` to enable; `null` keeps surcharge off.
- *
- * Formula (mirrors `speed_execute_trade` body in mig 356):
- *   distance = |fair - 0.5|                        // 0 at 50/50, 0.5 at extreme
- *   overage  = max(0, distance - 0.45)             // kicks in past ±0.45 from center
+ * Mig 369 spec:
+ *   distance = |fair - 0.5|
+ *   overage  = max(0, distance - 0.45)
  *   spread   = base_spread + overage² × extreme_coeff
- *   spread  += late_window_surcharge if secondsLeft < 30
+ *   spread  += late_window_surcharge_pct(secondsLeft)
  *   offered  = fair + spread/2, clamped to [0.01, 0.99]
  *
- * With base_spread = 0.04, extremeCoeff = 8, surcharge = 0.15:
- *   fair = 0.50, secondsLeft = 60   → offered = 0.52       (1.92x payout)
- *   fair = 0.50, secondsLeft = 15   → offered = 0.595      (1.68x payout — surcharge active)
- *   fair = 0.96, secondsLeft = 15   → offered = 0.99 (cap) (1.01x payout — surcharge active)
+ * Default base_spread is 0.05 (mig 369 raised 0.04 → 0.05; absorbed the
+ * former 1% phantom handle fee into the spread).
  */
 export function speedOfferedProb(
   fairProbOver: number,
   side: SpeedSide,
-  spread: number = 0.04,
+  spread: number = 0.05,
   extremeCoeff: number = 8,
   secondsLeft: number | null = null,
 ): number {
@@ -214,8 +195,7 @@ export function speedOfferedProb(
   const distance = Math.abs(fair - 0.5);
   const overage = Math.max(0, distance - 0.45);
   let widenedSpread = spread + overage * overage * extremeCoeff;
-  // Mig 356: late-window surcharge applies after Seam 3 widening
-  widenedSpread = applyLateWindowSurcharge(widenedSpread, secondsLeft);
+  widenedSpread = widenedSpread + entryLateWindowSurchargePct(secondsLeft);
   const offered = fair + widenedSpread / 2;
   return Math.max(0.01, Math.min(0.99, offered));
 }
@@ -227,18 +207,15 @@ export function durationToSeconds(d: SpeedDuration): number {
   switch (d) {
     case "5m":
       return 5 * 60;
-    case "15m":
-      return 15 * 60;
-    case "24h":
-      return 24 * 60 * 60;
+    case "1h":
+      return 60 * 60;
   }
 }
 
 /**
  * Format seconds remaining as a UI countdown.
  *   5m markets → "0:47"
- *   15m / 1h → "12:34"
- *   24h → "23h 12m"
+ *   1h → "12:34" or "1h 0m" right at the start
  */
 export function formatSpeedCountdown(secondsLeft: number): string {
   if (secondsLeft < 0) secondsLeft = 0;
@@ -273,9 +250,7 @@ export function isUrgent(secondsTotal: number, secondsLeft: number): boolean {
  *
  * Boundaries (UTC):
  *   5m  → minute % 5 === 0, sec/ms === 0
- *   15m → minute % 15 === 0, sec/ms === 0
  *   1h  → minute === 0, sec/ms === 0
- *   24h → hour === 0, minute === 0, sec/ms === 0
  */
 export function isMarketAligned(
   opensAt: string | Date,
@@ -287,9 +262,7 @@ export function isMarketAligned(
   switch (duration) {
     case "5m":
       return minutes % 5 === 0;
-    case "15m":
-      return minutes % 15 === 0;
-    case "24h":
-      return minutes === 0 && ts.getUTCHours() === 0;
+    case "1h":
+      return minutes === 0;
   }
 }

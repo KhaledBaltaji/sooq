@@ -10,8 +10,7 @@ const ASSET_LABELS: Record<SpeedAsset, string> = { BTC: "Bitcoin" };
 
 const DURATION_LABELS: Record<SpeedDuration, string> = {
   "5m": "5-minute",
-  "15m": "15-minute",
-  "24h": "24-hour",
+  "1h": "1-hour",
 };
 
 /**

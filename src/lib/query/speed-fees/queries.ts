@@ -14,11 +14,13 @@ export interface SpeedRealizedVol {
 export interface SpeedFeeConfig {
   /** Implied volatility per asset for client-side Black-Scholes pricing. */
   iv: Record<string, number>;
-  /** Total spread (e.g. 0.04 = 4%); offered prob = fair ± spread/2 on each side. */
+  /** Total spread (mig 369: default 0.05 = 5%). offered = fair + spread/2 on each side. */
   spread: number;
-  /** Handle fee per bet (e.g. 0.01 = 1%). Display only. */
-  handleFee: number;
-  /** Cashout multipliers keyed `speed_cashout_<duration>_<role>_<bucket>`. */
+  /**
+   * Mig 369: cashout decay endpoints keyed `speed_cashout_decay_<duration>_<bucket>`.
+   * Pre-mig-369 keys (`speed_cashout_<duration>_<role>_<bucket>`) are deleted from
+   * fee_config and won't appear here anymore.
+   */
   cashoutMultipliers: Record<string, number>;
   /** Quadratic widening coefficient for offered-prob spread. */
   extremeSpreadCoeff: number;
@@ -30,8 +32,8 @@ export interface SpeedFeeConfig {
 
 export const DEFAULT_SPEED_FEE_CONFIG: SpeedFeeConfig = {
   iv: { BTC: 0.6 },
-  spread: 0.04,
-  handleFee: 0.01,
+  // Mig 369: default raised 0.04 → 0.05 (absorbed the former 1% phantom handle fee).
+  spread: 0.05,
   cashoutMultipliers: {},
   extremeSpreadCoeff: 8,
   realizedVol: null,
@@ -61,7 +63,6 @@ export async function fetchSpeedFeeConfig(): Promise<SpeedFeeConfig> {
   const iv: Record<string, number> = { ...DEFAULT_SPEED_FEE_CONFIG.iv };
   const cashoutMultipliers: Record<string, number> = {};
   let spread = DEFAULT_SPEED_FEE_CONFIG.spread;
-  let handleFee = DEFAULT_SPEED_FEE_CONFIG.handleFee;
   let extremeSpreadCoeff = DEFAULT_SPEED_FEE_CONFIG.extremeSpreadCoeff;
   let useRealizedVol = DEFAULT_SPEED_FEE_CONFIG.useRealizedVol;
 
@@ -70,8 +71,6 @@ export async function fetchSpeedFeeConfig(): Promise<SpeedFeeConfig> {
     const rate = Number(row.rate);
     if (row.fee_type === "speed_spread_pct") {
       spread = rate;
-    } else if (row.fee_type === "speed_handle_fee_pct") {
-      handleFee = rate;
     } else if (row.fee_type === "speed_extreme_spread_coeff") {
       extremeSpreadCoeff = rate;
     } else if (row.fee_type === "speed_use_realized_vol") {
@@ -79,7 +78,8 @@ export async function fetchSpeedFeeConfig(): Promise<SpeedFeeConfig> {
     } else if (row.fee_type.startsWith("speed_iv_")) {
       const asset = row.fee_type.slice("speed_iv_".length).toUpperCase();
       iv[asset] = rate;
-    } else if (row.fee_type.startsWith("speed_cashout_")) {
+    } else if (row.fee_type.startsWith("speed_cashout_decay_")) {
+      // Mig 369: only the new decay endpoints; old role-based keys are deleted.
       cashoutMultipliers[row.fee_type] = rate;
     }
   }
@@ -99,7 +99,6 @@ export async function fetchSpeedFeeConfig(): Promise<SpeedFeeConfig> {
   return {
     iv,
     spread,
-    handleFee,
     cashoutMultipliers,
     extremeSpreadCoeff,
     realizedVol,

@@ -11,6 +11,9 @@ import { logger } from "@/lib/logger";
 interface CashoutBody {
   position_id: string;
   idempotency_key?: string;
+  // Mig 369: client-side IV snapshot for quote/execute parity. If present,
+  // server checks drift and either uses it for pricing or returns IV_DRIFT.
+  expected_iv?: number;
 }
 
 export async function POST(req: Request) {
@@ -21,7 +24,7 @@ export async function POST(req: Request) {
     }
 
     const body = (await req.json()) as CashoutBody;
-    const { position_id, idempotency_key } = body;
+    const { position_id, idempotency_key, expected_iv } = body;
 
     if (!position_id) {
       return NextResponse.json({ error: "Missing position_id" }, { status: 400 });
@@ -31,7 +34,8 @@ export async function POST(req: Request) {
       const r = await tx.execute<{ result: unknown }>(sql`
         SELECT (speed_execute_cashout(
           ${position_id}::uuid,
-          ${idempotency_key ?? null}::text
+          ${idempotency_key ?? null}::text,
+          ${expected_iv ?? null}::decimal
         ))::jsonb AS result
       `);
       return (r.rows[0] as { result: unknown } | undefined)?.result ?? null;
