@@ -1,13 +1,15 @@
 name: CI
 
-# W1 bare-minimum CI: lint + type-check on PRs.
-# Builds and tests will be re-added in W5+ once we have a real DB target.
+# Lint + type-check gate for both staging and main.
+# - staging push: catches breakage before Vercel auto-deploys
+# - main push / PR: catches breakage before production deploy
+# Tests + migration-apply will be added in a follow-up.
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, staging]
   push:
-    branches: [main]
+    branches: [main, staging]
 
 concurrency:
   group: ci-${{ github.ref }}
