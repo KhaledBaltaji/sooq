@@ -34,10 +34,15 @@ export async function GET() {
       if (r.rows[0]?.ok !== 1) throw new Error("SELECT 1 returned unexpected result");
     }),
     runCheck(async () => {
-      // Probe core tables exist + are readable.
-      await db.execute(sql`SELECT id FROM speed_markets LIMIT 1`);
-      await db.execute(sql`SELECT fee_type FROM fee_config LIMIT 1`);
-      await db.execute(sql`SELECT id FROM users LIMIT 1`);
+      // Probe core tables exist + are readable. Bundled into a single
+      // round-trip so the health endpoint is one-RTT-each-bucket even on
+      // a high-latency client. (W10 fix — was 3 serial calls.)
+      await db.execute(sql`
+        SELECT
+          (SELECT id FROM speed_markets LIMIT 1) AS markets_probe,
+          (SELECT fee_type FROM fee_config LIMIT 1) AS fees_probe,
+          (SELECT id FROM users LIMIT 1) AS users_probe
+      `);
     }),
     runCheck(async () => {
       const r = await db.execute<{ count: string }>(

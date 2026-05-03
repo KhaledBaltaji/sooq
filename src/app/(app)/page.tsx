@@ -1,23 +1,23 @@
-// W2 strip placeholder — the real speed-first home page is designed in W4.
-// LMSR home (markets list, AMM previews) was deleted in W2 strip pass 1.
+// W10 home page — rebuilt from W2 placeholder. Renders the live speed
+// markets feed (cards) for the user's primary entry point. Clicking a
+// card navigates to `/speed/[id]` for the full trade panel + chart.
+// Per master plan W4: "Speed market becomes the home page, not a sub-route."
 
-import Link from "next/link";
+import { SpeedMarketsFeed } from "@/components/speed/speed-markets-feed";
 
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 export default function HomePage() {
   return (
-    <main className="flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center gap-4 p-8">
-      <h1 className="text-3xl font-semibold tracking-tight">Sooq Speed</h1>
-      <p className="text-muted-foreground text-center max-w-md">
-        BTC fast-cycle markets — coming soon.
-      </p>
-      <Link
-        href="/speed"
-        className="text-sm underline underline-offset-4 text-muted-foreground hover:text-foreground"
-      >
-        Browse speed markets
-      </Link>
+    <main className="mx-auto flex w-full max-w-[1240px] flex-col gap-6 px-4 py-6 lg:px-6 lg:py-10">
+      <header className="flex flex-col gap-2">
+        <h1 className="text-3xl font-extrabold tracking-tight">Speed markets</h1>
+        <p className="text-sm text-muted-custom max-w-2xl">
+          BTC over/under markets settling every 5 minutes, 15 minutes, and 24
+          hours. Pick a side, hold or cash out anytime.
+        </p>
+      </header>
+      <SpeedMarketsFeed />
     </main>
   );
 }

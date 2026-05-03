@@ -78,6 +78,13 @@
       "when": 1777815000000,
       "tag": "0010_speed_cashout_multipliers",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1777820000000,
+      "tag": "0011_cron_gap_and_cashout_shape",
+      "breakpoints": true
     }
   ]
 }
