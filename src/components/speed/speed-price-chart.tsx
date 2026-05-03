@@ -276,9 +276,13 @@ export function SpeedPriceChart({
       });
     } else {
       series = chart.addSeries(AreaSeries, {
-        lineColor: "#26a69a",
-        topColor: "rgba(38, 166, 154, 0.18)",
-        bottomColor: "rgba(38, 166, 154, 0.0)",
+        // Neutral gray on initial paint — the recolor effect below
+        // flips to green/red once the live oracle price (or last bar
+        // close for closed markets) is known. Avoids a green flash on
+        // markets that should ultimately render red.
+        lineColor: "rgb(148, 163, 184)",
+        topColor: "rgba(148, 163, 184, 0.18)",
+        bottomColor: "rgba(148, 163, 184, 0.0)",
         lineWidth: 2,
         priceFormat: { type: "price", precision: 2, minMove: 0.01 },
         lastValueVisible: false,
