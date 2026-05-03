@@ -432,6 +432,21 @@ export function SpeedPriceChart({
       (series as ISeriesApi<"Area">).update({ time: next.time, value: tickPrice });
     }
     lastBarRef.current = next;
+
+    // Auto-follow (W11): if the new bucket's time has drifted past the
+    // chart's visible range (e.g. user panned far left into history,
+    // OR shiftVisibleRangeOnNewBar's 1-bar drift fell behind the live
+    // edge), snap back to real-time. We do NOT fire when last.time is
+    // still inside the visible range — that would yank the chart away
+    // from a user who has dragged forward into the rightOffset empty
+    // space (last.time ends up mid-canvas-left, NOT past visibleRange.to).
+    const chart = chartRef.current;
+    if (chart) {
+      const visible = chart.timeScale().getVisibleRange();
+      if (visible && (next.time as number) > (visible.to as number)) {
+        chart.timeScale().scrollToRealTime();
+      }
+    }
   }, [oracle, isStale, mounted, resolvedBucket, chartType, isLive]);
 
   // Track the target line's pixel Y so we can render an HTML label
@@ -484,19 +499,36 @@ export function SpeedPriceChart({
       // markets it'll "jump" 8px every 15s when a new bucket rolls,
       // which is fine and predictable. (Earlier projection-based
       // attempts pushed the dot outside the chart bounds.)
-      const x = chart.timeScale().timeToCoordinate(last.time);
+      const rawX = chart.timeScale().timeToCoordinate(last.time);
       if (
-        typeof x !== "number" || !Number.isFinite(x) ||
+        typeof rawX !== "number" || !Number.isFinite(rawX) ||
         typeof y !== "number" || !Number.isFinite(y)
       ) {
         return;
       }
+      // Clamp to chart bounds so the dot can never render outside the
+      // canvas (W11). lightweight-charts' timeToCoordinate is allowed to
+      // return values past the canvas width if last.time has drifted past
+      // the visible range — without this clamp the absolutely-positioned
+      // dot would escape into the page (overflow-hidden on the wrapper
+      // is the visual safety net; this is the data-level clamp).
+      const chartWidth = chart.timeScale().width();
+      const chartHeight = containerRef.current?.clientHeight ?? height;
+      const dotMargin = 8; // half the dot's outer ring so it stays fully visible
+      const x = Math.max(
+        dotMargin,
+        Math.min((rawX as unknown as number), chartWidth - dotMargin)
+      );
+      const yClamped = Math.max(
+        dotMargin,
+        Math.min((y as unknown as number), chartHeight - dotMargin)
+      );
       const isOver = livePrice >= strikePrice;
       setLiveDot((prev) => {
-        if (prev && Math.abs(prev.x - x) < 0.5 && Math.abs(prev.y - y) < 0.5 && prev.isOver === isOver) {
+        if (prev && Math.abs(prev.x - x) < 0.5 && Math.abs(prev.y - yClamped) < 0.5 && prev.isOver === isOver) {
           return prev;
         }
-        return { x, y, isOver };
+        return { x, y: yClamped, isOver };
       });
     };
     tick();
@@ -555,8 +587,13 @@ export function SpeedPriceChart({
       : "Price chart loading";
 
   return (
+    // overflow-hidden is the safety-net layer (W11): even if the live-tail
+    // dot's computed pixel coords accidentally exceed the canvas width, the
+    // dot is clipped to the chart bounds instead of escaping into the page
+    // background. Combines with explicit clamping in the dot tick effect
+    // below + the auto-follow in the live-tail effect.
     <div
-      className={cn("relative w-full", className)}
+      className={cn("relative w-full overflow-hidden", className)}
       style={{ height }}
       role="img"
       aria-label={ariaLabel}
