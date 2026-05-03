@@ -31,12 +31,20 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-const host =
-  process.env.DATABASE_URL.split("@")[1]?.split("/")[0] ?? "(unknown host)";
+// Same SSL workaround as src/lib/db/index.ts: pg-connection-string maps
+// `sslmode=require` to `verify-full` which rejects the AWS RDS chain
+// (no Amazon CA in Node's default trust store). Strip the param and
+// re-enable SSL via the explicit `ssl` option below.
+const rawUrl = process.env.DATABASE_URL;
+const url = rawUrl.replace(/([?&])sslmode=[^&]+(&|$)/i, (_m, prefix, suffix) =>
+  suffix === "&" ? prefix : ""
+);
+
+const host = url.split("@")[1]?.split("/")[0] ?? "(unknown host)";
 console.log(`Target: ${host}`);
 
 const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: url,
   ssl: { rejectUnauthorized: false },
 });
 
