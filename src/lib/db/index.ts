@@ -26,8 +26,21 @@ function makePool(): Pool {
         "connection string in .env.local."
     );
   }
+
+  // Strip sslmode=... from the URL. pg-connection-string maps `require`,
+  // `prefer`, and `verify-ca` to `verify-full` in current versions, which
+  // forces cert-chain verification and rejects the AWS RDS chain on Node's
+  // default trust store ("self-signed certificate in certificate chain").
+  // We re-enable SSL via the explicit ssl option below where we control
+  // rejectUnauthorized precisely.
+  const rawUrl = process.env.DATABASE_URL;
+  const url = rawUrl.replace(/([?&])sslmode=[^&]+(&|$)/i, (_match, prefix, suffix) =>
+    suffix === "&" ? prefix : ""
+  );
+  const isRds = url.includes("rds.amazonaws.com");
+
   return new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: url,
     // Sane defaults for Vercel serverless; tune in W7.
     max: 10,
     idleTimeoutMillis: 30_000,
@@ -35,8 +48,11 @@ function makePool(): Pool {
     // isn't reachable from the Vercel build pool, rather than hanging out
     // until Next's 60-second worker timeout kicks in.
     connectionTimeoutMillis: 5_000,
+    // For RDS we encrypt the wire but skip cert-chain verification (no AWS
+    // RDS root CA bundled in Node's trust store on Vercel). Acceptable for
+    // staging; v2 wiring with RDS Proxy + IAM auth will tighten this.
     ssl:
-      process.env.NODE_ENV === "production" || process.env.DATABASE_URL.includes("rds.amazonaws.com")
+      process.env.NODE_ENV === "production" || isRds
         ? { rejectUnauthorized: false }
         : false,
   });
