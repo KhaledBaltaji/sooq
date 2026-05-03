@@ -64,6 +64,20 @@
       "when": 1777810000000,
       "tag": "0008_speed_oracle_ticks_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1777813000000,
+      "tag": "0009_speed_trade_enum_fix",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1777815000000,
+      "tag": "0010_speed_cashout_multipliers",
+      "breakpoints": true
     }
   ]
 }
