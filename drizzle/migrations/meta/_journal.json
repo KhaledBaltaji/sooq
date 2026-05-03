@@ -99,6 +99,13 @@
       "when": 1777830000000,
       "tag": "0013_drop_handle_fee_and_polish",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1777835000000,
+      "tag": "0014_strike_at_opens_at",
+      "breakpoints": true
     }
   ]
 }

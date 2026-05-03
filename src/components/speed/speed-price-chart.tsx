@@ -179,6 +179,31 @@ export function SpeedPriceChart({
         // thin lines. 8px (default 6) matches the Polymarket feel for our
         // 15s buckets on a 5m market.
         barSpacing: 8,
+        // Render axis labels and crosshair tooltips in the user's local
+        // timezone so they line up with the page header (e.g. "6:00 PM"
+        // instead of UTC "15:00") which uses the browser's locale formatter.
+        // tickMarkFormatter receives a UTC epoch in seconds; we convert.
+        tickMarkFormatter: (time: number) => {
+          const d = new Date(time * 1000);
+          return d.toLocaleTimeString(undefined, {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          });
+        },
+      },
+      localization: {
+        timeFormatter: (time: number) => {
+          const d = new Date(time * 1000);
+          return d.toLocaleString(undefined, {
+            month: "short",
+            day: "2-digit",
+            year: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          });
+        },
       },
       // Native pan/zoom on the chart canvas itself.
       //
@@ -441,7 +466,14 @@ export function SpeedPriceChart({
       // oracle. Live markets follow the oracle as before.
       const livePrice = isLive && oracle ? Number(oracle.price) : last.close;
       const y = series.priceToCoordinate(livePrice);
-      const x = chart.timeScale().timeToCoordinate(last.time);
+      // For OPEN markets, the dot's X tracks NOW in seconds — so within a
+      // 15s bucket it sits at the live edge of the chart instead of pinned
+      // to the bucket-start coordinate. For CLOSED markets we use the last
+      // bar's time so the dot sits exactly on the resolved line endpoint.
+      const xTime = isLive
+        ? (Math.floor(Date.now() / 1000) as UTCTimestamp)
+        : last.time;
+      const x = chart.timeScale().timeToCoordinate(xTime);
       if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) {
         return;
       }
