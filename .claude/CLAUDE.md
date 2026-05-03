@@ -1,46 +1,64 @@
 # Claude Code Session Rules — Sooq Speed
 
 ## Identity
-Real-money BTC fast-cycle prediction trading for the MENA region. Mistakes hit user wallets. Treat every database operation and deployment as if real money is at stake — because it will be.
+
+Real-money BTC fast-cycle prediction trading for the MENA region. Mistakes hit user wallets directly. Treat every database operation, migration, and deployment as if real money is at stake — because it will be once we relaunch.
 
 ## Hard Constraints
-- **No production AWS access from local** — production RDS provisioned in W11 only via CI/CD pipeline.
-- **No direct pushes to `main`** — production changes flow through PRs from `staging`.
-- **Before any `git push`:** state branch + changes, wait for explicit user confirmation.
-- **Before any commit:** run `npx tsc --noEmit` + `npm run lint` — both must exit 0.
-- **Before any migration applies to staging or production:** explicit user confirmation.
+
+- **No production access.** `sooq.exchange` is still on the old `prediction-market` Vercel project. Don't push, alias, or run SQL against it.
+- **No direct pushes to `main`.** All changes flow `staging` → PR → `main` only when Khaled greenlights production cutover (W12+).
+- **Before any `git push`:** state the branch + diff summary, wait for explicit user confirmation.
+- **Before any commit:** `npx tsc --noEmit` + `npm run build` must both exit 0. Pre-commit hook enforces tsc.
+- **Before any migration applies to RDS staging:** explicit user confirmation. Use the existing `scripts/apply-*.mjs` pattern, never raw `psql` from the session.
 - **NEVER** type credentials, access keys, OTP codes — the user pastes them themselves.
-- **NEVER** create AWS / GitHub / Google accounts on the user's behalf.
-- Migration changes that affect surviving tests require corresponding test updates.
-
-## Multi-Session Safety
-Multiple Claude Code sessions may run simultaneously on this repo.
-- Before editing any file, check `.claude/sessions/locks/` for active locks (heartbeat < 2 hrs).
-- Before creating any migration, reserve the number in `.claude/sessions/migrations/next.json`.
-- See root `CLAUDE.md` "Multi-Session Safety" section for full rules.
-
-## Bug Workflows
-- **"Bug on staging"** → Full access (RDS staging available locally once W5 wires it). Fix → tests pass → commit → push (with approval).
-- **"Bug on production/live"** → ZERO direct DB access. Fix on staging → PR to `main` (each step needs explicit approval).
-
-## New Feature Flow
-1. Read `CLAUDE.md` + `docs/ARCHITECTURE.md` + `docs/SPRINT_LOG.md` (latest entry).
-2. Explore impacted code areas.
-3. Ask the user about impact on existing flows (auth, speed RPC, money flow, admin).
-4. Then `/plan-eng-review` if architecture-touching, or implement directly for small changes.
-
-NEVER start implementing without understanding architecture first.
+- **NEVER** create AWS / GitHub / Google / Vercel / Stripe accounts on the user's behalf.
 
 ## Environment Quick Reference
 
-| Env | Where | DB | Access |
+| Env | Where | DB | Notes |
 |---|---|---|---|
-| Local | `next dev` | Docker Postgres on dev workstation | Full |
-| Staging | `staging.sooq.exchange` (Vercel preview) | RDS staging (W5+) | Full via `aws cli` after W5 |
-| Production | `sooq.exchange` (Vercel) | RDS production multi-AZ (W11+) | CI/CD only, NEVER local |
+| **Local dev** | `next dev` on `localhost:3000` | RDS staging via `.env.local` | EC2 oracle shared with staging |
+| **Staging** | `staging.sooq.exchange` (Vercel `sooq` project) | RDS `sooq-staging-db` (eu-central-1) | Push to `staging` branch → Vercel auto-deploys → manual `vercel alias set` |
+| **Production** | NOT YET PROVISIONED | — | Old prediction-market still serves `sooq.exchange` until relaunch |
 
-## Rebuild Sprint (active)
+`DATABASE_URL` in `.env.local` points at RDS staging directly. The pg client strips `sslmode` from the URL and sets `rejectUnauthorized: false` (matches `src/lib/db/index.ts`).
+
+## Multi-Session Safety
+
+Multiple Claude Code sessions may run simultaneously on this repo:
+
+- Before editing any file, check `.claude/sessions/locks/` for active locks (heartbeat < 2 hrs).
+- Before creating any migration, reserve the number in `.claude/sessions/migrations/next.json` so two sessions don't grab the same slot.
+- See root `CLAUDE.md` "Multi-Session Safety" for the full protocol.
+
+In practice Khaled mostly works solo — but assume contention and follow the protocol when it applies.
+
+## Bug Workflows
+
+- **"Bug on staging"** → full access. Diagnose → fix → tsc + build → commit → push (with approval) → re-alias if needed.
+- **"Bug on live (sooq.exchange)"** → ZERO access. We don't touch the old prediction-market project. Surface the issue and tell Khaled.
+
+## New Feature Flow
+
+1. Read `CLAUDE.md` + `docs/ARCHITECTURE.md` + the latest `docs/SPRINT_LOG.md` entry to ground in current state.
+2. Explore impacted code areas (Explore agent if scope is uncertain).
+3. Ask clarifying questions about impact on existing flows (auth, speed RPCs, money flow, admin) before designing.
+4. For schema/RPC/architecture changes, use `/plan-eng-review`. For small UI/copy changes, implement directly.
+
+NEVER start implementing without understanding what you're touching first.
+
+## Rebuild Sprint
+
 - Plan: `~/.claude/plans/oh-my-how-much-giggly-crystal.md`
 - Progress log: `docs/SPRINT_LOG.md`
-- Current phase: see latest "Phase boundary checkpoint" in SPRINT_LOG.
-- LMSR / branches / commission / demo / prelaunch are all stripped — do not re-add without a fresh spec.
+- Phases W1–W11 are done. W12 (production cutover) is parked until Khaled greenlights relaunch.
+- LMSR / branches / commission / demo / prelaunch / handle_fee / resolution_fee are all stripped or never wired in. Don't re-add without a fresh spec.
+
+## Locked-in Financial Decisions
+
+- **No handle fee.** `fee_config.speed_handle_fee_pct = 0`. Trade RPC writes 0 to `speed_trades.handle_fee` for new trades.
+- **No resolution fee.** Winners get exactly `stake / entry_offered_prob`. No haircut.
+- **Sole revenue:** AMM spread (4%, baked into `offered_prob`) + cashout premium (multiplier matrix in `fee_config`, graded by time-bucket).
+- **Cash pool ≠ revenue.** Open positions' stakes are held funds; the platform's `net = stakes_in − payouts_out` per resolved market.
+- **Withdrawals are no-PIN.** Admin auth via `is_admin` flag through Auth.js + `app.user_id` GUC. PIN flow stays in old RPCs (don't break) but new flow uses `admin_approve_withdrawal` / `admin_reject_withdrawal` / `admin_mark_withdrawal_sent_v2` from mig 0015.
