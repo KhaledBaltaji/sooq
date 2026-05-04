@@ -156,7 +156,7 @@ export function AdminSidebar({ allowedViews }: { allowedViews: string[] | null }
   return (
     <>
       {/* Desktop sidebar — fixed */}
-      <aside className="hidden md:flex flex-col h-screen w-64 fixed start-0 top-0 bg-[#0b0f10] shadow-[4px_0_24px_rgba(0,0,0,0.04)] z-50">
+      <aside className="hidden md:flex flex-col h-screen w-64 fixed start-0 top-0 bg-[#0b0f10] border-r border-black/40 z-50">
         <div className="px-8 py-10">
           <h1 className="text-xl font-black text-white tracking-widest uppercase font-[family-name:var(--font-manrope)]">
             sooq Admin
@@ -183,7 +183,7 @@ export function AdminSidebar({ allowedViews }: { allowedViews: string[] | null }
       </aside>
 
       {/* Mobile top bar + sheet */}
-      <div className="md:hidden fixed top-0 left-0 right-0 z-50 bg-[#0b0f10] h-14 flex items-center px-4">
+      <div className="md:hidden fixed top-0 left-0 right-0 z-50 bg-[#0b0f10] border-b border-black/40 h-14 flex items-center px-4">
         <button onClick={() => setOpen(true)} className="p-2 text-white">
           <span className="material-symbols-outlined">menu</span>
         </button>
