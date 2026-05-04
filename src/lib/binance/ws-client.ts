@@ -118,8 +118,19 @@ function connectTrade(symbol: string): void {
   if (state.ws) return;
   if (typeof window === "undefined") return;
 
+  // iOS Safari throws SecurityError on `new WebSocket(...)` when the
+  // network or device blocks the WSS connection (Lockdown Mode, corporate
+  // proxy, some content blockers). Trade execution + settlement still
+  // read the server-side oracle via /api/speed/oracle, so a frontend WS
+  // failure is purely a chart-smoothness regression — degrade silently
+  // and let the polling fallback in use-speed-oracle take over.
   const url = `${STREAM_HOST}/${symbolToTradeStream(symbol)}`;
-  const ws = new WebSocket(url);
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(url);
+  } catch {
+    return;
+  }
   state.ws = ws;
 
   ws.addEventListener("open", () => {
@@ -168,8 +179,15 @@ function connectBook(symbol: string): void {
   if (state.ws) return;
   if (typeof window === "undefined") return;
 
+  // Same defensive guard as connectTrade — iOS Safari throws SecurityError
+  // on the WebSocket constructor when WSS is blocked by the network/device.
   const url = `${STREAM_HOST}/${symbolToBookTickerStream(symbol)}`;
-  const ws = new WebSocket(url);
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(url);
+  } catch {
+    return;
+  }
   state.ws = ws;
 
   ws.addEventListener("open", () => {
