@@ -10,7 +10,13 @@
       "Bash(git push --set-upstream origin staging)",
       "Bash(git push --set-upstream origin staging *)",
       "Bash(node scripts/db-migrate.mjs)",
-      "Bash(node scripts/db-migrate.mjs *)"
+      "Bash(node scripts/db-migrate.mjs *)",
+      "Bash(ssh -i ~/.ssh/sooq-oracle.pem ec2-user@63.183.214.217 *)",
+      "Bash(ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/sooq-oracle.pem ec2-user@63.183.214.217 *)",
+      "Bash(rsync -avz -e 'ssh -i ~/.ssh/sooq-oracle.pem' *)",
+      "Bash(rsync -avz --copy-links -e 'ssh -i ~/.ssh/sooq-oracle.pem' *)",
+      "Bash(curl -s http://63.183.214.217:3000/health *)",
+      "Bash(curl http://63.183.214.217:3000/health)"
     ],
     "deny": [
       "Bash(git push origin main)",
