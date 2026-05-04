@@ -116,33 +116,39 @@ export function SpeedWindowPills({
   if (rows.length === 0) return null;
 
   return (
-    <div ref={containerRef} className="relative px-4 pb-1">
-      <div className="inline-flex max-w-full items-center gap-1.5 overflow-x-auto scrollbar-none">
-        {/* Past dropdown — slimmed to match the LIVE pill's visual weight
-            (no tracking-wide, smaller chevron). LIVE pill itself was removed
-            per founder direction; tap PAST to navigate to a prior round. */}
-        <button
-          type="button"
-          aria-label="Show past markets"
-          aria-expanded={pastOpen}
-          disabled={archiveRows.length === 0}
-          onClick={() => setPastOpen((v) => !v)}
+    <div ref={containerRef} className="relative inline-flex">
+      {/* Past dropdown — slim, long-thin rectangle. Sits inside the chart
+          card top-left (positioned by parent). LIVE pill itself was removed
+          per founder direction; tap PAST to navigate to a prior round. */}
+      <button
+        type="button"
+        aria-label="Show past markets"
+        aria-expanded={pastOpen}
+        disabled={archiveRows.length === 0}
+        onClick={() => setPastOpen((v) => !v)}
+        // Inline `minHeight: 0` is needed to defeat the global mobile-only
+        // `button { min-height: 44px }` tap-target rule from globals.css —
+        // Tailwind's `min-h-0` utility loses to the element-selector rule
+        // due to layer ordering. The pill needs to stay compact (~22px tall)
+        // to match the old LIVE pill shape.
+        style={{ minHeight: 0 }}
+        className={cn(
+          // Match the old LIVE pill shape: rounded-full, px-3 py-1, text-[11px]
+          // font-bold.
+          "inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-wide tabular-nums leading-none transition shrink-0 backdrop-blur-sm",
+          archiveRows.length === 0
+            ? "bg-surface/80 text-muted-custom opacity-50 pointer-events-none"
+            : "bg-surface/80 text-text hover:bg-bg",
+        )}
+      >
+        <span>Past</span>
+        <ChevronDown
           className={cn(
-            "inline-flex items-center gap-0.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tabular-nums transition shrink-0",
-            archiveRows.length === 0
-              ? "bg-surface text-muted-custom opacity-50 pointer-events-none"
-              : "bg-surface text-text hover:bg-bg",
+            "h-2.5 w-2.5 transition-transform duration-200",
+            pastOpen && "rotate-180",
           )}
-        >
-          <span>Past</span>
-          <ChevronDown
-            className={cn(
-              "h-2 w-2 transition-transform duration-200",
-              pastOpen && "rotate-180",
-            )}
-          />
-        </button>
-      </div>
+        />
+      </button>
       <AnimatePresence>
         {pastOpen &&
           archiveRows.length > 0 &&
@@ -286,7 +292,7 @@ function PastDropdown({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: -4, scale: 0.97 }}
       transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
-      className="absolute left-4 top-full z-50 mt-2 w-[200px] max-h-[280px] origin-top-left overflow-y-auto rounded-lg border border-border-custom bg-elevated p-1 shadow-lg"
+      className="absolute left-0 top-full z-50 mt-1.5 w-[200px] max-h-[280px] origin-top-left overflow-y-auto rounded-lg border border-border-custom bg-elevated p-1 shadow-lg"
     >
       <ul className="space-y-0.5">
         {rows.map((row) => {

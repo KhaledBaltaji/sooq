@@ -236,8 +236,8 @@ function ChartCard({ market }: { market: SpeedMarket }) {
   return (
     <div className="px-3 flex-1 min-h-0 flex flex-col gap-2">
       {/* Chart card — project's existing grid-dots + border styling.
-          Chart-type toggle now floats inside the card at the bottom-right
-          so the pills row stays clean (just Past dropdown). */}
+          Past dropdown floats top-left, chart-type toggle floats bottom-right
+          inside the card. */}
       <div className="relative grid-dots rounded-xl border border-border-custom p-3 flex-1 min-h-[260px] flex flex-col">
         <SpeedPriceChart
           asset={market.asset}
@@ -249,6 +249,16 @@ function ChartCard({ market }: { market: SpeedMarket }) {
           chartType={chartType}
           className="!h-full flex-1"
         />
+        {/* Past dropdown: long-thin rectangle in the top-left corner */}
+        <div className="pointer-events-none absolute top-2 left-2 z-10">
+          <div className="pointer-events-auto">
+            <SpeedWindowPills
+              asset={market.asset}
+              duration={market.duration}
+              currentId={market.id}
+            />
+          </div>
+        </div>
         {/* Floating chart-type toggle: small round icons inside the card */}
         <div className="pointer-events-none absolute bottom-2 right-2 flex items-center gap-1">
           <button
@@ -279,16 +289,6 @@ function ChartCard({ market }: { market: SpeedMarket }) {
           >
             <LineChartIcon className="h-3.5 w-3.5" strokeWidth={2.25} />
           </button>
-        </div>
-      </div>
-      {/* Pills row: just the Past dropdown (Live pill removed per founder direction). */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <SpeedWindowPills
-            asset={market.asset}
-            duration={market.duration}
-            currentId={market.id}
-          />
         </div>
       </div>
     </div>
