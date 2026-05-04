@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useState, useMemo, useCallback, createContext, useContext } from "react";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronLeft,
@@ -37,6 +38,8 @@ import { useSpeedPositions } from "@/hooks/use-speed-positions";
 import { useUser } from "@/lib/auth/hooks";
 import {
   CASHOUT_REJECT_WINDOW_SECONDS,
+  formatSpeedCountdown,
+  isUrgent,
   speedCashoutMultiplier,
   speedFairProbOver,
   speedLiqDiscount,
@@ -484,6 +487,7 @@ function PositionCard({
   market: SpeedMarket;
   isStale: boolean;
 }) {
+  const t = useTranslations("speed");
   const { cashout, loading } = useSpeedCashout();
   const fee = useSpeedFeeConfig();
   const pnlBus = usePnlPop();
@@ -505,6 +509,7 @@ function PositionCard({
   }, []);
   const secondsLeft = Math.max(0, Math.floor((closesAtMs - now) / 1000));
   const cashoutLocked = secondsLeft < CASHOUT_REJECT_WINDOW_SECONDS;
+  const urgent = isUrgent(totalSeconds, secondsLeft);
 
   const sigma = fee.realizedVol?.[market.asset]?.rv ?? fee.iv[market.asset] ?? 0.6;
   const fairOver =
@@ -522,6 +527,8 @@ function PositionCard({
       ? Math.max(0, Math.round(stake * (markProb / entryOfferedProb) * decay * liq * 100) / 100)
       : null;
 
+  const delta = cashoutValue !== null ? cashoutValue - stake : null;
+
   const handleCashout = useCallback(async () => {
     if (loading || cashoutLocked || cashoutValue === null) return;
     triggerHapticConfirm();
@@ -537,14 +544,13 @@ function PositionCard({
       onClick={handleCashout}
       disabled={loading || cashoutLocked || cashoutValue === null}
       className={cn(
-        "relative w-full h-14 rounded-2xl bg-text text-white overflow-hidden",
-        "flex items-center justify-center text-center",
+        "relative w-full rounded-2xl bg-text text-bg overflow-hidden px-4 py-2.5 text-left",
         "active:scale-[0.98] transition disabled:opacity-60",
       )}
       aria-label={`Cash out for ${cashoutValue !== null ? `$${cashoutValue.toFixed(2)}` : ""}`}
     >
-      {/* 4px colored side bar — UP=success, DOWN=destructive. The only
-          visual hint of which side this position bet on. */}
+      {/* 4px colored side bar — UP=success, DOWN=destructive. Visual
+          double-redundancy with the side chip in row 1. */}
       <span
         aria-hidden
         className={cn(
@@ -552,19 +558,71 @@ function PositionCard({
           isUp ? "bg-success" : "bg-destructive",
         )}
       />
-      {cashoutValue !== null ? (
-        <OdometerNumber
-          value={cashoutValue}
-          decimals={2}
-          prefix="$"
-          duration={0.3}
-          className="font-satoshi text-2xl font-black tabular-nums tracking-[-0.01em] leading-none"
-        />
-      ) : (
-        <span className="font-satoshi text-2xl font-black tabular-nums tracking-[-0.01em] leading-none">
-          —
+
+      {/* Row 1: side chip + countdown · stake reference. Tokens use
+          `text-bg` (inverse of `bg-text`) so they read in both themes. */}
+      <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide">
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              "rounded-full px-2 py-0.5 leading-none",
+              isUp ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive",
+            )}
+          >
+            {isUp ? t("up") : t("down")}
+          </span>
+          <span
+            className={cn(
+              "tabular-nums text-bg/70",
+              urgent && "animate-pulse text-destructive",
+            )}
+          >
+            {formatSpeedCountdown(secondsLeft)}
+          </span>
+        </div>
+        <span className="tabular-nums text-bg/55">
+          ${stake.toFixed(2)} {t("stake")}
         </span>
-      )}
+      </div>
+
+      {/* Row 2: label + amount */}
+      <div className="mt-1 flex items-baseline justify-between gap-3">
+        <span className="text-[11px] font-bold uppercase tracking-wide text-bg/70">
+          {loading ? "…" : cashoutLocked ? t("closing") : t("cashOut")}
+        </span>
+        {cashoutValue !== null ? (
+          <OdometerNumber
+            value={cashoutValue}
+            decimals={2}
+            prefix="$"
+            duration={0.3}
+            className="font-satoshi text-2xl font-black tabular-nums tracking-[-0.01em] leading-none"
+          />
+        ) : (
+          <span className="font-satoshi text-2xl font-black tabular-nums tracking-[-0.01em] leading-none">
+            —
+          </span>
+        )}
+      </div>
+
+      {/* Row 3: delta vs stake — green if winning, red if losing, muted at parity */}
+      <div className="mt-0.5 flex justify-end h-4">
+        {delta !== null && (
+          <span
+            className={cn(
+              "font-satoshi text-xs font-bold tabular-nums leading-none",
+              delta > 0.005
+                ? "text-success"
+                : delta < -0.005
+                  ? "text-destructive"
+                  : "text-bg/55",
+            )}
+          >
+            {delta > 0.005 ? "+" : ""}
+            ${delta.toFixed(2)}
+          </span>
+        )}
+      </div>
     </button>
   );
 }

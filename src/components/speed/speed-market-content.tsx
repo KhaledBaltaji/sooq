@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { useSpeedMarket } from "@/hooks/use-speed-market";
 import { useSpeedOracleLatest } from "@/hooks/use-speed-oracle";
 import { useSpeedPosition } from "@/hooks/use-speed-position";
+import { useOpenSpeedPositions } from "@/hooks/use-open-speed-positions";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useUser } from "@/lib/auth/hooks";
 import { SpeedTradePanel } from "@/components/speed/speed-trade-panel";
@@ -64,6 +65,9 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
   const { market, loading: mLoading } = useSpeedMarket(id);
   const { price, isStale, loading: oLoading } = useSpeedOracleLatest("BTC");
   const { position } = useSpeedPosition(id);
+  // Desktop right column stacks one cashout card per open position under
+  // the trade panel; mobile inline still uses the single-position fetch.
+  const { positions: openPositions } = useOpenSpeedPositions(id);
   const { user } = useUser();
   const isMobile = useIsMobile();
   const [bumpKey, setBumpKey] = useState(0);
@@ -485,26 +489,31 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
           <SpeedAboutMarket asset={market.asset} duration={market.duration} />
         </div>
 
-        {/* Desktop: sticky right column */}
+        {/* Desktop: sticky right column. Trade panel renders on top while
+            the market is open; one cashout card stacks below per open
+            position so a user can place follow-on trades without losing
+            their position view. */}
         <aside className="hidden lg:block">
           <div className="sticky top-20 space-y-4">
-            {position ? (
-              <SpeedPositionPanel
-                key={`pos-${position.id}-${bumpKey}`}
-                market={market}
-                position={position}
-                livePrice={price}
-                isStale={isStale}
-              />
-            ) : expired ? (
-              <ExpiredView market={market} />
-            ) : (
+            {!expired && (
               <SpeedTradePanel
                 market={market}
                 livePrice={price}
                 isStale={isStale}
                 onBetPlaced={() => setBumpKey((k) => k + 1)}
               />
+            )}
+            {openPositions.map((p) => (
+              <SpeedPositionPanel
+                key={`pos-${p.id}-${bumpKey}`}
+                market={market}
+                position={p}
+                livePrice={price}
+                isStale={isStale}
+              />
+            ))}
+            {expired && openPositions.length === 0 && (
+              <ExpiredView market={market} />
             )}
           </div>
         </aside>
