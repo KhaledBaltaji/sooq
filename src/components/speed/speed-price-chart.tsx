@@ -8,12 +8,14 @@ import {
   CrosshairMode,
   LineStyle,
   createChart,
+  type AutoscaleInfo,
   type IChartApi,
   type ISeriesApi,
   type CandlestickData,
   type UTCTimestamp,
   type IPriceLine,
 } from "lightweight-charts";
+import { motion, useMotionValue, useSpring } from "framer-motion";
 import { useTranslations } from "next-intl";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -136,6 +138,16 @@ export function SpeedPriceChart({
   // (every 30s) must NOT call fitContent again — that would reset the
   // user's pan/zoom on every refresh and feel jarring.
   const hasFitContentRef = useRef(false);
+  // Group C: live-tail update path is RAF-coalesced. Binance bookTicker
+  // emits 200–500 events/sec; we don't want to call series.update() per
+  // event (browsers paint at most 60 fps anyway). Latest pending bar is
+  // stored here and a single requestAnimationFrame pump applies it.
+  const pendingBarRef = useRef<CandlestickData<UTCTimestamp> | null>(null);
+  const rafIdRef = useRef<number | null>(null);
+  // Group C: EMA on the displayed Y-axis priceRange so it glides toward
+  // its target instead of snapping each redraw. State is stored as the
+  // most recent {minValue,maxValue} we returned from autoscaleInfoProvider.
+  const yRangeEmaRef = useRef<{ minValue: number; maxValue: number } | null>(null);
   const [mounted, setMounted] = useState(false);
   // Live-tail pulsing dot position. Only used in line mode — recomputed
   // at 10Hz from the latest bar's time + the live oracle price.
@@ -168,7 +180,11 @@ export function SpeedPriceChart({
       crosshair: { mode: CrosshairMode.Magnet },
       rightPriceScale: {
         borderVisible: false,
-        scaleMargins: { top: 0.15, bottom: 0.15 },
+        // Group C: bumped 0.15 → 0.22. Combined with the per-series
+        // autoscaleInfoProvider below (min-range floor + EMA), this gives
+        // the chart breathing room so micro-noise doesn't visually
+        // amplify into chart-spanning swings.
+        scaleMargins: { top: 0.22, bottom: 0.22 },
       },
       timeScale: {
         borderVisible: false,
@@ -274,6 +290,52 @@ export function SpeedPriceChart({
     const chart = chartRef.current;
     if (!chart || !mounted) return;
 
+    // Group C: autoscaleInfoProvider — runs on every redraw, lets us
+    // override the Y-axis range without disabling auto-scale.
+    //   1. Hard floor: visible range ≥ 0.25% of mid (~$200 at $80k BTC).
+    //      Stops the chart ever zooming so tight that a $3 wobble looks
+    //      like a 30%-of-viewport swing on a calm market.
+    //   2. EMA on the range itself: instead of letting auto-scale snap
+    //      to a new min/max each redraw, we glide displayed range toward
+    //      the target with a 0.85 alpha. The chart "breathes" instead of
+    //      jumping — same effect TradingView and Polymarket use.
+    // Reset on mount/series-swap is handled below by clearing the ref.
+    yRangeEmaRef.current = null;
+    const Y_FLOOR_FRAC = 0.0025; // 0.25% of mid
+    const Y_FLOOR_ABS = 0.5; // never less than $0.50 visible
+    const Y_EMA_ALPHA = 0.85; // 1.0 = no smoothing, 0.0 = frozen
+    const enforceMinRangeAndSmooth = (
+      orig: () => AutoscaleInfo | null,
+    ): AutoscaleInfo | null => {
+      const info = orig();
+      if (!info || !info.priceRange) return info;
+      const { minValue, maxValue } = info.priceRange;
+      const mid = (minValue + maxValue) / 2;
+      const targetRange = Math.max(
+        maxValue - minValue,
+        mid * Y_FLOOR_FRAC,
+        Y_FLOOR_ABS,
+      );
+      const half = targetRange / 2;
+      const targetMin = mid - half;
+      const targetMax = mid + half;
+      const prev = yRangeEmaRef.current;
+      const nextMin = prev
+        ? Y_EMA_ALPHA * targetMin + (1 - Y_EMA_ALPHA) * prev.minValue
+        : targetMin;
+      const nextMax = prev
+        ? Y_EMA_ALPHA * targetMax + (1 - Y_EMA_ALPHA) * prev.maxValue
+        : targetMax;
+      yRangeEmaRef.current = { minValue: nextMin, maxValue: nextMax };
+      return {
+        ...info,
+        priceRange: {
+          minValue: nextMin,
+          maxValue: nextMax,
+        },
+      };
+    };
+
     let series: ISeriesApi<"Candlestick"> | ISeriesApi<"Area">;
     if (chartType === "candle") {
       series = chart.addSeries(CandlestickSeries, {
@@ -289,6 +351,7 @@ export function SpeedPriceChart({
         // shows live, the target priceLine owns the right-axis label.
         lastValueVisible: false,
         priceLineVisible: false,
+        autoscaleInfoProvider: enforceMinRangeAndSmooth,
       });
     } else {
       series = chart.addSeries(AreaSeries, {
@@ -308,6 +371,7 @@ export function SpeedPriceChart({
         // the user hovers over the chart, which collided visually with
         // our HTML pulsing dot at the live edge (looked like two dots).
         crosshairMarkerVisible: false,
+        autoscaleInfoProvider: enforceMinRangeAndSmooth,
       });
     }
 
@@ -414,10 +478,16 @@ export function SpeedPriceChart({
   }, [strikePrice, mounted, chartType]);
 
   // Live tail: update last candle's high/low/close as oracle ticks arrive.
-  // Floor tickTime to resolvedBucket so 1Hz ticks fold into the same N-second
-  // candle until the bucket boundary rolls over. Without this, every 1s tick
-  // would create a new sub-bucket candle on top of the N-second history,
-  // producing a visual mismatch between historical and live regions.
+  // Floor tickTime to resolvedBucket so ticks fold into the same N-second
+  // candle until the bucket boundary rolls over.
+  //
+  // Group C: RAF-coalesced. With Binance @bookTicker pushing 200–500
+  // events/sec, calling series.update() per tick is wasteful — browsers
+  // paint at 60 fps max and lightweight-charts re-runs auto-scale on
+  // every update. We stash the latest desired bar in pendingBarRef and
+  // pump it through requestAnimationFrame, so series.update() runs at
+  // most once per frame with the freshest data. Visually identical;
+  // dramatically less CPU + less Y-axis snapping.
   useEffect(() => {
     const series = seriesRef.current;
     if (!series || !mounted || !oracle || isStale) return;
@@ -447,117 +517,130 @@ export function SpeedPriceChart({
             low: Math.min(last.close, tickPrice),
             close: tickPrice,
           };
-    if (chartType === "candle") {
-      (series as ISeriesApi<"Candlestick">).update(next);
-    } else {
-      (series as ISeriesApi<"Area">).update({ time: next.time, value: tickPrice });
-    }
-    lastBarRef.current = next;
 
-    // Auto-follow (W11): if the new bucket's time has drifted past the
-    // chart's visible range (e.g. user panned far left into history,
-    // OR shiftVisibleRangeOnNewBar's 1-bar drift fell behind the live
-    // edge), snap back to real-time. We do NOT fire when last.time is
-    // still inside the visible range — that would yank the chart away
-    // from a user who has dragged forward into the rightOffset empty
-    // space (last.time ends up mid-canvas-left, NOT past visibleRange.to).
-    const chart = chartRef.current;
-    if (chart) {
-      const visible = chart.timeScale().getVisibleRange();
-      if (visible && (next.time as number) > (visible.to as number)) {
-        chart.timeScale().scrollToRealTime();
-      }
+    // Stash latest pending bar; the RAF pump applies at most once per
+    // animation frame.
+    pendingBarRef.current = next;
+    if (rafIdRef.current === null) {
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafIdRef.current = null;
+        const pending = pendingBarRef.current;
+        if (!pending) return;
+        pendingBarRef.current = null;
+        const live = seriesRef.current;
+        if (!live) return;
+        if (chartType === "candle") {
+          (live as ISeriesApi<"Candlestick">).update(pending);
+        } else {
+          (live as ISeriesApi<"Area">).update({
+            time: pending.time,
+            value: pending.close,
+          });
+        }
+        lastBarRef.current = pending;
+
+        // Auto-follow (W11): if the new bucket's time has drifted past
+        // the chart's visible range, snap back to real-time. Skipped
+        // when last.time is still inside the visible range — that would
+        // yank the chart away from a user who panned into history.
+        const chart = chartRef.current;
+        if (chart) {
+          const visible = chart.timeScale().getVisibleRange();
+          if (visible && (pending.time as number) > (visible.to as number)) {
+            chart.timeScale().scrollToRealTime();
+          }
+        }
+      });
     }
   }, [oracle, isStale, mounted, resolvedBucket, chartType, isLive]);
 
-  // Track the target line's pixel Y so we can render an HTML label
-  // overlay at that position. Both modes need this — the dotted line is
-  // drawn by the chart but the label text is HTML.
+  // Cancel any in-flight RAF on unmount so we don't update a torn-down series.
   useEffect(() => {
-    if (!mounted) return;
-    let cancelled = false;
-    const tick = () => {
-      if (cancelled) return;
-      const series = seriesRef.current;
-      if (!series) return;
-      const y = series.priceToCoordinate(strikePrice);
-      if (typeof y === "number" && Number.isFinite(y)) {
-        setTargetY((prev) => (prev !== null && Math.abs(prev - y) < 0.5 ? prev : y));
-      }
-    };
-    tick();
-    const id = setInterval(tick, 100);
     return () => {
-      cancelled = true;
-      clearInterval(id);
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      pendingBarRef.current = null;
     };
-  }, [mounted, strikePrice, chartType]);
+  }, []);
 
-  // Live-tail pulsing dot — line mode only. Polls priceToCoordinate(live)
-  // and timeToCoordinate(latestBar) at 10Hz to position an HTML overlay at
-  // the right edge of the line. Polling because lightweight-charts has no
-  // single "price/time scale changed" event; 10Hz is cheap.
+  // Group C: motion values for the live dot. The position from
+  // priceToCoordinate is a discrete value that changes whenever the line
+  // updates. useSpring tweens the rendered position toward that target
+  // so the dot glides along the line instead of teleporting between
+  // points — same effect TradingView uses. Stiffness/damping tuned for
+  // ~150–200ms visible motion with no overshoot.
+  const dotXMotion = useMotionValue(0);
+  const dotYMotion = useMotionValue(0);
+  const dotXSpring = useSpring(dotXMotion, { stiffness: 220, damping: 30, mass: 0.6 });
+  const dotYSpring = useSpring(dotYMotion, { stiffness: 120, damping: 20, mass: 0.7 });
+
+  // Track the target-line label Y + the live dot position via a single
+  // RAF loop. Polling because lightweight-charts has no "scale changed"
+  // event; RAF is cheap and aligned with paint cadence.
   useEffect(() => {
-    if (chartType !== "line" || !mounted) {
+    if (!mounted) {
       setLiveDot(null);
       return;
     }
+    let frame: number | null = null;
     let cancelled = false;
     const tick = () => {
       if (cancelled) return;
       const series = seriesRef.current;
       const chart = chartRef.current;
-      const last = lastBarRef.current;
-      if (!series || !chart || !last) return;
-      // Closed markets snap the dot to the last bar's close so it sits on
-      // the line endpoint, not above/below it tracking the still-ticking
-      // oracle. Live markets follow the oracle as before.
-      // Read last.close (the bucket data the chart actually rendered)
-      // instead of oracle.price directly. This guarantees dot Y and line
-      // endpoint Y are computed from the SAME number, eliminating the
-      // "dot leads line" lag the user spotted: previously the dot polled
-      // oracle.price every 100ms and rendered immediately, while the
-      // line had to wait for the live-tail effect to run series.update
-      // and lightweight-charts to redraw on the next animation frame.
-      // Now both move when last.close moves.
-      const livePrice = last.close;
-      const y = series.priceToCoordinate(livePrice);
-      // X anchors to the actual line endpoint via timeToCoordinate(last.time).
-      // Earlier we used chart.timeScale().width() ("right edge of plot area")
-      // assuming fixRightEdge meant the last data point lives at pixel=width,
-      // but lightweight-charts honours barSpacing — the rightmost bar centre
-      // sits ~barSpacing/2 px LEFT of the time-scale width, leaving a visible
-      // gap between line tip and dot. timeToCoordinate gives the exact pixel
-      // the line ends at; fall back to width() during the brief 30s
-      // historical-reload handoff if the ref is transiently out of sync with
-      // the chart's data.
-      const tx = chart.timeScale().timeToCoordinate(last.time);
-      const x =
-        typeof tx === "number" && Number.isFinite(tx)
-          ? tx
-          : chart.timeScale().width();
-      if (typeof y !== "number" || !Number.isFinite(y)) {
-        return;
-      }
-      // Y is NOT clamped — priceToCoordinate already returns the same Y
-      // the line uses internally. overflow-hidden on the wrapper
-      // contains the rare case where livePrice is briefly outside the
-      // auto-scaled price axis range.
-      const isOver = livePrice >= strikePrice;
-      setLiveDot((prev) => {
-        if (prev && Math.abs(prev.x - x) < 0.5 && Math.abs(prev.y - y) < 0.5 && prev.isOver === isOver) {
-          return prev;
+      if (series) {
+        // Target-line label Y (both chartTypes).
+        const ty = series.priceToCoordinate(strikePrice);
+        if (typeof ty === "number" && Number.isFinite(ty)) {
+          setTargetY((prev) => (prev !== null && Math.abs(prev - ty) < 0.5 ? prev : ty));
         }
-        return { x, y, isOver };
-      });
+      }
+
+      if (chartType === "line" && series && chart) {
+        const last = lastBarRef.current;
+        if (last) {
+          // Read last.close (the bucket data the chart actually rendered)
+          // instead of oracle.price. Guarantees dot Y and line endpoint
+          // Y come from the same number — no "dot leads line" lag.
+          const livePrice = last.close;
+          const y = series.priceToCoordinate(livePrice);
+          const tx = chart.timeScale().timeToCoordinate(last.time);
+          const x =
+            typeof tx === "number" && Number.isFinite(tx)
+              ? tx
+              : chart.timeScale().width();
+          if (typeof y === "number" && Number.isFinite(y)) {
+            const isOver = livePrice >= strikePrice;
+            // Update motion targets — useSpring tweens the rendered position.
+            dotXMotion.set(x);
+            dotYMotion.set(y);
+            setLiveDot((prev) => {
+              if (
+                prev &&
+                Math.abs(prev.x - x) < 0.5 &&
+                Math.abs(prev.y - y) < 0.5 &&
+                prev.isOver === isOver
+              ) {
+                return prev;
+              }
+              return { x, y, isOver };
+            });
+          }
+        }
+      } else if (chartType !== "line") {
+        // Candle mode — clear any stale dot state from a prior toggle.
+        setLiveDot((prev) => (prev === null ? prev : null));
+      }
+      frame = requestAnimationFrame(tick);
     };
-    tick();
-    const id = setInterval(tick, 100);
+    frame = requestAnimationFrame(tick);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      if (frame !== null) cancelAnimationFrame(frame);
     };
-  }, [chartType, mounted, oracle, strikePrice, isLive]);
+  }, [chartType, mounted, strikePrice, isLive, dotXMotion, dotYMotion]);
 
   // Recolor the AreaSeries based on live vs target. Green palette when
   // live >= target, red palette when below. Only runs in line mode —
@@ -638,16 +721,15 @@ export function SpeedPriceChart({
       )}
 
       {/* Live-tail pulsing dot at the end of the line (line mode only).
-          Two stacked elements: a center dot (solid) and an outer ring
-          that pulses outward via CSS keyframes. Color matches the line
-          (green when live > target, red when below). pointer-events-none
-          so chart pan/zoom isn't blocked. */}
+          Group C: position is driven by framer-motion springs so the
+          dot glides along the line between data points instead of
+          teleporting. The pulse/ping ring + glow are unchanged. */}
       {chartType === "line" && liveDot && showCanvas && (
-        <div
+        <motion.div
           className="pointer-events-none absolute z-10"
           style={{
-            left: liveDot.x,
-            top: liveDot.y,
+            left: dotXSpring,
+            top: dotYSpring,
             transform: "translate(-50%, -50%)",
           }}
           aria-hidden
@@ -671,7 +753,7 @@ export function SpeedPriceChart({
                 : "0 0 12px 2px rgba(239, 83, 80, 0.7)",
             }}
           />
-        </div>
+        </motion.div>
       )}
 
       {loading && (

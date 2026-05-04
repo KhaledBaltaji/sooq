@@ -1,20 +1,29 @@
 /**
- * Speed Oracle Worker — Sooq v1 (Group B: CFD-feel migration)
+ * Speed Oracle Worker — Sooq v1 (Group C: chart smoothness)
  *
- * Streams Binance BTC/USDT trade events via WebSocket and writes them
- * directly to RDS PostgreSQL via the `pg` driver. Single persistent
- * Node process — running >1 replica races the speed_oracle_latest upsert.
+ * Streams Binance BTC/USDT top-of-book updates via WebSocket and writes
+ * the mid price (best_bid + best_ask)/2 directly to RDS PostgreSQL via
+ * the `pg` driver. Single persistent Node process — running >1 replica
+ * races the speed_oracle_latest upsert.
  *
- * Stream change (Group B): switched from `btcusdt@kline_1s` to
- * `btcusdt@trade`. The kline stream pushes one event per second; the
- * trade stream pushes one event per actual Binance trade (~10-30/sec
- * for BTC during normal hours, up to 100/sec during volatility).
+ * Stream history:
+ *   * Group A (initial): `btcusdt@kline_1s` — one event/sec, server-bucketed.
+ *     Smooth but noticeably stair-stepped on a CFD-style chart.
+ *   * Group B: `btcusdt@trade` — one event per matched trade (10–300/sec
+ *     for BTC). Higher granularity but consecutive prints alternate
+ *     buyer-/seller-initiated, producing a $0.01–$0.10 sawtooth that
+ *     showed up as visible "bouncing" on the chart even on calm markets.
+ *   * Group C (current): `btcusdt@bookTicker` — emits whenever best bid
+ *     OR best ask changes (~200–500/sec for BTCUSDT). We compute mid =
+ *     (bid + ask)/2 and persist that. Mid is monotonically driven by
+ *     real flow, doesn't alternate, and is the standard reference price
+ *     for derivatives.
  *
  * Throttling: writes are flushed at most every FLUSH_INTERVAL_MS to RDS
- * (default 100ms = 10 Hz). The buffered `state.latestTrade` is always
- * the most recent Binance trade observed; the flush interval picks it
- * up and writes one row per flush. This caps RDS write load while still
- * giving sub-second tick granularity for the wick detector and keeping
+ * (default 100ms = 10 Hz). The buffered `state.buffer` is always the
+ * most recent mid observed; the flush interval picks it up and writes
+ * one row per flush. This caps RDS write load while still giving
+ * sub-second tick granularity for the wick detector and keeping
  * `speed_oracle_latest` fresh enough that trade execution price matches
  * what users see on the chart within ~200ms. Frontend connects to
  * Binance WS directly for visual smoothness; the backend oracle is the
@@ -69,7 +78,19 @@ console.log(
 
 const ASSET = "BTC";
 const SOURCE = "binance";
-const STREAM_URL = "wss://stream.binance.com:9443/ws/btcusdt@trade";
+// Group C: switched from @trade → @bookTicker. We now write the mid
+// (best_bid + best_ask) / 2 as our reference price. Reasons:
+//  • @trade alternates buyer-/seller-initiated prints, so consecutive
+//    prices zigzag by spread amount ($0.01–$0.10 on BTCUSDT). That
+//    sawtooth showed up in the chart as "bouncing" even on calm markets.
+//  • Mid is monotonically driven by real flow — no alternation. It's
+//    also the industry-standard reference price for derivatives.
+//  • Volume is similar/higher (~200–500 events/sec for BTCUSDT) but the
+//    100ms flush throttle absorbs that just like before.
+//  • The wick detector threshold (mig 0017 raised 0.001 → 0.003 to
+//    absorb @trade noise) is dropped back to 0.0015 in mig 0018 since
+//    mid is much quieter.
+const STREAM_URL = "wss://stream.binance.com:9443/ws/btcusdt@bookTicker";
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const HEARTBEAT_LOG_EVERY_MS = 60_000;
@@ -108,24 +129,24 @@ pool.on("error", (err) => {
   reportFailure("pg-pool", err);
 });
 
-// Binance trade event payload from the @trade stream. One event per
-// matched trade on Binance. Pushed at ~10-30/sec for BTC during normal
-// hours, up to 100/sec during volatility.
-interface BinanceTradeEvent {
-  e: "trade";
-  E: number;   // event time (ms)
+// Binance bookTicker event payload from the @bookTicker stream.
+// Emitted whenever the best bid OR best ask changes — typically
+// 200–500 events/sec for BTCUSDT. Note: the @bookTicker stream does
+// NOT include an event timestamp; we use server receive-time. The
+// difference vs. Binance-side time is sub-10ms — well inside the 100ms
+// flush throttle and the 2s execution-gate freshness threshold.
+interface BinanceBookTickerEvent {
+  u: number;   // order book updateId
   s: string;   // symbol
-  t: number;   // trade id
-  p: string;   // price
-  q: string;   // quantity
-  T: number;   // trade time (ms) — what we use for ts
-  m: boolean;  // is buyer the market maker?
-  M?: boolean; // ignore (deprecated)
+  b: string;   // best bid price
+  B: string;   // best bid qty
+  a: string;   // best ask price
+  A: string;   // best ask qty
 }
 
 interface BufferedTrade {
-  price: number;
-  binanceT: number; // Binance trade timestamp in ms
+  price: number;   // mid = (bid + ask) / 2
+  binanceT: number; // server receive-time in ms (bookTicker has no event time)
 }
 
 const state = {
@@ -240,18 +261,31 @@ function connect(): void {
 
   ws.on("message", (data) => {
     try {
-      const event = JSON.parse(data.toString()) as BinanceTradeEvent;
-      if (event.e !== "trade") return;
-      const price = Number(event.p);
-      if (!Number.isFinite(price) || price <= 0) return;
-      state.lastTickAt = Date.now();
+      const event = JSON.parse(data.toString()) as BinanceBookTickerEvent;
+      // bookTicker events always have b/a fields. If shape is wrong,
+      // skip silently (could be a stray combined-stream control message).
+      if (!event || typeof event.b !== "string" || typeof event.a !== "string") return;
+      const bid = Number(event.b);
+      const ask = Number(event.a);
+      if (
+        !Number.isFinite(bid) ||
+        !Number.isFinite(ask) ||
+        bid <= 0 ||
+        ask <= 0 ||
+        ask < bid
+      ) {
+        return;
+      }
+      const mid = (bid + ask) / 2;
+      const now = Date.now();
+      state.lastTickAt = now;
       state.ticksSinceStart++;
       state.ticksSinceLastLog++;
-      // Group B: buffer the latest tick. The flush interval picks it up
-      // at 10 Hz. If multiple trades arrive between flushes, only the
-      // newest is persisted — for our use case (chart display + execution
-      // freshness) only the newest matters.
-      state.buffer = { price, binanceT: event.T };
+      // Group C: buffer the mid. The flush interval (100ms) picks it up.
+      // Multiple bookTicker events between flushes collapse — only the
+      // newest mid is persisted, which is correct: we want the most
+      // recent reference price for chart display + execution freshness.
+      state.buffer = { price: mid, binanceT: now };
     } catch (err) {
       console.error("[oracle] parse error:", err);
     }

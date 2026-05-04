@@ -127,6 +127,13 @@
       "when": 1777920000000,
       "tag": "0017_wick_threshold_tune",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1778000000000,
+      "tag": "0018_oracle_mid_pricing",
+      "breakpoints": true
     }
   ]
 }

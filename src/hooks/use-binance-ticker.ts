@@ -1,49 +1,73 @@
 "use client";
 
-// Group B: React hook subscribing to Binance @trade WS via the singleton
-// client. Returns the latest tick and a connection-failed flag so callers
-// can fall back to polling our own oracle endpoint when Binance is
-// unreachable (e.g., Lebanese ISP block on stream.binance.com).
+// Group C: React hook subscribing to Binance @bookTicker WS via the
+// singleton client. Returns the top-of-book MID = (bid + ask) / 2 as
+// `price`, plus the raw bid/ask in case a caller wants the spread.
+//
+// Why bookTicker instead of @trade: @trade alternates buyer-/seller-
+// initiated prints, so consecutive prices zigzag by spread amount. That
+// sawtooth showed up on the chart as visible bouncing even on calm
+// markets. Mid is monotonically driven by real flow — no alternation.
+//
+// Note: bookTicker has no Binance event timestamp; `ts` is the server
+// receive-time. Difference vs Binance-side time is sub-10ms.
 
 import { useEffect, useState } from "react";
 import {
   subscribeBookTicker,
-  subscribeTrade,
   type BinanceBookTickerSnapshot,
-  type BinanceTickerSnapshot,
 } from "@/lib/binance/ws-client";
 
 interface TickerResult {
-  /** Last observed price; null until first tick or while WS unavailable. */
+  /** Last observed mid price ((bid+ask)/2); null until first tick. */
   price: number | null;
-  /** Binance event timestamp (ms). */
+  /** Binance best bid; null until first tick. */
+  bid: number | null;
+  /** Binance best ask; null until first tick. */
+  ask: number | null;
+  /** Server receive-time when this client observed the message (ms). */
   ts: number | null;
-  /** Server clock when this client observed the message (ms). */
+  /** Same as `ts` — kept for API compatibility with prior @trade hook. */
   observedAt: number | null;
   /** True once the first tick has arrived (WS handshake succeeded). */
   isLive: boolean;
 }
 
 /**
- * Subscribe to a Binance trade stream for the given symbol (e.g. "BTCUSDT").
- * State updates are throttled to the React render cycle — even if Binance
- * pushes 30 trades/sec, the latest is reflected once per render.
+ * Subscribe to Binance @bookTicker for the given symbol (e.g. "BTCUSDT").
+ * Returns the latest mid price plus the raw bid/ask. State updates are
+ * throttled to the React render cycle — even if Binance pushes hundreds
+ * of book updates per second, only the latest is reflected per render.
  */
 export function useBinanceTicker(symbol: string): TickerResult {
-  const [snap, setSnap] = useState<BinanceTickerSnapshot | null>(null);
+  const [snap, setSnap] = useState<BinanceBookTickerSnapshot | null>(null);
 
   useEffect(() => {
-    const unsub = subscribeTrade(symbol, (s) => {
+    const unsub = subscribeBookTicker(symbol, (s) => {
       setSnap(s);
     });
     return unsub;
   }, [symbol]);
 
+  if (!snap) {
+    return {
+      price: null,
+      bid: null,
+      ask: null,
+      ts: null,
+      observedAt: null,
+      isLive: false,
+    };
+  }
+
+  const mid = (snap.bid + snap.ask) / 2;
   return {
-    price: snap?.price ?? null,
-    ts: snap?.ts ?? null,
-    observedAt: snap?.observedAt ?? null,
-    isLive: snap !== null,
+    price: Number.isFinite(mid) && mid > 0 ? mid : null,
+    bid: snap.bid,
+    ask: snap.ask,
+    ts: snap.observedAt,
+    observedAt: snap.observedAt,
+    isLive: true,
   };
 }
 
