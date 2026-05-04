@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { cn, triggerHapticConfirm } from "@/lib/utils";
 import {
   CASHOUT_REJECT_WINDOW_SECONDS,
   durationToSeconds,
@@ -86,6 +86,7 @@ export function SpeedPositionPanel({
 
   async function handleCashout() {
     if (cashLoading || expired || cashoutLocked) return;
+    triggerHapticConfirm();
     await cashout(position.id, ivUsed);
   }
 
@@ -148,19 +149,41 @@ export function SpeedPositionPanel({
       )}
 
       {position.status === "open" && !expired && (
-        <Button
-          type="button"
-          size="lg"
-          onClick={handleCashout}
-          disabled={cashLoading || isStale || cashoutLocked}
-          className="h-12 w-full font-satoshi text-sm font-bold uppercase tracking-wide"
-        >
-          {cashLoading
-            ? "…"
-            : cashoutLocked
-              ? "Market closing"
-              : `${t("cashOut")}${estCashout !== null ? ` · $${estCashout.toFixed(2)}` : ""}`}
-        </Button>
+        <div className="space-y-1.5">
+          <Button
+            type="button"
+            size="lg"
+            onClick={handleCashout}
+            disabled={cashLoading || isStale || cashoutLocked}
+            className="h-12 w-full font-satoshi text-sm font-bold uppercase tracking-wide"
+          >
+            {cashLoading
+              ? "…"
+              : cashoutLocked
+                ? "Market closing"
+                : `${t("cashOut")}${estCashout !== null ? ` · $${estCashout.toFixed(2)}` : ""}`}
+          </Button>
+          {estCashout !== null && !cashoutLocked && !cashLoading && (
+            <div className="flex items-baseline justify-between gap-2 px-1">
+              <span
+                className={cn(
+                  "font-satoshi text-xs font-bold tabular-nums",
+                  estCashout - stake > 0.005
+                    ? "text-success"
+                    : estCashout - stake < -0.005
+                      ? "text-destructive"
+                      : "text-muted-custom",
+                )}
+              >
+                {estCashout - stake > 0.005 ? "+" : ""}
+                ${(estCashout - stake).toFixed(2)}
+              </span>
+              <span className="text-[11px] text-muted-custom">
+                {t("ifYouWinSettlement")}: ${potentialPayout.toFixed(2)}
+              </span>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Resolving (position still open but market timer expired) — big

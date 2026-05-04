@@ -20,7 +20,7 @@ import {
   CandlestickChart,
   LineChart as LineChartIcon,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, triggerHapticConfirm } from "@/lib/utils";
 import {
   SpeedPriceChart,
   SPEED_CHART_TYPE_KEY,
@@ -524,6 +524,7 @@ function PositionCard({
 
   const handleCashout = useCallback(async () => {
     if (loading || cashoutLocked || cashoutValue === null) return;
+    triggerHapticConfirm();
     // Optimistic pop using the displayed value (within ±$0.01 of the RPC).
     // The actual realized PnL reconciles to the same animation either way.
     pnlBus?.pop(cashoutValue - stake);
@@ -630,6 +631,7 @@ function Dock({
   const handleBet = useCallback(
     async (side: SpeedSide) => {
       if (!canBet) return;
+      triggerHapticConfirm();
       setTapFire(side);
       setTimeout(() => setTapFire(null), 380);
       // B7: send the IV snapshot for quote/execute parity (mig 0016).

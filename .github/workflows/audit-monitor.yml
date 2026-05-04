@@ -1,0 +1,46 @@
+name: Settlement / cron / ledger health monitor
+
+# Catches the class of silent failure that hid mig 0016's settlement bug
+# for hours: cron caught the inner exception and reported success=true,
+# so winners weren't paid and no alarm fired. Runs every 5 minutes.
+#
+# Three checks via scripts/check-audit-health.mjs against staging RDS:
+#   1. Stuck markets (status='open' AND closes_at < NOW() - 30s)
+#   2. Cron freshness (last successful speed-roll/speed-resolve > 30s ago)
+#   3. Ledger drift (users.balance_usd vs SUM(transactions) > $0.01)
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Check settlement / cron / ledger health
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_STAGING }}
+        run: node scripts/check-audit-health.mjs
+      - name: Notify Slack on failure
+        if: ${{ failure() && env.SLACK_WEBHOOK_URL != '' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":":rotating_light: Speed audit health check failed on staging. Check stuck markets / cron / ledger drift via scripts/audit-trading-deep.mjs."}' \
+            "$SLACK_WEBHOOK_URL"
+      - name: Notify Discord on failure
+        if: ${{ failure() && env.DISCORD_WEBHOOK_URL != '' }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-Type: application/json' \
+            --data '{"content":"🚨 Speed audit health check failed on staging. Check stuck markets / cron / ledger drift via scripts/audit-trading-deep.mjs."}' \
+            "$DISCORD_WEBHOOK_URL"

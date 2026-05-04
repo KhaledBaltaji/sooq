@@ -194,11 +194,11 @@ export function StatsClient() {
           hint="stakes − payouts"
         />
         <Kpi
-          label="Cashout premium"
+          label="User cashout shortfall"
           value={summary ? formatCurrency(summary.cashout_premium_total) : "—"}
           icon={<TrendingUp className="w-4 h-4" />}
           tone="muted"
-          hint="From early exits"
+          hint="Σ(stake − cashout) on early exits"
         />
         <Kpi
           label="Open cash pool"

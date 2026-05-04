@@ -132,7 +132,11 @@ export function speedCashoutMultiplier(
  */
 export function speedLiqDiscount(secondsLeft: number): number {
   if (secondsLeft < 5) return 0;
-  if (secondsLeft >= 30) return 1.0;
+  // Match server: `> 30` → 1.0 (fee_config row is `speed_liq_discount_gt30`).
+  // Previously used `>= 30` which caused a ~15% display/pay mismatch in the
+  // ~200ms window where the client floor showed "30s" while the server saw
+  // a sub-30s float.
+  if (secondsLeft > 30) return 1.0;
   if (secondsLeft >= 10) return 0.85;
   return 0.6; // 5-10s
 }

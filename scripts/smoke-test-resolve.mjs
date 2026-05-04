@@ -84,13 +84,31 @@ try {
 
   sec("Step 3 — call speed_resolve_market directly");
   const resolveRes = await c.query(`SELECT speed_resolve_market($1::uuid) AS r`, [marketId]);
-  const resolve = resolveRes.rows[0].r;
+  let resolve = resolveRes.rows[0].r;
   console.log("resolve result:", JSON.stringify(resolve, null, 2));
-  if (!resolve.success) {
+
+  // Race with pg_cron: it runs every 5s and may have already resolved this
+  // market between our 28s wait and our manual call. If skipped because the
+  // market is already 'resolved' or 'voided', read the final state from the
+  // market row directly — that is just as good a signal.
+  if (resolve.skipped) {
+    const m = await c.query(`SELECT status::TEXT, outcome::TEXT, twap_at_close::numeric FROM speed_markets WHERE id = $1`, [marketId]);
+    if (m.rowCount === 0) { fail("market vanished after resolve skip"); throw new Error("no market"); }
+    const mr = m.rows[0];
+    if (mr.status === 'resolved') {
+      resolve = { success: true, voided: false, outcome: mr.outcome, settlement_price: mr.twap_at_close };
+      pass(`cron resolved before us: outcome=${mr.outcome}, settlement=${mr.twap_at_close}`);
+    } else if (mr.status === 'voided') {
+      resolve = { success: true, voided: true, reason: 'voided by cron' };
+      pass("cron voided before us");
+    } else {
+      fail(`resolve skipped but market not in terminal state: ${mr.status}`);
+      throw new Error("resolve unresolvable");
+    }
+  } else if (!resolve.success) {
     fail(`resolve did not return success: ${JSON.stringify(resolve)}`);
     throw new Error("resolve failed");
-  }
-  if (resolve.voided) {
+  } else if (resolve.voided) {
     fail(`market was voided: ${resolve.reason}`);
   } else {
     pass(`resolved: outcome=${resolve.outcome}, settlement=${resolve.settlement_price}, winners=${resolve.winners}, losers=${resolve.losers}`);

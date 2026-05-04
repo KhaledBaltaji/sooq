@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Minus, Plus } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { cn } from "@/lib/utils";
+import { cn, triggerHapticConfirm } from "@/lib/utils";
 import {
   CASHOUT_REJECT_WINDOW_SECONDS,
   durationToSeconds,
@@ -96,6 +96,7 @@ export function SpeedMobileTradeBar({
 
     const handleBet = async (side: SpeedSide) => {
       if (!canBet) return;
+      triggerHapticConfirm();
       // Mig 369: send IV snapshot for quote/execute parity.
       const { error: err } = await placeBet(market.id, side, stake, sigma);
       if (!err) onBetPlaced();
@@ -226,6 +227,7 @@ export function SpeedMobileTradeBar({
 
   const handleCashout = async () => {
     if (cashLoading || expired || cashoutLocked) return;
+    triggerHapticConfirm();
     await cashout(position.id, cashoutSigma);
   };
 
