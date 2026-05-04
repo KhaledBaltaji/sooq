@@ -1,18 +1,32 @@
 /**
- * Speed Oracle Worker — Sooq v1
+ * Speed Oracle Worker — Sooq v1 (Group B: CFD-feel migration)
  *
- * Streams Binance BTC/USDT 1-second klines via WebSocket and writes them
+ * Streams Binance BTC/USDT trade events via WebSocket and writes them
  * directly to RDS PostgreSQL via the `pg` driver. Single persistent
  * Node process — running >1 replica races the speed_oracle_latest upsert.
  *
- * Schema differences vs prediction-market era:
- *   * `speed_oracle_klines` table doesn't exist in the slim Sooq schema
- *     → only writes `speed_oracle_ticks` (synthesized: price = kline.close,
- *     ts = kline.t) and upserts `speed_oracle_latest` (live tail cache).
- *     The chart RPC `get_speed_klines` synthesizes OHLC from the tick
- *     stream at read time (mig 0007).
- *   * Drizzle/RDS instead of supabase-js. Connection sources from
- *     DATABASE_URL exactly the same way as the Next app's pg pool.
+ * Stream change (Group B): switched from `btcusdt@kline_1s` to
+ * `btcusdt@trade`. The kline stream pushes one event per second; the
+ * trade stream pushes one event per actual Binance trade (~10-30/sec
+ * for BTC during normal hours, up to 100/sec during volatility).
+ *
+ * Throttling: writes are flushed at most every FLUSH_INTERVAL_MS to RDS
+ * (default 100ms = 10 Hz). The buffered `state.latestTrade` is always
+ * the most recent Binance trade observed; the flush interval picks it
+ * up and writes one row per flush. This caps RDS write load while still
+ * giving sub-second tick granularity for the wick detector and keeping
+ * `speed_oracle_latest` fresh enough that trade execution price matches
+ * what users see on the chart within ~200ms. Frontend connects to
+ * Binance WS directly for visual smoothness; the backend oracle is the
+ * source of truth for execution + settlement.
+ *
+ * Schema:
+ *   * `speed_oracle_ticks`: append-only history (ON CONFLICT noop on
+ *     (asset, ts, source) — unique index from mig 0008). At 10 Hz,
+ *     ~864k rows/day. Partition rotation tracked separately if needed.
+ *   * `speed_oracle_latest`: single-row cache, upsert by asset PK.
+ *   * `speed_oracle_klines` doesn't exist; chart RPC `get_speed_klines`
+ *     synthesizes OHLC from the tick stream at read time (mig 0007).
  *
  * Reconnect: exponential backoff capped at 30s.
  * Watchdog: zombie-WS detector force-closes if no ticks for 10s.
@@ -55,7 +69,7 @@ console.log(
 
 const ASSET = "BTC";
 const SOURCE = "binance";
-const STREAM_URL = "wss://stream.binance.com:9443/ws/btcusdt@kline_1s";
+const STREAM_URL = "wss://stream.binance.com:9443/ws/btcusdt@trade";
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const HEARTBEAT_LOG_EVERY_MS = 60_000;
@@ -64,6 +78,11 @@ const SUSTAINED_FAIL_THRESHOLD = 30;
 const WATCHDOG_INTERVAL_MS = 5_000;
 const WATCHDOG_TICK_TIMEOUT_MS = 10_000;
 const WATCHDOG_BOOT_GRACE_MS = 30_000;
+// Group B: throttle DB writes to 10 Hz max. Buffer always tracks the
+// most recent Binance trade; the flush interval picks it up. Caps
+// `speed_oracle_ticks` growth at ~864k rows/day while keeping freshness
+// well within the 2s execution-gate threshold.
+const FLUSH_INTERVAL_MS = 100;
 
 if (SENTRY_DSN) {
   Sentry.init({
@@ -89,41 +108,41 @@ pool.on("error", (err) => {
   reportFailure("pg-pool", err);
 });
 
-interface BinanceKlineEvent {
-  e: "kline";
-  E: number;
-  s: string;
-  k: {
-    t: number; // open ms
-    T: number; // close ms
-    s: string;
-    i: string;
-    f: number;
-    L: number;
-    o: string; // open
-    c: string; // close
-    h: string; // high
-    l: string; // low
-    v: string;
-    n: number;
-    x: boolean; // closed?
-    q: string;
-    V: string;
-    Q: string;
-    B: string;
-  };
+// Binance trade event payload from the @trade stream. One event per
+// matched trade on Binance. Pushed at ~10-30/sec for BTC during normal
+// hours, up to 100/sec during volatility.
+interface BinanceTradeEvent {
+  e: "trade";
+  E: number;   // event time (ms)
+  s: string;   // symbol
+  t: number;   // trade id
+  p: string;   // price
+  q: string;   // quantity
+  T: number;   // trade time (ms) — what we use for ts
+  m: boolean;  // is buyer the market maker?
+  M?: boolean; // ignore (deprecated)
+}
+
+interface BufferedTrade {
+  price: number;
+  binanceT: number; // Binance trade timestamp in ms
 }
 
 const state = {
-  lastTickAt: 0,
-  ticksSinceStart: 0,
-  ticksSinceLastLog: 0,
+  lastTickAt: 0,        // server clock when we last received a Binance event
+  ticksSinceStart: 0,   // total Binance events received
+  ticksSinceLastLog: 0, // events received since last heartbeat log
+  flushesSinceStart: 0, // total DB writes (Binance events × throttle ratio)
   reconnectAttempts: 0,
   connectedAt: 0,
   lastError: null as string | null,
   ws: null as WebSocket | null,
   consecutiveWriteFailures: 0,
   lastSentryAlertAt: 0,
+  // Group B: buffer the most recent Binance trade. The flush interval
+  // (100ms / 10 Hz) picks it up. Cleared after each flush so we don't
+  // re-write the same tick if no new trades arrive between flushes.
+  buffer: null as BufferedTrade | null,
 };
 
 function reportFailure(scope: string, err: unknown): void {
@@ -153,19 +172,22 @@ function backoffMs(): number {
   return ms + Math.floor(Math.random() * 500);
 }
 
-async function writeTick(kline: BinanceKlineEvent["k"]): Promise<void> {
-  const tsIso = new Date(kline.t).toISOString();
-  const closePrice = Number(kline.c);
+async function writeTick(trade: BufferedTrade): Promise<void> {
+  const tsIso = new Date(trade.binanceT).toISOString();
 
-  if (!Number.isFinite(closePrice) || closePrice <= 0) {
-    console.warn("[oracle] skipping kline with invalid close:", kline);
+  if (!Number.isFinite(trade.price) || trade.price <= 0) {
+    console.warn("[oracle] skipping trade with invalid price:", trade);
     return;
   }
 
-  // Two writes per closed kline:
+  // Two writes per flush:
   //   1. speed_oracle_ticks: append-only history (ON CONFLICT noop on
-  //      (asset, ts, source) — unique index from mig 0008).
+  //      (asset, ts, source) — unique index from mig 0008). Multiple
+  //      flushes seeing the same Binance trade dedupe naturally because
+  //      they share the same `T` timestamp.
   //   2. speed_oracle_latest: single-row cache, upsert by asset PK.
+  //      received_at uses NOW() so the freshness gate measures observation
+  //      time (not Binance event time, which can lag during congestion).
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -173,7 +195,7 @@ async function writeTick(kline: BinanceKlineEvent["k"]): Promise<void> {
       `INSERT INTO speed_oracle_ticks (asset, ts, price, source)
        VALUES ($1, $2::timestamptz, $3::numeric, $4)
        ON CONFLICT (asset, ts, source) DO NOTHING`,
-      [ASSET, tsIso, closePrice, SOURCE]
+      [ASSET, tsIso, trade.price, SOURCE]
     );
     await client.query(
       `INSERT INTO speed_oracle_latest (asset, price, received_at)
@@ -181,10 +203,11 @@ async function writeTick(kline: BinanceKlineEvent["k"]): Promise<void> {
        ON CONFLICT (asset) DO UPDATE
          SET price = EXCLUDED.price,
              received_at = EXCLUDED.received_at`,
-      [ASSET, closePrice]
+      [ASSET, trade.price]
     );
     await client.query("COMMIT");
     state.consecutiveWriteFailures = 0;
+    state.flushesSinceStart++;
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     state.lastError = err instanceof Error ? err.message : String(err);
@@ -217,13 +240,18 @@ function connect(): void {
 
   ws.on("message", (data) => {
     try {
-      const event = JSON.parse(data.toString()) as BinanceKlineEvent;
-      if (event.e !== "kline") return;
-      if (!event.k?.x) return; // skip in-progress, only persist closed
+      const event = JSON.parse(data.toString()) as BinanceTradeEvent;
+      if (event.e !== "trade") return;
+      const price = Number(event.p);
+      if (!Number.isFinite(price) || price <= 0) return;
       state.lastTickAt = Date.now();
       state.ticksSinceStart++;
       state.ticksSinceLastLog++;
-      void writeTick(event.k);
+      // Group B: buffer the latest tick. The flush interval picks it up
+      // at 10 Hz. If multiple trades arrive between flushes, only the
+      // newest is persisted — for our use case (chart display + execution
+      // freshness) only the newest matters.
+      state.buffer = { price, binanceT: event.T };
     } catch (err) {
       console.error("[oracle] parse error:", err);
     }
@@ -251,6 +279,17 @@ function scheduleReconnect(): void {
   console.log(`[oracle] reconnecting in ${delay}ms`);
   setTimeout(() => connect(), delay);
 }
+
+// Group B: 10 Hz flush loop. Pulls the most recent buffered Binance trade
+// and writes it to RDS. Skips when no new trade has arrived since the last
+// flush — `state.buffer` is set by the WS message handler and cleared after
+// each successful flush, so we only write when there's fresh data.
+setInterval(() => {
+  const trade = state.buffer;
+  if (!trade) return;
+  state.buffer = null;
+  void writeTick(trade);
+}, FLUSH_INTERVAL_MS);
 
 setInterval(() => {
   const ws = state.ws;
@@ -288,7 +327,7 @@ setInterval(() => {
 setInterval(() => {
   if (state.ticksSinceLastLog === 0) return;
   console.log(
-    `[oracle] heartbeat: ${state.ticksSinceLastLog} ticks/min, total=${state.ticksSinceStart}, last=${
+    `[oracle] heartbeat: ${state.ticksSinceLastLog} binance events/min, ${state.flushesSinceStart} total flushes, last=${
       state.lastTickAt ? new Date(state.lastTickAt).toISOString() : "n/a"
     }`
   );
@@ -314,9 +353,12 @@ http
       connected: state.ws?.readyState === WebSocket.OPEN,
       last_tick_age_sec: ageSec,
       ticks_since_start: state.ticksSinceStart,
+      flushes_since_start: state.flushesSinceStart,
       reconnect_attempts: state.reconnectAttempts,
       last_error: state.lastError,
       consecutive_write_failures: state.consecutiveWriteFailures,
+      stream: STREAM_URL,
+      flush_interval_ms: FLUSH_INTERVAL_MS,
     });
     res.writeHead(healthy ? 200 : 503, { "Content-Type": "application/json" });
     res.end(body);

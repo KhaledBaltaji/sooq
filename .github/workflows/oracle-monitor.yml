@@ -1,0 +1,43 @@
+name: Oracle freshness monitor
+
+# Group B: cron-driven liveness check on the EC2 speed-oracle worker.
+# Runs every 5 minutes. Fails the workflow if `speed_oracle_latest` is
+# more than 5 seconds stale, which produces a GitHub email/notification
+# to repo watchers and (with the optional Slack/Discord webhook secret
+# configured) sends a chat alert.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Check oracle freshness
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_STAGING }}
+        run: node scripts/check-oracle-freshness.mjs
+      - name: Notify Slack on failure
+        if: ${{ failure() && env.SLACK_WEBHOOK_URL != '' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":":rotating_light: speed-oracle worker is stale on staging (>5s). Check EC2 i-03411906c55af48af."}' \
+            "$SLACK_WEBHOOK_URL"
+      - name: Notify Discord on failure
+        if: ${{ failure() && env.DISCORD_WEBHOOK_URL != '' }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-Type: application/json' \
+            --data '{"content":"🚨 speed-oracle worker is stale on staging (>5s). Check EC2 i-03411906c55af48af."}' \
+            "$DISCORD_WEBHOOK_URL"

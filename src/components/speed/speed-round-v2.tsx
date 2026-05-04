@@ -355,7 +355,7 @@ function PositionCard({
         )}
         aria-hidden
       />
-      <div className="px-2.5 py-2 flex flex-col gap-0.5 min-w-0">
+      <div className="px-2.5 py-1.5 flex flex-col gap-0.5 min-w-0">
         <div className="flex items-center gap-2 text-xs tabular-nums">
           <span
             className={cn(
@@ -373,18 +373,23 @@ function PositionCard({
             {ageS}s
           </span>
         </div>
-        <div className="text-[10.5px] tabular-nums text-muted-custom flex items-center gap-1.5">
-          <span>
+        {/* B4b: live P&L ticker — prominent, color-coded, smoothly tweened
+            via OdometerNumber so it visibly "breathes" with every Binance
+            tick. The Binance-Futures feel for active positions. */}
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-[10px] tabular-nums text-muted-custom">
             ${entry.toFixed(2)} → ${(livePrice ?? entry).toFixed(2)}
           </span>
-          <span
+          <OdometerNumber
+            value={Math.abs(pnl)}
+            decimals={2}
+            prefix={isWin ? "+$" : "−$"}
+            duration={0.3}
             className={cn(
-              "font-bold",
+              "font-satoshi text-[15px] font-black tabular-nums leading-none",
               isWin ? "text-success" : "text-destructive",
             )}
-          >
-            {isWin ? "+" : "−"}${Math.abs(pnl).toFixed(2)}
-          </span>
+          />
         </div>
       </div>
       <button
@@ -468,9 +473,10 @@ function Dock({
       if (!canBet) return;
       setTapFire(side);
       setTimeout(() => setTapFire(null), 380);
-      await placeBet(market.id, side, stake);
+      // B7: send the IV snapshot for quote/execute parity (mig 0016).
+      await placeBet(market.id, side, stake, sigma);
     },
-    [canBet, placeBet, market.id, stake],
+    [canBet, placeBet, market.id, stake, sigma],
   );
 
   return (
