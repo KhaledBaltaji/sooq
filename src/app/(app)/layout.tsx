@@ -5,6 +5,7 @@ import { CompleteProfileModal } from "@/components/auth/complete-profile-modal";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { PageTransitionProvider } from "@/components/providers/page-transition-provider";
 import { BottomNavGate } from "@/components/layout/bottom-nav-gate";
+import { SpeedSettlementToaster } from "@/components/speed/speed-settlement-toaster";
 
 export default function AppLayout({
   children,
@@ -29,6 +30,10 @@ export default function AppLayout({
       {/* BottomNavGate hides the global BottomNav on /demo/* (demo has its own). */}
       <BottomNavGate />
       <CompleteProfileModal />
+      {/* Group D: global settlement toaster — surfaces realised P&L when a
+          position settles open → won/lost (typically after instant redirect
+          to the next round, so it's not tied to any single page). */}
+      <SpeedSettlementToaster />
       {/* Parallel @modal slot. Default returns null; intercepting routes
           (e.g. (.)speed/[id]) render mobile-only slide-in overlays here. */}
       {modal}

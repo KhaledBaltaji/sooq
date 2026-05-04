@@ -9,8 +9,9 @@
  * introducing beige + Geist — the visual rhythm matches the rest of the app.
  */
 
-import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback, createContext, useContext } from "react";
 import { useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronLeft,
   Share2,
@@ -35,8 +36,12 @@ import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
 import { useSpeedPositions } from "@/hooks/use-speed-positions";
 import { useUser } from "@/lib/auth/hooks";
 import {
+  CASHOUT_REJECT_WINDOW_SECONDS,
+  speedCashoutMultiplier,
   speedFairProbOver,
+  speedLiqDiscount,
   speedOfferedProb,
+  durationToSeconds,
 } from "@/lib/speed/pricing";
 import { OdometerNumber } from "./odometer-number";
 import type {
@@ -45,6 +50,22 @@ import type {
   SpeedSide,
 } from "@/types/database";
 
+// ── PnL pop bus ───────────────────────────────────────────────
+// Lightweight context so the cashout button (deep in PositionsStrip) can
+// trigger the chart-overlay pop animation rendered by ChartCard. Same
+// component tree, no prop drilling.
+interface PnlPopEvent {
+  id: number;
+  value: number;
+  type: "win" | "loss";
+}
+const PnlPopContext = createContext<{
+  pop: (value: number) => void;
+} | null>(null);
+function usePnlPop() {
+  return useContext(PnlPopContext);
+}
+
 const STAKE_CHIPS = [5, 10, 25, 50, 100];
 
 interface Props {
@@ -52,9 +73,21 @@ interface Props {
   livePrice: number | null;
   isStale: boolean;
   onBack?: () => void;
+  /**
+   * Group D: true while the parent is polling for the next live market
+   * (after the current one closed). ChartCard renders a small
+   * "WAITING FOR NEXT ROUND" pill so the user knows the wait is intentional.
+   */
+  waitingForNext?: boolean;
 }
 
-export function SpeedRoundV2({ market, livePrice, isStale, onBack }: Props) {
+export function SpeedRoundV2({
+  market,
+  livePrice,
+  isStale,
+  onBack,
+  waitingForNext = false,
+}: Props) {
   const router = useRouter();
   const { user } = useUser();
   const { positions: allOpen } = useSpeedPositions({ onlyOpen: true });
@@ -63,23 +96,51 @@ export function SpeedRoundV2({ market, livePrice, isStale, onBack }: Props) {
     [allOpen, market.id],
   );
 
+  // Group D: chart P&L pop bus. Cashout button calls pop(realizedPnl);
+  // ChartCard reads the latest event and renders the .speed-pnl-pop
+  // overlay with the win/loss class. Events auto-clear after 1s.
+  const [pnlEvent, setPnlEvent] = useState<PnlPopEvent | null>(null);
+  const pop = useCallback((value: number) => {
+    setPnlEvent({
+      id: Date.now(),
+      value,
+      type: value >= 0 ? "win" : "loss",
+    });
+  }, []);
+  useEffect(() => {
+    if (!pnlEvent) return;
+    const id = setTimeout(() => setPnlEvent(null), 1000);
+    return () => clearTimeout(id);
+  }, [pnlEvent]);
+
   return (
-    <div className="speed-v2-root font-dm-sans bg-bg text-text min-h-screen flex flex-col">
-      <Strip
-        market={market}
-        balance={user?.balance_usd ?? null}
-        onBack={onBack ?? (() => router.back())}
-      />
-      <PriceRow market={market} livePrice={livePrice} />
-      <ChartCard market={market} />
-      <PositionsStrip positions={positions} livePrice={livePrice} />
-      <Dock
-        market={market}
-        livePrice={livePrice}
-        isStale={isStale}
-        hasOpenPositions={positions.length > 0}
-      />
-    </div>
+    <PnlPopContext.Provider value={{ pop }}>
+      <div className="speed-v2-root font-dm-sans bg-bg text-text min-h-screen flex flex-col">
+        <Strip
+          market={market}
+          balance={user?.balance_usd ?? null}
+          onBack={onBack ?? (() => router.back())}
+        />
+        <PriceRow market={market} livePrice={livePrice} />
+        <ChartCard
+          market={market}
+          pnlEvent={pnlEvent}
+          waitingForNext={waitingForNext}
+        />
+        <PositionsStrip
+          positions={positions}
+          livePrice={livePrice}
+          market={market}
+          isStale={isStale}
+        />
+        <Dock
+          market={market}
+          livePrice={livePrice}
+          isStale={isStale}
+          hasOpenPositions={positions.length > 0}
+        />
+      </div>
+    </PnlPopContext.Provider>
   );
 }
 
@@ -220,7 +281,15 @@ function PriceRow({
 }
 
 // ── ChartCard (project-native: grid-dots + border + chart-type toggle) ─
-function ChartCard({ market }: { market: SpeedMarket }) {
+function ChartCard({
+  market,
+  pnlEvent,
+  waitingForNext,
+}: {
+  market: SpeedMarket;
+  pnlEvent: PnlPopEvent | null;
+  waitingForNext: boolean;
+}) {
   const [chartType, setChartType] = useState<SpeedChartType>(readSpeedChartType);
   const handleChartType = (next: SpeedChartType) => {
     setChartType(next);
@@ -237,8 +306,8 @@ function ChartCard({ market }: { market: SpeedMarket }) {
     <div className="px-3 flex-1 min-h-0 flex flex-col gap-2">
       {/* Chart card — project's existing grid-dots + border styling.
           Past dropdown floats top-left, chart-type toggle floats bottom-right
-          inside the card. */}
-      <div className="relative grid-dots rounded-xl border border-border-custom p-3 flex-1 min-h-[260px] flex flex-col">
+          inside the card. PnL pop overlays at the center on cashout. */}
+      <div className="relative grid-dots rounded-xl border border-border-custom p-3 flex-1 min-h-[260px] flex flex-col overflow-hidden">
         <SpeedPriceChart
           asset={market.asset}
           strikePrice={Number(market.strike_price)}
@@ -249,6 +318,32 @@ function ChartCard({ market }: { market: SpeedMarket }) {
           chartType={chartType}
           className="!h-full flex-1"
         />
+        {/* P&L pop overlay — fires on user-initiated cashout (Group D). The
+            `key={pnlEvent.id}` retriggers the CSS keyframe each event. */}
+        {pnlEvent && (
+          <div
+            key={pnlEvent.id}
+            className={cn("speed-pnl-pop", pnlEvent.type)}
+            aria-hidden
+          >
+            {pnlEvent.value >= 0 ? "+" : "−"}$
+            {Math.abs(pnlEvent.value).toFixed(2)}
+          </div>
+        )}
+        {/* Group D: brief "WAITING FOR NEXT ROUND" pill while the parent
+            polls for the next live market. Sits dead-center so it reads as
+            an intentional pause, not a stuck state. */}
+        {waitingForNext && (
+          <div
+            className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 z-20 flex items-center justify-center"
+            aria-live="polite"
+          >
+            <span className="inline-flex items-center gap-2 rounded-full bg-bg/90 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-muted-custom ring-1 ring-border-custom backdrop-blur-sm">
+              <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
+              Waiting for next round
+            </span>
+          </div>
+        )}
         {/* Past dropdown: long-thin rectangle in the top-left corner */}
         <div className="pointer-events-none absolute top-2 left-2 z-10">
           <div className="pointer-events-auto">
@@ -299,9 +394,13 @@ function ChartCard({ market }: { market: SpeedMarket }) {
 function PositionsStrip({
   positions,
   livePrice,
+  market,
+  isStale,
 }: {
   positions: SpeedPosition[];
   livePrice: number | null;
+  market: SpeedMarket;
+  isStale: boolean;
 }) {
   if (positions.length === 0) {
     return (
@@ -312,11 +411,29 @@ function PositionsStrip({
       </div>
     );
   }
+  // Group D: AnimatePresence wraps the cards so newly-placed positions
+  // spring in from below and cashed-out / settled ones fade out cleanly.
   return (
-    <div className="px-3 pt-2 max-h-[150px] overflow-y-auto flex flex-col gap-1.5">
-      {positions.map((p) => (
-        <PositionCard key={p.id} pos={p} livePrice={livePrice} />
-      ))}
+    <div className="px-3 pt-2 max-h-[150px] overflow-y-auto flex flex-col gap-2">
+      <AnimatePresence initial={false}>
+        {positions.map((p) => (
+          <motion.div
+            key={p.id}
+            layout
+            initial={{ opacity: 0, y: 18, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.94, transition: { duration: 0.18 } }}
+            transition={{ type: "spring", stiffness: 320, damping: 28 }}
+          >
+            <PositionCard
+              pos={p}
+              livePrice={livePrice}
+              market={market}
+              isStale={isStale}
+            />
+          </motion.div>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }
@@ -324,88 +441,95 @@ function PositionsStrip({
 function PositionCard({
   pos,
   livePrice,
+  market,
+  isStale,
 }: {
   pos: SpeedPosition;
   livePrice: number | null;
+  market: SpeedMarket;
+  isStale: boolean;
 }) {
   const { cashout, loading } = useSpeedCashout();
+  const fee = useSpeedFeeConfig();
+  const pnlBus = usePnlPop();
+
   const stake = Number(pos.stake);
-  const entry = Number(pos.entry_price);
+  const entryOfferedProb = Number(pos.entry_offered_prob);
   const isUp = pos.side === "over";
-  const moved =
-    livePrice !== null ? (isUp ? livePrice - entry : entry - livePrice) : 0;
-  const ratio = Math.max(-0.85, Math.min(2.0, moved / 30));
-  const pnl = stake * ratio;
-  const isWin = pnl >= 0;
-  const ageS = Math.floor(
-    (Date.now() - new Date(pos.created_at).getTime()) / 1000,
-  );
-  const payout = stake + pnl;
-  const mult = 1 / Number(pos.entry_offered_prob);
+
+  // Match the SQL formula exactly (mig 0016 line 879-882):
+  //   cashout = stake × (mark_prob / entry_offered) × decay × liq_discount
+  // Same client mirror that speed-position-panel.tsx:74-81 uses; quote/
+  // execute parity within ±$0.01 (mig 369 contract).
+  const totalSeconds = durationToSeconds(market.duration);
+  const closesAtMs = new Date(market.closes_at).getTime();
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, []);
+  const secondsLeft = Math.max(0, Math.floor((closesAtMs - now) / 1000));
+  const cashoutLocked = secondsLeft < CASHOUT_REJECT_WINDOW_SECONDS;
+
+  const sigma = fee.realizedVol?.[market.asset]?.rv ?? fee.iv[market.asset] ?? 0.6;
+  const fairOver =
+    livePrice !== null && !isStale
+      ? speedFairProbOver(livePrice, Number(market.strike_price), secondsLeft, sigma)
+      : null;
+  const markProb =
+    fairOver !== null ? (isUp ? fairOver : 1 - fairOver) : null;
+  const pct = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
+  const decay = speedCashoutMultiplier(market.duration, pct, fee);
+  const liq = speedLiqDiscount(secondsLeft);
+
+  const cashoutValue =
+    markProb !== null && decay !== null
+      ? Math.max(0, Math.round(stake * (markProb / entryOfferedProb) * decay * liq * 100) / 100)
+      : null;
+
+  const handleCashout = useCallback(async () => {
+    if (loading || cashoutLocked || cashoutValue === null) return;
+    // Optimistic pop using the displayed value (within ±$0.01 of the RPC).
+    // The actual realized PnL reconciles to the same animation either way.
+    pnlBus?.pop(cashoutValue - stake);
+    await cashout(pos.id, sigma);
+  }, [loading, cashoutLocked, cashoutValue, pnlBus, stake, cashout, pos.id, sigma]);
 
   return (
-    <div
-      className="grid items-stretch overflow-hidden rounded-[10px] border border-border-custom bg-surface"
-      style={{ gridTemplateColumns: "4px 1fr auto" }}
+    <button
+      type="button"
+      onClick={handleCashout}
+      disabled={loading || cashoutLocked || cashoutValue === null}
+      className={cn(
+        "relative w-full h-14 rounded-2xl bg-text text-white overflow-hidden",
+        "flex items-center justify-center text-center",
+        "active:scale-[0.98] transition disabled:opacity-60",
+      )}
+      aria-label={`Cash out for ${cashoutValue !== null ? `$${cashoutValue.toFixed(2)}` : ""}`}
     >
-      <div
+      {/* 4px colored side bar — UP=success, DOWN=destructive. The only
+          visual hint of which side this position bet on. */}
+      <span
+        aria-hidden
         className={cn(
-          "self-stretch",
+          "absolute left-0 top-0 bottom-0 w-1",
           isUp ? "bg-success" : "bg-destructive",
         )}
-        aria-hidden
       />
-      <div className="px-2.5 py-1.5 flex flex-col gap-0.5 min-w-0">
-        <div className="flex items-center gap-2 text-xs tabular-nums">
-          <span
-            className={cn(
-              "text-[10px] font-bold tracking-[0.08em] uppercase px-1 py-px rounded",
-              isUp
-                ? "bg-success/10 text-success"
-                : "bg-destructive/10 text-destructive",
-            )}
-          >
-            {isUp ? "Up" : "Down"}
-          </span>
-          <span className="font-bold text-text">${stake}</span>
-          <span className="text-muted-custom">×{mult.toFixed(2)}</span>
-          <span className="ml-auto text-[10.5px] text-muted-custom">
-            {ageS}s
-          </span>
-        </div>
-        {/* B4b: live P&L ticker — prominent, color-coded, smoothly tweened
-            via OdometerNumber so it visibly "breathes" with every Binance
-            tick. The Binance-Futures feel for active positions. */}
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[10px] tabular-nums text-muted-custom">
-            ${entry.toFixed(2)} → ${(livePrice ?? entry).toFixed(2)}
-          </span>
-          <OdometerNumber
-            value={Math.abs(pnl)}
-            decimals={2}
-            prefix={isWin ? "+$" : "−$"}
-            duration={0.3}
-            className={cn(
-              "font-satoshi text-[15px] font-black tabular-nums leading-none",
-              isWin ? "text-success" : "text-destructive",
-            )}
-          />
-        </div>
-      </div>
-      <button
-        type="button"
-        onClick={() => cashout(pos.id)}
-        disabled={loading}
-        className={cn(
-          "px-4 self-stretch flex items-center justify-center min-w-[110px] text-white text-center active:scale-[0.98] transition disabled:opacity-60",
-          isWin ? "bg-success" : "bg-text",
-        )}
-      >
-        <span className="font-satoshi text-lg font-black tabular-nums tracking-[-0.01em] leading-none">
-          ${payout.toFixed(2)}
+      {cashoutValue !== null ? (
+        <OdometerNumber
+          value={cashoutValue}
+          decimals={2}
+          prefix="$"
+          duration={0.3}
+          className="font-satoshi text-2xl font-black tabular-nums tracking-[-0.01em] leading-none"
+        />
+      ) : (
+        <span className="font-satoshi text-2xl font-black tabular-nums tracking-[-0.01em] leading-none">
+          —
         </span>
-      </button>
-    </div>
+      )}
+    </button>
   );
 }
 

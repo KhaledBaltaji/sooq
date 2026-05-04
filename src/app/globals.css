@@ -327,6 +327,111 @@ button, [role="button"], select, a, label[for], input[type="button"], input[type
   animation: shimmer 1.5s ease-in-out infinite;
 }
 
+/* ----------------------------------------------------------------
+   Speed P&L pop — fires on the chart card the moment a cashout settles.
+   Lifted from the design zip (Frontend desgin (1).zip → styles.css:495).
+   The big realized-PnL number bursts at the chart center, scales up with
+   a slight overshoot, drifts up, fades over 1s. Green for profit, red
+   for loss. Pure CSS — no JS lib needed beyond a key change to retrigger.
+   ---------------------------------------------------------------- */
+.speed-pnl-pop {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-satoshi, ui-sans-serif), system-ui, sans-serif;
+  font-weight: 900;
+  font-size: 36px;
+  letter-spacing: -0.03em;
+  text-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 30;
+  animation: speedPnlPop 1s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+.speed-pnl-pop.win  { color: oklch(0.85 0.18 152); }
+.speed-pnl-pop.loss { color: oklch(0.78 0.22 25); }
+@keyframes speedPnlPop {
+  0%   { opacity: 0; transform: translate(-50%, -30%) scale(0.6); }
+  20%  { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+  60%  { opacity: 1; transform: translate(-50%, -55%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -90%) scale(1); }
+}
+
+/* ----------------------------------------------------------------
+   Speed settlement toast — global overlay that surfaces the realized P&L
+   when a market resolves (open → won/lost) while the user is mid-flow
+   (likely on the next market already after the instant redirect). Slides
+   in from the top, holds, slides + fades out. Toast variant from the
+   design zip's app-v2.jsx.
+   ---------------------------------------------------------------- */
+.speed-toast-host {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top, 16px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.speed-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 240px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border-custom);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  font-family: var(--font-satoshi, ui-sans-serif), system-ui, sans-serif;
+  animation: speedToastIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.speed-toast.exiting {
+  animation: speedToastOut 0.28s ease-in forwards;
+}
+.speed-toast .speed-toast-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.speed-toast.win  .speed-toast-badge { background: oklch(0.85 0.18 152 / 0.18); color: oklch(0.55 0.16 152); }
+.speed-toast.loss .speed-toast-badge { background: oklch(0.78 0.22 25 / 0.18); color: oklch(0.55 0.20 25); }
+.speed-toast .speed-toast-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted-custom);
+  line-height: 1;
+}
+.speed-toast .speed-toast-amount {
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+  line-height: 1;
+}
+.speed-toast.win  .speed-toast-amount { color: oklch(0.55 0.16 152); }
+.speed-toast.loss .speed-toast-amount { color: oklch(0.55 0.20 25); }
+@keyframes speedToastIn {
+  from { opacity: 0; transform: translateY(-12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes speedToastOut {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-8px); }
+}
+
 /* ===========================
    RTL SUPPORT
    =========================== */

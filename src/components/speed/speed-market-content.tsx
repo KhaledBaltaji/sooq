@@ -3,6 +3,7 @@
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
+import { AnimatePresence, motion } from "framer-motion";
 import { CheckCircle2, MinusCircle, XCircle, Share2, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSpeedMarket } from "@/hooks/use-speed-market";
@@ -137,14 +138,13 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
   }, [showShareMenu]);
 
   // Auto-redirect to next market when current one resolves.
-  // Tiered delay so the user gets the UX they expect:
-  //   - No open position: redirect immediately (delayMs = 0). The market
-  //     they were watching is irrelevant once it closes; jump them to the
-  //     fresh live market without making them stare at a resolving card.
-  //   - Open position: wait 10s so the speed-resolve cron (mig 362, 5s
-  //     interval) has time to flip status open → resolved + credit the
-  //     payout. Within those 10s the user sees Resolving → Resolved Up/
-  //     Down + winnings. Then redirect.
+  // Group D: instant redirect — drop the previous 10s post-close wait.
+  // Settlement of any open position now surfaces as a global toast (via
+  // SpeedSettlementToaster mounted in the app layout), so we no longer
+  // need to keep the user on the dead market waiting for the resolve cron.
+  // The 2s polling loop below still handles the small (~5s max) gap
+  // between market close and the next market existing on the server.
+  const [waitingForNext, setWaitingForNext] = useState(false);
   useEffect(() => {
     if (!market) return;
     if (redirectFiredRef.current) return;
@@ -154,8 +154,8 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
     if (!expired) return;
 
     redirectFiredRef.current = true;
-    const hasOpenPosition = position?.status === "open";
-    const initialDelayMs = hasOpenPosition ? 10_000 : 0;
+    setWaitingForNext(true);
+    const initialDelayMs = 0;
 
     let cancelled = false;
     let pollId: ReturnType<typeof setTimeout> | null = null;
@@ -312,13 +312,28 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
   // experience. Desktop (lg+) continues to render the two-column layout
   // below.
   if (inModal || isMobile) {
+    // Group D: cross-fade between markets keyed by market.id. When
+    // router.replace flips to the next round, the old SpeedRoundV2 fades
+    // out and the new one fades in over 250ms — feels like the markets
+    // keep moving instead of a hard page swap.
     return (
-      <SpeedRoundV2
-        market={market}
-        livePrice={price}
-        isStale={isStale}
-        onBack={onBack}
-      />
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={market.id}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <SpeedRoundV2
+            market={market}
+            livePrice={price}
+            isStale={isStale}
+            onBack={onBack}
+            waitingForNext={waitingForNext}
+          />
+        </motion.div>
+      </AnimatePresence>
     );
   }
 
