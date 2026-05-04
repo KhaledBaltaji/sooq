@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "_note": "Project-level permission rules — committed to the repo so any Claude Code session in this checkout inherits them. Personal overrides go in .claude/settings.local.json (gitignored).",
+  "permissions": {
+    "ask": [
+      "Bash(git push origin staging)",
+      "Bash(git push origin staging *)",
+      "Bash(git push -u origin staging)",
+      "Bash(git push -u origin staging *)",
+      "Bash(git push --set-upstream origin staging)",
+      "Bash(git push --set-upstream origin staging *)",
+      "Bash(node scripts/db-migrate.mjs)",
+      "Bash(node scripts/db-migrate.mjs *)"
+    ],
+    "deny": [
+      "Bash(git push origin main)",
+      "Bash(git push origin main *)",
+      "Bash(git push origin main:*)",
+      "Bash(git push -u origin main)",
+      "Bash(git push -u origin main *)",
+      "Bash(git push --set-upstream origin main)",
+      "Bash(git push --set-upstream origin main *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push --force-with-lease *)",
+      "Bash(git push * --force *)",
+      "Bash(git push * -f *)",
+      "Bash(git push * --force-with-lease *)",
+      "Bash(git push * +*)"
+    ]
+  }
+}

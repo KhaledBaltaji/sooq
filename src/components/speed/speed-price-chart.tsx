@@ -522,17 +522,20 @@ export function SpeedPriceChart({
       // Now both move when last.close moves.
       const livePrice = last.close;
       const y = series.priceToCoordinate(livePrice);
-      // X is pinned to the right edge of the time scale. With
-      // fixRightEdge: true on the chart, the right edge IS the latest
-      // data point's pixel — by definition. Going through
-      // `timeToCoordinate(last.time)` was making the dot drift behind
-      // the rendered line whenever lastBarRef.current's time desynced
-      // from the chart's series data (which happens during the
-      // 30-second API refresh ↔ live-tail handoff: setData() rewrites
-      // the chart's data while live-tail's ref still points at the
-      // previous bucket). Pinning to the right edge sidesteps the ref
-      // sync entirely — dot is always exactly where the line ends.
-      const x = chart.timeScale().width();
+      // X anchors to the actual line endpoint via timeToCoordinate(last.time).
+      // Earlier we used chart.timeScale().width() ("right edge of plot area")
+      // assuming fixRightEdge meant the last data point lives at pixel=width,
+      // but lightweight-charts honours barSpacing — the rightmost bar centre
+      // sits ~barSpacing/2 px LEFT of the time-scale width, leaving a visible
+      // gap between line tip and dot. timeToCoordinate gives the exact pixel
+      // the line ends at; fall back to width() during the brief 30s
+      // historical-reload handoff if the ref is transiently out of sync with
+      // the chart's data.
+      const tx = chart.timeScale().timeToCoordinate(last.time);
+      const x =
+        typeof tx === "number" && Number.isFinite(tx)
+          ? tx
+          : chart.timeScale().width();
       if (typeof y !== "number" || !Number.isFinite(y)) {
         return;
       }

@@ -16,8 +16,6 @@ import {
   Share2,
   Plus,
   Minus,
-  TrendingUp,
-  TrendingDown,
   CandlestickChart,
   LineChart as LineChartIcon,
 } from "lucide-react";
@@ -75,7 +73,12 @@ export function SpeedRoundV2({ market, livePrice, isStale, onBack }: Props) {
       <PriceRow market={market} livePrice={livePrice} />
       <ChartCard market={market} />
       <PositionsStrip positions={positions} livePrice={livePrice} />
-      <Dock market={market} livePrice={livePrice} isStale={isStale} />
+      <Dock
+        market={market}
+        livePrice={livePrice}
+        isStale={isStale}
+        hasOpenPositions={positions.length > 0}
+      />
     </div>
   );
 }
@@ -232,8 +235,10 @@ function ChartCard({ market }: { market: SpeedMarket }) {
 
   return (
     <div className="px-3 flex-1 min-h-0 flex flex-col gap-2">
-      {/* Chart card — project's existing grid-dots + border styling */}
-      <div className="grid-dots rounded-xl border border-border-custom p-3 flex-1 min-h-[260px] flex flex-col">
+      {/* Chart card — project's existing grid-dots + border styling.
+          Chart-type toggle now floats inside the card at the bottom-right
+          so the pills row stays clean (just Past dropdown). */}
+      <div className="relative grid-dots rounded-xl border border-border-custom p-3 flex-1 min-h-[260px] flex flex-col">
         <SpeedPriceChart
           asset={market.asset}
           strikePrice={Number(market.strike_price)}
@@ -244,31 +249,21 @@ function ChartCard({ market }: { market: SpeedMarket }) {
           chartType={chartType}
           className="!h-full flex-1"
         />
-      </div>
-      {/* Pills row: Past dropdown + Live pill on left, chart-type toggle on right.
-          Same component + visual rhythm as the existing /speed/[id] desktop. */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <SpeedWindowPills
-            asset={market.asset}
-            duration={market.duration}
-            currentId={market.id}
-          />
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        {/* Floating chart-type toggle: small round icons inside the card */}
+        <div className="pointer-events-none absolute bottom-2 right-2 flex items-center gap-1">
           <button
             type="button"
             aria-label="Candlestick view"
             aria-pressed={chartType === "candle"}
             onClick={() => handleChartType("candle")}
             className={cn(
-              "inline-flex items-center justify-center rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-wide transition-colors shrink-0",
+              "pointer-events-auto inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors shrink-0 backdrop-blur-sm ring-1 ring-border-custom",
               chartType === "candle"
                 ? "bg-text text-bg"
-                : "bg-surface text-muted-custom hover:text-text hover:bg-bg",
+                : "bg-surface/80 text-muted-custom hover:text-text hover:bg-bg",
             )}
           >
-            <CandlestickChart className="h-4 w-4" strokeWidth={2.25} />
+            <CandlestickChart className="h-3.5 w-3.5" strokeWidth={2.25} />
           </button>
           <button
             type="button"
@@ -276,14 +271,24 @@ function ChartCard({ market }: { market: SpeedMarket }) {
             aria-pressed={chartType === "line"}
             onClick={() => handleChartType("line")}
             className={cn(
-              "inline-flex items-center justify-center rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-wide transition-colors shrink-0",
+              "pointer-events-auto inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors shrink-0 backdrop-blur-sm ring-1 ring-border-custom",
               chartType === "line"
                 ? "bg-text text-bg"
-                : "bg-surface text-muted-custom hover:text-text hover:bg-bg",
+                : "bg-surface/80 text-muted-custom hover:text-text hover:bg-bg",
             )}
           >
-            <LineChartIcon className="h-4 w-4" strokeWidth={2.25} />
+            <LineChartIcon className="h-3.5 w-3.5" strokeWidth={2.25} />
           </button>
+        </div>
+      </div>
+      {/* Pills row: just the Past dropdown (Live pill removed per founder direction). */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <SpeedWindowPills
+            asset={market.asset}
+            duration={market.duration}
+            currentId={market.id}
+          />
         </div>
       </div>
     </div>
@@ -300,8 +305,8 @@ function PositionsStrip({
 }) {
   if (positions.length === 0) {
     return (
-      <div className="px-3 pt-2">
-        <div className="text-[10.5px] uppercase tracking-[0.06em] text-muted-custom py-1.5 font-medium">
+      <div className="pt-2">
+        <div className="text-center text-[10.5px] uppercase tracking-[0.06em] text-muted-custom py-1.5 font-medium">
           No open trades
         </div>
       </div>
@@ -387,14 +392,11 @@ function PositionCard({
         onClick={() => cashout(pos.id)}
         disabled={loading}
         className={cn(
-          "px-4 self-stretch flex flex-col items-end justify-center min-w-[110px] text-white text-right active:scale-[0.98] transition disabled:opacity-60",
+          "px-4 self-stretch flex items-center justify-center min-w-[110px] text-white text-center active:scale-[0.98] transition disabled:opacity-60",
           isWin ? "bg-success" : "bg-text",
         )}
       >
-        <span className="text-[9px] font-bold tracking-[0.08em] uppercase opacity-70 mb-0.5">
-          Cash out
-        </span>
-        <span className="font-satoshi text-base font-black tabular-nums tracking-[-0.01em] leading-none">
+        <span className="font-satoshi text-lg font-black tabular-nums tracking-[-0.01em] leading-none">
           ${payout.toFixed(2)}
         </span>
       </button>
@@ -407,10 +409,12 @@ function Dock({
   market,
   livePrice,
   isStale,
+  hasOpenPositions,
 }: {
   market: SpeedMarket;
   livePrice: number | null;
   isStale: boolean;
+  hasOpenPositions: boolean;
 }) {
   const { placeBet, loading } = useSpeedExecuteTrade();
   const fee = useSpeedFeeConfig();
@@ -450,11 +454,10 @@ function Dock({
 
   const upMul = offeredOver ? 1 / offeredOver : null;
   const downMul = offeredUnder ? 1 / offeredUnder : null;
-  // Profit if the market expires in the user's favor (in dollars). Uses
-  // the current stake input — updates live as the user changes stake or
-  // as offered_prob ticks.
-  const upProfit = upMul !== null ? stake * upMul - stake : null;
-  const downProfit = downMul !== null ? stake * downMul - stake : null;
+  // A6: total payout (stake + profit) the user receives on a winning bet.
+  // Updates live as the user changes stake or as offered_prob ticks.
+  const upPayout = upMul !== null ? stake * upMul : null;
+  const downPayout = downMul !== null ? stake * downMul : null;
 
   const expired = secondsLeft <= 0 || market.status !== "open";
   const canBet =
@@ -472,27 +475,32 @@ function Dock({
 
   return (
     <div
-      className="mt-auto px-3 pt-3 pb-[calc(0.875rem+env(safe-area-inset-bottom,0px))]"
+      className="mt-auto px-3 pt-3 pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))]"
       role="region"
       aria-label="Speed trade dock"
     >
-      <div className="grid grid-cols-5 gap-1.5 mb-2.5">
-        {STAKE_CHIPS.map((v) => (
-          <button
-            key={v}
-            type="button"
-            onClick={() => setStake(v)}
-            className={cn(
-              "h-8 rounded-lg border text-xs font-bold tabular-nums transition-all active:scale-[0.96]",
-              stake === v
-                ? "bg-text text-bg border-text"
-                : "bg-surface text-muted-custom border-border-custom",
-            )}
-          >
-            ${v}
-          </button>
-        ))}
-      </div>
+      {/* A5: hide preset chips when the user has at least one open position
+          on this market — the dock stays leaner and attention shifts to
+          the live position card above. */}
+      {!hasOpenPositions && (
+        <div className="grid grid-cols-5 gap-1.5 mb-2.5">
+          {STAKE_CHIPS.map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setStake(v)}
+              className={cn(
+                "h-8 rounded-lg border text-xs font-bold tabular-nums transition-all active:scale-[0.96]",
+                stake === v
+                  ? "bg-text text-bg border-text"
+                  : "bg-surface text-muted-custom border-border-custom",
+              )}
+            >
+              ${v}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="flex items-stretch gap-1.5 mb-2.5">
         <button
@@ -520,16 +528,14 @@ function Dock({
       <div className="grid grid-cols-2 gap-2.5">
         <BetButton
           dir="over"
-          mult={upMul}
-          profit={upProfit}
+          payout={upPayout}
           onClick={() => handleBet("over")}
           disabled={!canBet}
           fired={tapFire === "over"}
         />
         <BetButton
           dir="under"
-          mult={downMul}
-          profit={downProfit}
+          payout={downPayout}
           onClick={() => handleBet("under")}
           disabled={!canBet}
           fired={tapFire === "under"}
@@ -541,15 +547,13 @@ function Dock({
 
 function BetButton({
   dir,
-  mult,
-  profit,
+  payout,
   onClick,
   disabled,
   fired,
 }: {
   dir: SpeedSide;
-  mult: number | null;
-  profit: number | null;
+  payout: number | null;
   onClick: () => void;
   disabled: boolean;
   fired: boolean;
@@ -564,28 +568,20 @@ function BetButton({
         // 3D press effect — same chunky vertical drop-shadow + active
         // translate that the prediction-market HeroMarketCard / SpeedHeroCard
         // use, so the press feel stays consistent across the app.
+        // A7+A8: ×mult badge and TrendingUp/Down icons removed —
+        // color + label + payout amount communicate everything needed.
         "relative h-20 rounded-lg flex flex-col items-center justify-center gap-1 text-white overflow-hidden transition-all duration-[80ms] disabled:opacity-60 [-webkit-tap-highlight-color:transparent] font-satoshi font-black",
         isUp
           ? "bg-success shadow-[0_4px_0_0px_rgba(20,90,60,0.9)] hover:translate-y-[1px] hover:shadow-[0_3px_0_0px_rgba(20,90,60,0.9)] active:translate-y-[3px] active:shadow-[0_1px_0_0px_rgba(20,90,60,0.9)]"
           : "bg-destructive shadow-[0_4px_0_0px_rgba(140,15,30,0.9)] hover:translate-y-[1px] hover:shadow-[0_3px_0_0px_rgba(140,15,30,0.9)] active:translate-y-[3px] active:shadow-[0_1px_0_0px_rgba(140,15,30,0.9)]",
       )}
     >
-      <span className="absolute top-1.5 right-2 px-1.5 py-px rounded text-[10px] font-bold tabular-nums bg-black/[0.22]">
-        <span className="text-[9px] opacity-70 mr-px">×</span>
-        {mult !== null ? mult.toFixed(2) : "—"}
+      <span className="text-[15px] font-black tracking-[0.04em] uppercase leading-none">
+        {isUp ? "Up" : "Down"}
       </span>
-      <div className="flex items-center gap-2">
-        {isUp ? (
-          <TrendingUp className="h-[18px] w-[18px]" strokeWidth={2.4} />
-        ) : (
-          <TrendingDown className="h-[18px] w-[18px]" strokeWidth={2.4} />
-        )}
-        <span className="text-[15px] font-black tracking-[0.04em] uppercase leading-none">
-          {isUp ? "Up" : "Down"}
-        </span>
-      </div>
-      <span className="text-[12px] font-bold tabular-nums opacity-90 leading-none">
-        {profit !== null ? `+$${profit.toFixed(2)}` : "—"}
+      {/* A6: total payout (stake + profit) instead of marginal profit. */}
+      <span className="text-[14px] font-black tabular-nums leading-none">
+        {payout !== null ? `$${payout.toFixed(2)}` : "—"}
       </span>
       {fired && (
         <span

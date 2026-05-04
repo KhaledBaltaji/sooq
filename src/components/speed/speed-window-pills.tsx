@@ -5,7 +5,6 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, X } from "lucide-react";
-import { useTranslations } from "next-intl";
 import { useQuery } from "@tanstack/react-query";
 import { useIsDesktop } from "@/hooks/use-is-desktop";
 import { cn } from "@/lib/utils";
@@ -26,7 +25,6 @@ interface PillRow {
   outcome: SpeedMarketOutcome | null;
 }
 
-type Tense = "past" | "live";
 
 export function SpeedWindowPills({
   asset,
@@ -37,7 +35,6 @@ export function SpeedWindowPills({
   duration: SpeedDuration;
   currentId: string;
 }) {
-  const t = useTranslations("speed");
   const isDesktop = useIsDesktop();
   const [now, setNow] = useState<number>(Date.now());
   const [pastOpen, setPastOpen] = useState(false);
@@ -106,13 +103,10 @@ export function SpeedWindowPills({
     return now >= o && now < c;
   });
 
-  // Just two pills: "Past" archive on the left, "Live HH:MM" on the right.
-  // The live pill is always the currently-running market — even if the user
-  // is viewing a past market, clicking it jumps back to live.
-  const liveRow = liveIdx >= 0 ? rows[liveIdx] : null;
-
   // Past archive = everything strictly before the live anchor (or all rows
-  // if no live exists). Newest first for the dropdown.
+  // if no live exists). Newest first for the dropdown. The Live pill itself
+  // was removed from the toolbar per founder direction; the live market is
+  // accessible via the chart header / countdown timer.
   const archiveRows = (
     liveIdx >= 0 ? rows.slice(0, liveIdx) : rows.slice()
   )
@@ -124,6 +118,9 @@ export function SpeedWindowPills({
   return (
     <div ref={containerRef} className="relative px-4 pb-1">
       <div className="inline-flex max-w-full items-center gap-1.5 overflow-x-auto scrollbar-none">
+        {/* Past dropdown — slimmed to match the LIVE pill's visual weight
+            (no tracking-wide, smaller chevron). LIVE pill itself was removed
+            per founder direction; tap PAST to navigate to a prior round. */}
         <button
           type="button"
           aria-label="Show past markets"
@@ -131,7 +128,7 @@ export function SpeedWindowPills({
           disabled={archiveRows.length === 0}
           onClick={() => setPastOpen((v) => !v)}
           className={cn(
-            "inline-flex items-center gap-1 whitespace-nowrap rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-wide tabular-nums transition shrink-0",
+            "inline-flex items-center gap-0.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tabular-nums transition shrink-0",
             archiveRows.length === 0
               ? "bg-surface text-muted-custom opacity-50 pointer-events-none"
               : "bg-surface text-text hover:bg-bg",
@@ -140,20 +137,11 @@ export function SpeedWindowPills({
           <span>Past</span>
           <ChevronDown
             className={cn(
-              "h-3 w-3 transition-transform duration-200",
+              "h-2 w-2 transition-transform duration-200",
               pastOpen && "rotate-180",
             )}
           />
         </button>
-        {liveRow && (
-          <Pill
-            key={liveRow.id}
-            row={liveRow}
-            tense="live"
-            isViewing={liveRow.id === currentId}
-            liveLabel={t("live")}
-          />
-        )}
       </div>
       <AnimatePresence>
         {pastOpen &&
@@ -365,56 +353,9 @@ function OutcomeIcon({ outcome }: { outcome: SpeedMarketOutcome | null }) {
   );
 }
 
-function Pill({
-  row,
-  tense,
-  isViewing,
-  liveLabel,
-}: {
-  row: PillRow;
-  tense: Tense;
-  isViewing: boolean;
-  liveLabel: string;
-}) {
-  const label = formatTime(new Date(row.closes_at));
-  const baseClass =
-    "inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1 text-[11px] font-bold tabular-nums transition shrink-0";
-
-  if (tense === "live") {
-    if (isViewing) {
-      return (
-        <span className={cn(baseClass, "bg-text text-bg")}>
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
-          <span className="uppercase tracking-wide">{liveLabel}</span>
-          <span className="opacity-80">{label}</span>
-        </span>
-      );
-    }
-    return (
-      <Link
-        href={`/speed/${row.id}`}
-        className={cn(baseClass, "bg-surface text-text hover:bg-bg")}
-      >
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
-        <span className="uppercase tracking-wide">{liveLabel}</span>
-        <span className="opacity-70">{label}</span>
-      </Link>
-    );
-  }
-
-  if (isViewing) {
-    return <span className={cn(baseClass, "bg-text text-bg")}>{label}</span>;
-  }
-
-  return (
-    <Link
-      href={`/speed/${row.id}`}
-      className={cn(baseClass, "bg-surface text-muted-custom hover:bg-bg hover:text-text")}
-    >
-      {label}
-    </Link>
-  );
-}
+// `Pill` (Past + Live row pill) was removed when the LIVE pill was deleted
+// from the toolbar. Past archive entries render via `PastDropdown` /
+// `PastBottomSheet` directly, not through this component.
 
 function formatTime(d: Date): string {
   const h = d.getHours();

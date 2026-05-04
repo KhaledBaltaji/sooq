@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { useSpeedMarket } from "@/hooks/use-speed-market";
 import { useSpeedOracleLatest } from "@/hooks/use-speed-oracle";
 import { useSpeedPosition } from "@/hooks/use-speed-position";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useUser } from "@/lib/auth/hooks";
 import { SpeedTradePanel } from "@/components/speed/speed-trade-panel";
 import { SpeedPositionPanel } from "@/components/speed/speed-position-panel";
@@ -61,6 +62,7 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
   const { price, isStale, loading: oLoading } = useSpeedOracleLatest("BTC");
   const { position } = useSpeedPosition(id);
   const { user } = useUser();
+  const isMobile = useIsMobile();
   const [bumpKey, setBumpKey] = useState(0);
   const redirectFiredRef = useRef(false);
   const [chartType, setChartType] = useState<SpeedChartType>(readSpeedChartType);
@@ -300,11 +302,16 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
     </div>
   );
 
-  // ── Mobile (modal) → v2 single-screen layout ──────────────────────
-  // Phase 10: when rendered inside the mobile modal (`inModal`), use the
-  // new Speed Round v2 design. Desktop standalone route renders the
-  // original layout unchanged below.
-  if (inModal) {
+  // ── Mobile → v2 single-screen layout ──────────────────────────────
+  // A9 (Group A): broaden the v2 gate from `inModal`-only to
+  // `inModal || isMobile`. Previously, navigating market-to-market via the
+  // standalone route fell through to the OLD desktop-style layout below
+  // (with SpeedMobileTradeBar) on mobile, while navigating from home (via
+  // the parallel modal-intercept route) used v2 — same URL, two different
+  // mobile experiences. Now the v2 layout is the universal mobile
+  // experience. Desktop (lg+) continues to render the two-column layout
+  // below.
+  if (inModal || isMobile) {
     return (
       <SpeedRoundV2
         market={market}

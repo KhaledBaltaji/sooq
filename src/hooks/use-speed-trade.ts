@@ -4,6 +4,7 @@
 // Server runs the RPC inside runAs() so the GUC user_id is set.
 
 import { useCallback, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import * as Sentry from "@sentry/nextjs";
 import type {
   SpeedExecuteCashoutResult,
@@ -18,6 +19,7 @@ interface ApiError {
 export function useSpeedExecuteTrade() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const placeBet = useCallback(
     async (
@@ -60,6 +62,10 @@ export function useSpeedExecuteTrade() {
         }
 
         const data = (await res.json()) as SpeedExecuteTradeResult;
+        // A1: invalidate position queries so the cashout button appears in
+        // the UI within ~200ms of placing the bet (rather than waiting for
+        // the next 5s `useSpeedPositions` poll cycle).
+        queryClient.invalidateQueries({ queryKey: ["speed-positions"] });
         return { data, error: null };
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Network error";
@@ -74,7 +80,7 @@ export function useSpeedExecuteTrade() {
         setLoading(false);
       }
     },
-    []
+    [queryClient]
   );
 
   return { placeBet, loading, error };
@@ -83,6 +89,7 @@ export function useSpeedExecuteTrade() {
 export function useSpeedCashout() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const cashout = useCallback(async (positionId: string, expectedIv?: number) => {
     setLoading(true);
@@ -114,6 +121,9 @@ export function useSpeedCashout() {
       }
 
       const data = (await res.json()) as SpeedExecuteCashoutResult;
+      // A1: invalidate position queries so the position card disappears from
+      // the UI within ~200ms of cashing out (rather than the next 5s poll).
+      queryClient.invalidateQueries({ queryKey: ["speed-positions"] });
       return { data, error: null };
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Network error";
@@ -127,7 +137,7 @@ export function useSpeedCashout() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [queryClient]);
 
   return { cashout, loading, error };
 }
