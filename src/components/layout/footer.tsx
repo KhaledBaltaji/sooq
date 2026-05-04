@@ -3,8 +3,8 @@
 // W10: full port of the prediction-market 4-column footer. The W7 slim
 // version dropped Markets/Help columns + had a broken t("rights") call
 // (the actual i18n key is "copyright" with a {year} placeholder).
-// Sooq is speed-only-on-BTC for v1; the Markets column lists the three
-// durations rather than LMSR categories.
+// Sooq is speed-only-on-BTC for v1; the Markets column lists the active
+// durations (mig 369: 15m and 24h removed; only 5m + 1h create new rounds).
 
 import Link from "next/link";
 import { useTranslations } from "next-intl";
@@ -12,8 +12,7 @@ import { Globe, ExternalLink } from "lucide-react";
 
 const MARKET_LINKS = [
   { label: "Bitcoin 5m", href: "/markets?duration=5m" },
-  { label: "Bitcoin 15m", href: "/markets?duration=15m" },
-  { label: "Bitcoin 24h", href: "/markets?duration=24h" },
+  { label: "Bitcoin 1h", href: "/markets?duration=1h" },
 ] as const;
 
 const FOOTER_LINKS = [

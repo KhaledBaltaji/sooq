@@ -13,7 +13,7 @@
 // their enum value but new ones aren't created.
 
 import { NextResponse } from "next/server";
-import { and, asc, desc, eq, gte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, notInArray } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { speedMarkets } from "@/lib/db/schema";
@@ -52,7 +52,17 @@ export async function GET(req: Request) {
   const conditions: SQL[] = [];
   if (asset) conditions.push(eq(speedMarkets.asset, asset));
   if (status) conditions.push(eq(speedMarkets.status, status));
-  if (duration) conditions.push(eq(speedMarkets.duration, duration));
+  // Mig 369: hide stale 15m / 24h rows from the public feed. The enum on
+  // staging RDS still has those values (never removed because Postgres
+  // doesn't support enum value removal without a full rewrite, and
+  // historical positions FK-reference them) but they're no longer valid
+  // active rounds. NOT IN keeps the query enum-safe regardless of which
+  // values are in the active set.
+  if (duration) {
+    conditions.push(eq(speedMarkets.duration, duration));
+  } else {
+    conditions.push(notInArray(speedMarkets.duration, ["15m", "24h"]));
+  }
   if (since) conditions.push(gte(speedMarkets.opensAt, since));
 
   const rows = await db
