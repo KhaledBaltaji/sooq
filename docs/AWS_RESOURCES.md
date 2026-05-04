@@ -70,7 +70,7 @@ The Binance → RDS tick worker (`services/speed-oracle/`). Single-instance — 
 - **Private IP**: `172.31.25.184`
 - **Public DNS**: `ec2-63-183-214-217.eu-central-1.compute.amazonaws.com`
 - **Security group**: `sg-0a4270ac6977f474a` (`sooq-staging-oracle-sg`)
-  - Inbound: 22/tcp from dev IP `149.3.154.247/32` (SSH); 3000/tcp from dev IP only (health check)
+  - Inbound: 22/tcp + 3000/tcp from dev IP `94.187.15.255/32`. Updated 2026-05-04 (was `149.3.154.247/32`). If your IP changes, refresh both rules via `aws ec2 authorize-security-group-ingress --group-id sg-0a4270ac6977f474a --ip-permissions 'IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp='"$(curl -s ifconfig.me)"'/32}]' --region eu-central-1` (and the same for port 3000), then revoke the stale rule.
   - Outbound: all (needs Binance WSS + RDS 5432)
 - **RDS path**: SG-to-SG — `sg-0a4270ac6977f474a` is allowed inbound on 5432 of `sg-0d2a509aed2180dd2`. Worker connects to RDS endpoint privately within the VPC; no public egress to RDS.
 - **SSH key**: `~/.ssh/sooq-oracle.pem` (key pair `sooq-oracle`; pem chmod 0400)
