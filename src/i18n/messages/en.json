@@ -516,7 +516,11 @@
     "couldntLoad": "We couldn't load this content. Check your connection and try again.",
     "refreshPage": "An unexpected error occurred. Please refresh the page.",
     "transferFailed": "Transfer failed",
-    "failedToLoadNews": "Failed to load news"
+    "failedToLoadNews": "Failed to load news",
+    "showDetails": "Show details",
+    "hideDetails": "Hide details",
+    "copyDiagnostics": "Copy diagnostics",
+    "copied": "Copied"
   },
   "home": {
     "howItWorks": "How It Works",

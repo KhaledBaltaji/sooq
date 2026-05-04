@@ -516,7 +516,11 @@
     "couldntLoad": "لم نتمكن من تحميل هذا المحتوى. تحقق من اتصالك وأعد المحاولة.",
     "refreshPage": "حدث خطأ غير متوقع. يرجى تحديث الصفحة.",
     "transferFailed": "فشل التحويل",
-    "failedToLoadNews": "فشل في تحميل الأخبار"
+    "failedToLoadNews": "فشل في تحميل الأخبار",
+    "showDetails": "عرض التفاصيل",
+    "hideDetails": "إخفاء التفاصيل",
+    "copyDiagnostics": "نسخ التفاصيل",
+    "copied": "تم النسخ"
   },
   "home": {
     "howItWorks": "كيف يعمل",

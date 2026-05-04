@@ -2,6 +2,7 @@
 
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { AnimatePresence, motion } from "framer-motion";
 import { CheckCircle2, MinusCircle, XCircle, Share2, Copy, Check } from "lucide-react";
@@ -59,6 +60,7 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
   const t = useTranslations("speed");
   const tMarket = useTranslations("market");
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { market, loading: mLoading } = useSpeedMarket(id);
   const { price, isStale, loading: oLoading } = useSpeedOracleLatest("BTC");
   const { position } = useSpeedPosition(id);
@@ -184,7 +186,7 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
       if (cancelled) return;
       const m = marketRef.current;
       if (!m) {
-        pollId = setTimeout(findAndGo, 2000);
+        pollId = setTimeout(findAndGo, 750);
         return;
       }
       const params = new URLSearchParams({
@@ -220,6 +222,24 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
         );
       });
       if (next) {
+        // Prefetch the next market into the React Query cache before the
+        // route swap. By the time `router.replace` triggers the new render,
+        // useSpeedMarket(nextId) returns the data immediately — no fetch
+        // wait between the old market (kept by placeholderData) and the
+        // new one. The AnimatePresence cross-fade lands on real data.
+        try {
+          await queryClient.prefetchQuery({
+            queryKey: ["speed-market", next.id],
+            queryFn: async () => {
+              const res = await fetch(`/api/speed/markets/${next.id}`);
+              if (!res.ok) throw new Error(`Failed to prefetch market (${res.status})`);
+              return res.json();
+            },
+          });
+        } catch {
+          // prefetch is best-effort; placeholderData covers the gap
+        }
+        if (cancelled) return;
         // Phase 12D: tell the next mount of the modal route to skip the
         // slide-in animation. The card stays static; only the data swaps.
         if (typeof window !== "undefined") {
@@ -231,7 +251,10 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
         }
         router.replace(`/speed/${next.id}`);
       } else {
-        pollId = setTimeout(findAndGo, 2000);
+        // Tight 750ms cadence: the speed_roll_markets cron creates the next
+        // round at the boundary, so it's normally already there at T+0.
+        // Polling sub-second keeps the perceived gap minimal.
+        pollId = setTimeout(findAndGo, 750);
       }
     }
 
@@ -247,7 +270,7 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
       clearTimeout(giveUp);
       if (pollId) clearTimeout(pollId);
     };
-  }, [expiryDetected, router]);
+  }, [expiryDetected, router, queryClient]);
 
   // Loading: show only the chart container with its internal loader.
   // No header skeleton, no pills skeleton, no about-section skeleton — the

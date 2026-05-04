@@ -91,6 +91,7 @@ export function SpeedRoundV2({
   const router = useRouter();
   const { user } = useUser();
   const { positions: allOpen } = useSpeedPositions({ onlyOpen: true });
+  const { positions: allPositions } = useSpeedPositions();
   const positions = useMemo(
     () => allOpen.filter((p) => p.market_id === market.id),
     [allOpen, market.id],
@@ -112,6 +113,40 @@ export function SpeedRoundV2({
     const id = setTimeout(() => setPnlEvent(null), 1000);
     return () => clearTimeout(id);
   }, [pnlEvent]);
+
+  // Settlement → chart pop. Watches every position the user owns (unfiltered
+  // by market_id) and fires the in-chart pop the moment one transitions
+  // open → won/lost. Unfiltered on purpose: by the time the resolve cron
+  // settles the round and the 5s positions poll picks it up, the user has
+  // already cross-faded to the next round via Effect B's redirect — so
+  // filtering by `market.id` would miss the pop. Refunded settlements
+  // stay silent (the global settlement-toaster also stays silent on those).
+  // Detection mirrors SpeedSettlementToaster but routes the result into
+  // the in-chart surface so the chart and the mid-screen pop fire as one
+  // unified moment.
+  const seenSettleStatusesRef = useRef<Map<string, string>>(new Map());
+  const settleInitialisedRef = useRef(false);
+  useEffect(() => {
+    if (!allPositions) return;
+    if (!settleInitialisedRef.current) {
+      allPositions.forEach((p) => seenSettleStatusesRef.current.set(p.id, p.status));
+      settleInitialisedRef.current = true;
+      return;
+    }
+    for (const p of allPositions) {
+      const prev = seenSettleStatusesRef.current.get(p.id);
+      seenSettleStatusesRef.current.set(p.id, p.status);
+      if (prev !== "open") continue;
+      if (p.status === "won") {
+        const stake = Number(p.stake);
+        const payout = Number(p.payout_amount ?? 0);
+        pop(Math.max(0, payout - stake));
+      } else if (p.status === "lost") {
+        pop(-Number(p.stake));
+      }
+      // refunded: silent — quiet refund, mirrors global toaster behavior
+    }
+  }, [allPositions, pop]);
 
   return (
     <PnlPopContext.Provider value={{ pop }}>
