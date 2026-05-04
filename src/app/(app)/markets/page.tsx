@@ -5,10 +5,11 @@
 
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { SpeedMarketCard } from "@/components/speed/speed-market-card";
+import { isMarketAligned } from "@/lib/speed/pricing";
 import type { SpeedMarket } from "@/types/database";
 import { cn } from "@/lib/utils";
 
@@ -46,11 +47,33 @@ function MarketsContent() {
     staleTime: 9_000,
   });
 
+  // 1Hz tick so stale `status='open'` rows whose `closes_at` has passed drop
+  // out the moment they expire (rather than waiting for the next 10s poll).
+  // Mirrors the pattern in use-speed-markets used by the home feed.
+  const [now, setNow] = useState<number>(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   const visibleMarkets = useMemo(() => {
     const source = openQuery.data ?? [];
-    if (durationFilter === "all") return source;
-    return source.filter((m) => m.duration === durationFilter);
-  }, [durationFilter, openQuery.data]);
+    const byDuration =
+      durationFilter === "all"
+        ? source
+        : source.filter((m) => m.duration === durationFilter);
+    // Match the home feed: only show currently-live, clock-aligned markets.
+    // The cron sometimes lags resolving `status='open'` rows whose
+    // `closes_at` has already passed; without this filter the page lists
+    // those stale rounds and confuses the user (looks like 4 dead 5m
+    // markets).
+    return byDuration.filter((m) => {
+      if (!isMarketAligned(m.opens_at, m.duration)) return false;
+      const opensAt = new Date(m.opens_at).getTime();
+      const closesAt = new Date(m.closes_at).getTime();
+      return opensAt <= now && closesAt > now;
+    });
+  }, [durationFilter, openQuery.data, now]);
 
   return (
     <main className="mx-auto flex w-full max-w-[1240px] flex-col gap-6 px-4 py-6 lg:px-6 lg:py-10">

@@ -65,7 +65,6 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
   const { user } = useUser();
   const isMobile = useIsMobile();
   const [bumpKey, setBumpKey] = useState(0);
-  const redirectFiredRef = useRef(false);
   const [chartType, setChartType] = useState<SpeedChartType>(readSpeedChartType);
   const handleChartTypeChange = useCallback((next: SpeedChartType) => {
     setChartType(next);
@@ -142,35 +141,55 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
   // Settlement of any open position now surfaces as a global toast (via
   // SpeedSettlementToaster mounted in the app layout), so we no longer
   // need to keep the user on the dead market waiting for the resolve cron.
-  // The 2s polling loop below still handles the small (~5s max) gap
-  // between market close and the next market existing on the server.
+  //
+  // Lifecycle split (bug fix): the prior single-effect pattern depended on
+  // `[market, position, router]` and started a setTimeout chain inside.
+  // Every 2s `useSpeedMarket` re-fetched, swapped the `market` reference,
+  // and the cleanup cancelled the in-flight poll. The next effect run
+  // saw `redirectFiredRef.current === true` and returned early WITHOUT
+  // restarting it, so the redirect got exactly ONE shot at finding the
+  // next market. If `speed_roll_markets` cron hadn't yet inserted the
+  // next aligned row at that moment, the user was stranded on the dead
+  // round forever. Now: a one-shot boolean trigger (`expiryDetected`)
+  // owns the polling loop's lifecycle so subsequent `market` re-fetches
+  // can't tear down the retry chain.
   const [waitingForNext, setWaitingForNext] = useState(false);
+  const [expiryDetected, setExpiryDetected] = useState(false);
+  const marketRef = useRef(market);
   useEffect(() => {
-    if (!market) return;
-    if (redirectFiredRef.current) return;
+    marketRef.current = market;
+  }, [market]);
+
+  // Effect A — detect expiry once. Re-runs on each `market` refetch but only
+  // flips the trigger from false → true a single time.
+  useEffect(() => {
+    if (!market || expiryDetected) return;
     const expired =
       market.status !== "open" ||
       new Date(market.closes_at).getTime() <= Date.now();
-    if (!expired) return;
+    if (expired) setExpiryDetected(true);
+  }, [market, expiryDetected]);
 
-    redirectFiredRef.current = true;
+  // Effect B — once expired, poll every 2s for the next aligned market.
+  // Depends only on `expiryDetected` (a stable trigger), so 2s `useSpeedMarket`
+  // refetches don't re-mount this effect or kill its retry chain.
+  useEffect(() => {
+    if (!expiryDetected) return;
     setWaitingForNext(true);
-    const initialDelayMs = 0;
 
     let cancelled = false;
     let pollId: ReturnType<typeof setTimeout> | null = null;
 
-    // Poll for the next live aligned market every 2s for up to 60s. The
-    // speed-roll cron creates the next market at the boundary (mig 362,
-    // ~5s interval), but there's a small gap between the current expiry
-    // and the next status='open' flip. A single one-shot setTimeout
-    // missed that window and the redirect silently never fired. Polling
-    // catches the next market the moment it opens.
     async function findAndGo() {
       if (cancelled) return;
+      const m = marketRef.current;
+      if (!m) {
+        pollId = setTimeout(findAndGo, 2000);
+        return;
+      }
       const params = new URLSearchParams({
-        asset: market!.asset,
-        duration: market!.duration,
+        asset: m.asset,
+        duration: m.duration,
         status: "open",
         sort: "asc",
         limit: "10",
@@ -191,13 +210,13 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
       if (cancelled) return;
       const nowMs = Date.now();
       const next = candidates.find((c) => {
-        if (c.id === market!.id) return false;
+        if (c.id === m.id) return false;
         const opensMs = new Date(c.opens_at).getTime();
         const closesMs = new Date(c.closes_at).getTime();
         return (
           opensMs <= nowMs &&
           closesMs > nowMs &&
-          isMarketAligned(c.opens_at, market!.duration)
+          isMarketAligned(c.opens_at, m.duration)
         );
       });
       if (next) {
@@ -212,25 +231,23 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
         }
         router.replace(`/speed/${next.id}`);
       } else {
-        // Try again in 2s. Cap at ~60s of retries.
         pollId = setTimeout(findAndGo, 2000);
       }
     }
 
-    const startTimer = setTimeout(findAndGo, initialDelayMs);
+    findAndGo();
     // Hard stop so we don't poll forever if the cron is broken.
     const giveUp = setTimeout(() => {
       cancelled = true;
       if (pollId) clearTimeout(pollId);
-    }, initialDelayMs + 60_000);
+    }, 60_000);
 
     return () => {
       cancelled = true;
-      clearTimeout(startTimer);
       clearTimeout(giveUp);
       if (pollId) clearTimeout(pollId);
     };
-  }, [market, position, router]);
+  }, [expiryDetected, router]);
 
   // Loading: show only the chart container with its internal loader.
   // No header skeleton, no pills skeleton, no about-section skeleton — the

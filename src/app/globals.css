@@ -358,6 +358,36 @@ button, [role="button"], select, a, label[for], input[type="button"], input[type
 }
 
 /* ----------------------------------------------------------------
+   Mid-screen settlement pop — same visual as .speed-pnl-pop, but
+   `position: fixed` so it survives the instant redirect to the next
+   round. Fired by SpeedSettlementToaster on open → won/lost. Pairs
+   with the (smaller) corner toast for redundancy.
+   ---------------------------------------------------------------- */
+.speed-settlement-pop {
+  /* mid-screen overlay — survives route changes via position:fixed */
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  font-family: var(--font-satoshi, ui-sans-serif), system-ui, sans-serif;
+  font-weight: 900;
+  font-size: 56px;
+  letter-spacing: -0.03em;
+  text-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  z-index: 110;
+  animation: speedSettlementPop 1s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  font-variant-numeric: tabular-nums;
+}
+.speed-settlement-pop.win  { color: oklch(0.85 0.18 152); }
+.speed-settlement-pop.loss { color: oklch(0.78 0.22 25); }
+@keyframes speedSettlementPop {
+  0%   { opacity: 0; transform: translate(-50%, -40%) scale(0.6); }
+  20%  { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
+  60%  { opacity: 1; transform: translate(-50%, -55%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -100%) scale(1); }
+}
+
+/* ----------------------------------------------------------------
    Speed settlement toast — global overlay that surfaces the realized P&L
    when a market resolves (open → won/lost) while the user is mid-flow
    (likely on the next market already after the instant redirect). Slides
