@@ -41,7 +41,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    const stored = localStorage.getItem("theme") as Theme | null;
+    // iOS Safari throws SecurityError on localStorage access when the user
+    // has "Block All Cookies" enabled or is in restricted Private mode.
+    // Treat any failure as "no stored preference" and fall back to light.
+    let stored: Theme | null = null;
+    try {
+      stored = localStorage.getItem("theme") as Theme | null;
+    } catch {
+      stored = null;
+    }
     if (stored && ["dark", "light", "system"].includes(stored)) {
       setThemeState(stored);
       applyTheme(stored);
@@ -67,7 +75,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = (newTheme: Theme) => {
     setThemeState(newTheme);
-    localStorage.setItem("theme", newTheme);
+    try {
+      localStorage.setItem("theme", newTheme);
+    } catch {
+      // SecurityError on iOS Safari with cookies blocked — preference
+      // applies for the session but won't persist across reloads.
+    }
     applyTheme(newTheme);
   };
 
