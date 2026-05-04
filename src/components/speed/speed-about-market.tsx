@@ -67,7 +67,7 @@ export function SpeedAboutMarket({
           <p className="text-muted-custom text-base leading-relaxed font-dm-sans">
             This is a {durationLabel} {assetLabel} price prediction market. The
             target price is set at the moment the window opens from the live
-            spot oracle. Bet <span className="font-bold text-text">Up</span> if
+            spot oracle. Trade <span className="font-bold text-text">Up</span> if
             you think {assetLabel} will be higher than the target at close, or{" "}
             <span className="font-bold text-text">Down</span> if you think it
             will be lower.

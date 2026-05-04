@@ -134,6 +134,20 @@
       "when": 1778000000000,
       "tag": "0018_oracle_mid_pricing",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1778100000000,
+      "tag": "0019_speed_duration_add_1h",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1778100100000,
+      "tag": "0020_enable_1h_markets",
+      "breakpoints": true
     }
   ]
 }
