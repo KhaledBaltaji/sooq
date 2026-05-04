@@ -148,6 +148,13 @@
       "when": 1778100100000,
       "tag": "0020_enable_1h_markets",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1778116200000,
+      "tag": "0021_resolve_type_cast_fix",
+      "breakpoints": true
     }
   ]
 }
