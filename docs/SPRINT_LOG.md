@@ -1143,6 +1143,73 @@ Voided      → refund all open positions, market status=voided, return
   cashout↔resolve deadlock prevented
 - [ ] User explicitly approves "staging is good to go"
 
+---
+
+## Group C — Chart smoothness (bookTicker mid + Y-EMA + RAF coalescer + dot tween)
+
+**2026-05-04** — Khaled flagged that the chart "bounces everywhere" on calm
+markets even after Group B's `@trade` switch. Three Explore passes confirmed
+the diagnosis: bid/ask alternation in raw `@trade`, no batching on
+`series.update()`, and tight Y-axis auto-scale that visually amplified normal
+$2–3 BTC ticks into chart-spanning swings.
+
+### Four layered fixes (single PR)
+
+1. **Worker**: `services/speed-oracle/src/index.ts` switched stream from
+   `btcusdt@trade` → `btcusdt@bookTicker`. Worker now writes mid =
+   (best_bid + best_ask) / 2 to `speed_oracle_ticks` at 10 Hz. Mid is
+   monotonic — no zigzag, no sawtooth. Standard derivatives reference.
+2. **Mig 0018** (`drizzle/migrations/0018_oracle_mid_pricing.sql`):
+   `speed_wick_threshold_pct` 0.003 → 0.0015 (mid is much quieter than
+   @trade — tighter manipulation defense without false positives).
+   Column comments on `speed_oracle_ticks.price` + `speed_oracle_latest.price`
+   to document the source-semantics shift.
+3. **Chart Y-axis** (`src/components/speed/speed-price-chart.tsx`):
+   `autoscaleInfoProvider` on both Candlestick + Area series enforces a
+   0.25% min visible range floor (≥$200 at $80k BTC) and applies a 0.85
+   EMA on the displayed `priceRange` so the axis glides instead of snaps.
+   `scaleMargins` bumped 0.15 → 0.22.
+4. **Chart render cadence**: live-tail `series.update()` is now RAF-
+   coalesced (latest pending bar applied at most once per animation
+   frame). Dot position polling moved from `setInterval(100)` to RAF.
+   Live dot's X/Y rendered via framer-motion `useSpring` — glides along
+   the line between data points instead of teleporting.
+5. **Frontend WS hook** (`src/hooks/use-binance-ticker.ts`): `useBinanceTicker`
+   switched from `subscribeTrade` → `subscribeBookTicker` and returns mid;
+   `bid`/`ask` exposed for any future spread-strip UI.
+
+### Verification
+
+- Worker `/health` post-restart: `healthy:true`, `connected:true`,
+  ticks flowing immediately.
+- Public `/api/health/oracle`: oldest_age_ms = 87, well inside 2s
+  freshness threshold.
+- Sampled 19 consecutive `speed_oracle_ticks` rows: 17 same-direction
+  transitions, 0 sign-flips. Pre-Group-C @trade data showed
+  alternating ±$0.05 every other tick.
+- `npx tsc --noEmit` + `npm run lint` + `npm run build` all clean.
+
+### Files changed
+
+- `services/speed-oracle/src/index.ts` (stream + event shape + mid)
+- `drizzle/migrations/0018_oracle_mid_pricing.sql` (NEW)
+- `drizzle/migrations/meta/_journal.json` (entry 18)
+- `src/components/speed/speed-price-chart.tsx` (autoscale provider, RAF
+  coalescer, framer-motion dot tween, bumped scaleMargins)
+- `src/hooks/use-binance-ticker.ts` (default to bookTicker mid)
+- `CLAUDE.md` + `.claude/CLAUDE.md` (oracle architecture + wick threshold)
+- `docs/SPRINT_LOG.md` (this entry)
+
+### Commit
+
+- `e466a11` — "Group C: chart smoothness — bookTicker mid + Y-EMA + RAF
+  coalescer + dot tween" — pushed to staging.
+
+### Pending
+
+- Visual eyeball on staging once Vercel re-aliases — confirm chart line
+  glides instead of teleports, Y-axis stays calm.
+
 
 
 
