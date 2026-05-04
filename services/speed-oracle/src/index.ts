@@ -276,7 +276,15 @@ function connect(): void {
       ) {
         return;
       }
-      const mid = (bid + ask) / 2;
+      // Group C+ cleanup: round mid to the nearest cent at the source.
+      // BTCUSDT spread is typically $0.01, so raw mid sits at a half-cent
+      // (e.g. 79754.785). When stored at numeric precision and rounded to
+      // 2 decimals for display, every other tick flips between $79754.78
+      // and $79754.79 — visible on the chart as a $0.01 sawtooth on the
+      // line endpoint. Rounding to the cent here gives us a stable value
+      // until the underlying bid OR ask actually moves by ≥ $0.01. The
+      // line stops twitching when nothing real is happening.
+      const mid = Math.round(((bid + ask) / 2) * 100) / 100;
       const now = Date.now();
       state.lastTickAt = now;
       state.ticksSinceStart++;

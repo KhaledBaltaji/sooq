@@ -15,7 +15,6 @@ import {
   type UTCTimestamp,
   type IPriceLine,
 } from "lightweight-charts";
-import { motion, useMotionValue, useSpring } from "framer-motion";
 import { useTranslations } from "next-intl";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -303,7 +302,11 @@ export function SpeedPriceChart({
     yRangeEmaRef.current = null;
     const Y_FLOOR_FRAC = 0.0025; // 0.25% of mid
     const Y_FLOOR_ABS = 0.5; // never less than $0.50 visible
-    const Y_EMA_ALPHA = 0.85; // 1.0 = no smoothing, 0.0 = frozen
+    // 0.15 = 15% toward the natural target each redraw. With 60fps redraws
+    // the visible range settles in ~300ms — slow enough that the user reads
+    // it as a glide between zoom levels, not a snap. Was 0.85 (basically
+    // no smoothing — settled in ~50ms). Group C+ cleanup tuning.
+    const Y_EMA_ALPHA = 0.15;
     const enforceMinRangeAndSmooth = (
       orig: () => AutoscaleInfo | null,
     ): AutoscaleInfo | null => {
@@ -501,20 +504,29 @@ export function SpeedPriceChart({
     const bucketed = (Math.floor(tickEpoch / resolvedBucket) * resolvedBucket) as UTCTimestamp;
     if (bucketed < last.time) return;
 
+    // Group C+ cleanup: only extend the trailing candle's high / low
+    // when a tick moves the wick by a meaningful amount (>=0.05% of
+    // price, ~$40 at $80k BTC). Without this gate, every $0.01 mid
+    // wobble during a flat bucket inflates the wick over time and
+    // the wick never shrinks within the bucket — so the visible Y
+    // range grows monotonically inside a 15s/60s bucket and snaps
+    // back tight when the bucket boundary rolls. Visible as a periodic
+    // jolt every bucket. Real moves still extend H/L cleanly.
+    const NOISE_FLOOR = last.close * 0.0005;
     const next: CandlestickData<UTCTimestamp> =
       bucketed === last.time
         ? {
             time: last.time,
             open: last.open,
-            high: Math.max(last.high, tickPrice),
-            low: Math.min(last.low, tickPrice),
+            high: tickPrice > last.high + NOISE_FLOOR ? tickPrice : last.high,
+            low: tickPrice < last.low - NOISE_FLOOR ? tickPrice : last.low,
             close: tickPrice,
           }
         : {
             time: bucketed,
             open: last.close,
-            high: Math.max(last.close, tickPrice),
-            low: Math.min(last.close, tickPrice),
+            high: tickPrice > last.close + NOISE_FLOOR ? tickPrice : last.close,
+            low: tickPrice < last.close - NOISE_FLOOR ? tickPrice : last.close,
             close: tickPrice,
           };
 
@@ -539,83 +551,21 @@ export function SpeedPriceChart({
         }
         lastBarRef.current = pending;
 
-        // Auto-follow (W11): if the new bucket's time has drifted past
-        // the chart's visible range, snap back to real-time. Skipped
-        // when last.time is still inside the visible range — that would
-        // yank the chart away from a user who panned into history.
+        // Group C+ cleanup: recompute dot position ONCE per data tick,
+        // right after the series update lands. This replaces the prior
+        // continuous 60fps RAF loop. CSS transition on the dot's
+        // transform handles the visual glide between data ticks.
         const chart = chartRef.current;
-        if (chart) {
-          const visible = chart.timeScale().getVisibleRange();
-          if (visible && (pending.time as number) > (visible.to as number)) {
-            chart.timeScale().scrollToRealTime();
-          }
-        }
-      });
-    }
-  }, [oracle, isStale, mounted, resolvedBucket, chartType, isLive]);
-
-  // Cancel any in-flight RAF on unmount so we don't update a torn-down series.
-  useEffect(() => {
-    return () => {
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current);
-        rafIdRef.current = null;
-      }
-      pendingBarRef.current = null;
-    };
-  }, []);
-
-  // Group C: motion values for the live dot. The position from
-  // priceToCoordinate is a discrete value that changes whenever the line
-  // updates. useSpring tweens the rendered position toward that target
-  // so the dot glides along the line instead of teleporting between
-  // points — same effect TradingView uses. Stiffness/damping tuned for
-  // ~150–200ms visible motion with no overshoot.
-  const dotXMotion = useMotionValue(0);
-  const dotYMotion = useMotionValue(0);
-  const dotXSpring = useSpring(dotXMotion, { stiffness: 220, damping: 30, mass: 0.6 });
-  const dotYSpring = useSpring(dotYMotion, { stiffness: 120, damping: 20, mass: 0.7 });
-
-  // Track the target-line label Y + the live dot position via a single
-  // RAF loop. Polling because lightweight-charts has no "scale changed"
-  // event; RAF is cheap and aligned with paint cadence.
-  useEffect(() => {
-    if (!mounted) {
-      setLiveDot(null);
-      return;
-    }
-    let frame: number | null = null;
-    let cancelled = false;
-    const tick = () => {
-      if (cancelled) return;
-      const series = seriesRef.current;
-      const chart = chartRef.current;
-      if (series) {
-        // Target-line label Y (both chartTypes).
-        const ty = series.priceToCoordinate(strikePrice);
-        if (typeof ty === "number" && Number.isFinite(ty)) {
-          setTargetY((prev) => (prev !== null && Math.abs(prev - ty) < 0.5 ? prev : ty));
-        }
-      }
-
-      if (chartType === "line" && series && chart) {
-        const last = lastBarRef.current;
-        if (last) {
-          // Read last.close (the bucket data the chart actually rendered)
-          // instead of oracle.price. Guarantees dot Y and line endpoint
-          // Y come from the same number — no "dot leads line" lag.
-          const livePrice = last.close;
-          const y = series.priceToCoordinate(livePrice);
-          const tx = chart.timeScale().timeToCoordinate(last.time);
+        if (chartType === "line" && chart) {
+          const livePrice = pending.close;
+          const y = live.priceToCoordinate(livePrice);
+          const tx = chart.timeScale().timeToCoordinate(pending.time);
           const x =
             typeof tx === "number" && Number.isFinite(tx)
               ? tx
               : chart.timeScale().width();
           if (typeof y === "number" && Number.isFinite(y)) {
             const isOver = livePrice >= strikePrice;
-            // Update motion targets — useSpring tweens the rendered position.
-            dotXMotion.set(x);
-            dotYMotion.set(y);
             setLiveDot((prev) => {
               if (
                 prev &&
@@ -629,18 +579,97 @@ export function SpeedPriceChart({
             });
           }
         }
-      } else if (chartType !== "line") {
-        // Candle mode — clear any stale dot state from a prior toggle.
-        setLiveDot((prev) => (prev === null ? prev : null));
+
+        // Auto-follow (W11): if the new bucket's time has drifted past
+        // the chart's visible range, snap back to real-time. Skipped
+        // when last.time is still inside the visible range — that would
+        // yank the chart away from a user who panned into history.
+        if (chart) {
+          const visible = chart.timeScale().getVisibleRange();
+          if (visible && (pending.time as number) > (visible.to as number)) {
+            chart.timeScale().scrollToRealTime();
+          }
+        }
+      });
+    }
+  }, [oracle, isStale, mounted, resolvedBucket, chartType, isLive, strikePrice]);
+
+  // Cancel any in-flight RAF on unmount so we don't update a torn-down series.
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
       }
-      frame = requestAnimationFrame(tick);
+      pendingBarRef.current = null;
     };
-    frame = requestAnimationFrame(tick);
+  }, []);
+
+  // Group C+ cleanup: dot position is now updated inside the live-tail
+  // RAF callback above (once per data tick, not 60fps). This effect is
+  // ONLY responsible for:
+  //   1. The Target line's pixel-Y label (strike price coord).
+  //   2. Recomputing the dot when the chart's price scale changes for
+  //      reasons OTHER than a new tick (e.g. user pans/zooms or the
+  //      window resizes — both shift priceToCoordinate's output).
+  // 250ms poll is plenty for both: Target label rarely moves, and pan/
+  // zoom is human-driven, not high-frequency.
+  useEffect(() => {
+    if (!mounted) {
+      setLiveDot(null);
+      return;
+    }
+    if (chartType !== "line") {
+      // Candle mode — clear any stale dot state from a prior toggle.
+      setLiveDot(null);
+    }
+
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const series = seriesRef.current;
+      const chart = chartRef.current;
+      if (!series) return;
+
+      const ty = series.priceToCoordinate(strikePrice);
+      if (typeof ty === "number" && Number.isFinite(ty)) {
+        setTargetY((prev) => (prev !== null && Math.abs(prev - ty) < 0.5 ? prev : ty));
+      }
+
+      if (chartType === "line" && chart) {
+        const last = lastBarRef.current;
+        if (last) {
+          const livePrice = last.close;
+          const y = series.priceToCoordinate(livePrice);
+          const tx = chart.timeScale().timeToCoordinate(last.time);
+          const x =
+            typeof tx === "number" && Number.isFinite(tx)
+              ? tx
+              : chart.timeScale().width();
+          if (typeof y === "number" && Number.isFinite(y)) {
+            const isOver = livePrice >= strikePrice;
+            setLiveDot((prev) => {
+              if (
+                prev &&
+                Math.abs(prev.x - x) < 0.5 &&
+                Math.abs(prev.y - y) < 0.5 &&
+                prev.isOver === isOver
+              ) {
+                return prev;
+              }
+              return { x, y, isOver };
+            });
+          }
+        }
+      }
+    };
+    tick();
+    const id = setInterval(tick, 250);
     return () => {
       cancelled = true;
-      if (frame !== null) cancelAnimationFrame(frame);
+      clearInterval(id);
     };
-  }, [chartType, mounted, strikePrice, isLive, dotXMotion, dotYMotion]);
+  }, [chartType, mounted, strikePrice]);
 
   // Recolor the AreaSeries based on live vs target. Green palette when
   // live >= target, red palette when below. Only runs in line mode —
@@ -721,16 +750,17 @@ export function SpeedPriceChart({
       )}
 
       {/* Live-tail pulsing dot at the end of the line (line mode only).
-          Group C: position is driven by framer-motion springs so the
-          dot glides along the line between data points instead of
-          teleporting. The pulse/ping ring + glow are unchanged. */}
+          Group C+ cleanup: position is set inline as a CSS transform with
+          a transition. No spring physics — the browser linearly tweens
+          between two stable target positions. No init-from-0 ghost (first
+          render places the dot exactly where it should be, then transitions
+          on subsequent updates). The pulse/ping ring + glow are unchanged. */}
       {chartType === "line" && liveDot && showCanvas && (
-        <motion.div
-          className="pointer-events-none absolute z-10"
+        <div
+          className="pointer-events-none absolute left-0 top-0 z-10 will-change-transform"
           style={{
-            left: dotXSpring,
-            top: dotYSpring,
-            transform: "translate(-50%, -50%)",
+            transform: `translate3d(${liveDot.x}px, ${liveDot.y}px, 0) translate(-50%, -50%)`,
+            transition: "transform 140ms cubic-bezier(0.22, 1, 0.36, 1)",
           }}
           aria-hidden
         >
@@ -753,7 +783,7 @@ export function SpeedPriceChart({
                 : "0 0 12px 2px rgba(239, 83, 80, 0.7)",
             }}
           />
-        </motion.div>
+        </div>
       )}
 
       {loading && (
