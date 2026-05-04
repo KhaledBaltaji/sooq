@@ -28,6 +28,7 @@ export default function AppError({
   const url =
     typeof window !== "undefined" ? window.location.href : "";
 
+  const stackLines = (error.stack ?? "").split("\n").slice(0, 12).join("\n");
   const diagnostics = [
     `${error.name}: ${error.message || "(no message)"}`,
     `Digest: ${error.digest ?? "(none)"}`,
@@ -35,6 +36,9 @@ export default function AppError({
     `URL: ${url}`,
     `UA: ${userAgent}`,
     `Time: ${new Date().toISOString()}`,
+    "",
+    "Stack:",
+    stackLines || "(no stack)",
   ].join("\n");
 
   const handleCopy = async () => {

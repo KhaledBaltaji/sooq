@@ -29,6 +29,9 @@ export default function GlobalError({
   const url =
     typeof window !== "undefined" ? window.location.href : "";
 
+  // Trim stack to first 12 frames — enough to find the source file/line
+  // without overflowing the small clipboard targets on phones.
+  const stackLines = (error.stack ?? "").split("\n").slice(0, 12).join("\n");
   const diagnostics = [
     `${error.name}: ${error.message || "(no message)"}`,
     `Digest: ${error.digest ?? "(none)"}`,
@@ -36,6 +39,9 @@ export default function GlobalError({
     `URL: ${url}`,
     `UA: ${userAgent}`,
     `Time: ${new Date().toISOString()}`,
+    "",
+    "Stack:",
+    stackLines || "(no stack)",
   ].join("\n");
 
   const handleCopy = async () => {
