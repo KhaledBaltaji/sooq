@@ -158,65 +158,65 @@ UPDATE public.fee_config SET rate = 0.05, updated_at = NOW()
 WHERE fee_type = 'speed_spread_pct';
 
 -- Insert the new tunables.
-INSERT INTO public.fee_config (fee_type, level, depth, rate, description) VALUES
+INSERT INTO public.fee_config (fee_type, rate, description) VALUES
   -- Pool collateral (denominator for per-side and same-strike caps).
-  ('speed_pool_collateral_usd', NULL, NULL, 10000,
+  ('speed_pool_collateral_usd', 10000,
     '0016: pool collateral in USD; denominator for per-side and same-strike exposure caps. Tune up as float grows.'),
 
   -- Per-side market exposure cap (existing was a hardcoded 40% in stripped
   -- mig 353; this restores the cap as a tunable, set to 25% per Codex).
-  ('speed_max_market_exposure_pct', NULL, NULL, 0.25,
+  ('speed_max_market_exposure_pct', 0.25,
     '0016: per-market per-side exposure cap as fraction of pool collateral.'),
 
   -- Per-user daily wager cap across all markets.
-  ('speed_max_user_daily_wager', NULL, NULL, 500,
+  ('speed_max_user_daily_wager', 500,
     '0016: per-user daily wager cap across all markets ($).'),
 
   -- Same-strike cluster cap (correlated risk across durations).
-  ('speed_max_strike_cluster_pct', NULL, NULL, 0.30,
+  ('speed_max_strike_cluster_pct', 0.30,
     '0016: same-strike cluster cap as % of pool collateral. Cluster = markets within ±0.5% of strike.'),
 
   -- Daily NGR floor — circuit breaker.
-  ('speed_daily_ngr_floor', NULL, NULL, -500,
+  ('speed_daily_ngr_floor', -500,
     '0016: daily NGR floor in $. Halt new entries when settled NGR falls below this; cashouts and resolution still allowed; auto-reset at UTC midnight.'),
 
   -- Quadratic widening coefficient (Seam 3 from supabase mig 352).
-  ('speed_extreme_spread_coeff', NULL, NULL, 8,
+  ('speed_extreme_spread_coeff', 8,
     '0016: coefficient on (distance-0.45)^2 quadratic widening of spread at extreme moneyness.'),
 
   -- Wick detector.
-  ('speed_wick_threshold_pct', NULL, NULL, 0.001,
+  ('speed_wick_threshold_pct', 0.001,
     '0016: settlement wick detector. If 5s price delta exceeds this %, fall back to median-of-30-ticks. Set to 0 to disable.'),
 
   -- Late-window surcharge tiers.
-  ('speed_late_window_60s_pct', NULL, NULL, 0.20,
+  ('speed_late_window_60s_pct', 0.20,
     '0016: spread surcharge added in last 60s of market.'),
-  ('speed_late_window_30s_pct', NULL, NULL, 0.30,
+  ('speed_late_window_30s_pct', 0.30,
     '0016: spread surcharge added in last 30s (replaces 60s tier).'),
-  ('speed_late_window_reject_s', NULL, NULL, 10,
+  ('speed_late_window_reject_s', 10,
     '0016: seconds before close at which entries are rejected entirely.'),
 
   -- IV-snapshot drift tolerance for the quote/execute parity guarantee.
-  ('speed_iv_drift_tolerance_pct', NULL, NULL, 0.10,
+  ('speed_iv_drift_tolerance_pct', 0.10,
     '0016: max relative drift between client expected_iv and server IV before IV_DRIFT error.'),
 
   -- Continuous decay curve endpoints — duration-specific.
-  ('speed_cashout_decay_5m_ge80',   NULL, NULL, 0.95, '5m decay: pct >= 0.80'),
-  ('speed_cashout_decay_5m_60to80', NULL, NULL, 0.85, '5m decay: 0.60 <= pct < 0.80'),
-  ('speed_cashout_decay_5m_40to60', NULL, NULL, 0.70, '5m decay: 0.40 <= pct < 0.60'),
-  ('speed_cashout_decay_5m_20to40', NULL, NULL, 0.50, '5m decay: 0.20 <= pct < 0.40'),
-  ('speed_cashout_decay_5m_lt20',   NULL, NULL, 0.30, '5m decay: pct < 0.20'),
-  ('speed_cashout_decay_1h_ge80',   NULL, NULL, 0.92, '1h decay: pct >= 0.80'),
-  ('speed_cashout_decay_1h_60to80', NULL, NULL, 0.80, '1h decay: 0.60 <= pct < 0.80'),
-  ('speed_cashout_decay_1h_40to60', NULL, NULL, 0.65, '1h decay: 0.40 <= pct < 0.60'),
-  ('speed_cashout_decay_1h_20to40', NULL, NULL, 0.45, '1h decay: 0.20 <= pct < 0.40'),
-  ('speed_cashout_decay_1h_lt20',   NULL, NULL, 0.25, '1h decay: pct < 0.20'),
+  ('speed_cashout_decay_5m_ge80', 0.95, '5m decay: pct >= 0.80'),
+  ('speed_cashout_decay_5m_60to80', 0.85, '5m decay: 0.60 <= pct < 0.80'),
+  ('speed_cashout_decay_5m_40to60', 0.70, '5m decay: 0.40 <= pct < 0.60'),
+  ('speed_cashout_decay_5m_20to40', 0.50, '5m decay: 0.20 <= pct < 0.40'),
+  ('speed_cashout_decay_5m_lt20', 0.30, '5m decay: pct < 0.20'),
+  ('speed_cashout_decay_1h_ge80', 0.92, '1h decay: pct >= 0.80'),
+  ('speed_cashout_decay_1h_60to80', 0.80, '1h decay: 0.60 <= pct < 0.80'),
+  ('speed_cashout_decay_1h_40to60', 0.65, '1h decay: 0.40 <= pct < 0.60'),
+  ('speed_cashout_decay_1h_20to40', 0.45, '1h decay: 0.20 <= pct < 0.40'),
+  ('speed_cashout_decay_1h_lt20', 0.25, '1h decay: pct < 0.20'),
 
   -- Liquidation discount tiers (shared across durations).
-  ('speed_liq_discount_gt30',   NULL, NULL, 1.00, 'Liquidation discount: > 30s left'),
-  ('speed_liq_discount_10to30', NULL, NULL, 0.85, 'Liquidation discount: 10-30s left'),
-  ('speed_liq_discount_5to10',  NULL, NULL, 0.60, 'Liquidation discount: 5-10s left')
-ON CONFLICT (fee_type, level, depth) DO UPDATE
+  ('speed_liq_discount_gt30', 1.00, 'Liquidation discount: > 30s left'),
+  ('speed_liq_discount_10to30', 0.85, 'Liquidation discount: 10-30s left'),
+  ('speed_liq_discount_5to10', 0.60, 'Liquidation discount: 5-10s left')
+ON CONFLICT (fee_type) DO UPDATE
   SET rate = EXCLUDED.rate, description = EXCLUDED.description, updated_at = NOW();
 
 -- ============================================================================
@@ -285,7 +285,7 @@ COMMENT ON FUNCTION public.speed_cashout_multiplier(public.speed_duration, DOUBL
   '0016: continuous duration-specific cashout decay curve. Linearly interpolates between five endpoints stored in fee_config (speed_cashout_decay_<dur>_<bucket>). Replaces the (duration, role, pct) signature from supabase mig 351 — winner/loser branching is gone in the new continuous formula.';
 
 GRANT EXECUTE ON FUNCTION public.speed_cashout_multiplier(public.speed_duration, DOUBLE PRECISION)
-  TO anon, authenticated, service_role;
+  TO PUBLIC;
 
 -- ── 3B. Liquidation discount (shared across durations) ──────────────────────
 CREATE OR REPLACE FUNCTION public.speed_liq_discount(
@@ -326,7 +326,7 @@ COMMENT ON FUNCTION public.speed_liq_discount(DOUBLE PRECISION) IS
   '0016: liquidation discount tier applied multiplicatively on top of the decay curve. Discrete tiers, sharp drops near expiry. < 5s returns 0 (defense-in-depth — RPC also rejects).';
 
 GRANT EXECUTE ON FUNCTION public.speed_liq_discount(DOUBLE PRECISION)
-  TO anon, authenticated, service_role;
+  TO PUBLIC;
 
 -- ── 3C. Three-tier late-window surcharge (entries) ──────────────────────────
 CREATE OR REPLACE FUNCTION public.speed_late_window_surcharge_pct(
@@ -359,7 +359,7 @@ COMMENT ON FUNCTION public.speed_late_window_surcharge_pct(DOUBLE PRECISION) IS
   '0016: 3-tier late-window spread surcharge. Returns extra spread % to add to base spread (0 outside the late window). 60s window: +20%. 30s window: +30%. < 10s: handled at call site (RPC rejects).';
 
 GRANT EXECUTE ON FUNCTION public.speed_late_window_surcharge_pct(DOUBLE PRECISION)
-  TO anon, authenticated, service_role;
+  TO PUBLIC;
 
 -- ── 3D. Daily NGR upsert helper ─────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION public._speed_update_daily_ngr(
@@ -733,7 +733,7 @@ COMMENT ON FUNCTION public.speed_execute_trade(UUID, TEXT, NUMERIC, TEXT, DECIMA
   '0016: place a speed bet. Casino-mode pricing (5% base spread + Seam 3 widening + 3-tier late-window surcharge), IV snapshot/drift check, multi-dim exposure caps, daily NGR circuit breaker.';
 
 GRANT EXECUTE ON FUNCTION public.speed_execute_trade(UUID, TEXT, NUMERIC, TEXT, DECIMAL)
-  TO anon, authenticated, service_role;
+  TO PUBLIC;
 
 -- ============================================================================
 -- 5) RPC: speed_execute_cashout — continuous formula, IV snapshot, NGR update
@@ -935,7 +935,7 @@ COMMENT ON FUNCTION public.speed_execute_cashout(UUID, TEXT, DECIMAL) IS
   '0016: cash out a single open speed position. Continuous formula (stake × mark_prob/entry_offered × decay × liq). No winner/loser branch. IV snapshot/drift check. < 5s rejected.';
 
 GRANT EXECUTE ON FUNCTION public.speed_execute_cashout(UUID, TEXT, DECIMAL)
-  TO anon, authenticated, service_role;
+  TO PUBLIC;
 
 -- ============================================================================
 -- 6) RPC: speed_resolve_market — exact-tick + wick detector + audit + NGR
@@ -1211,7 +1211,7 @@ COMMENT ON FUNCTION public.speed_resolve_market(UUID) IS
   '0016: resolve a speed market. Exact-tick settlement (latest tick at-or-before closes_at) with wick-detector safety net. Writes audit row to speed_market_settlement_audit. Updates speed_daily_ngr.';
 
 GRANT EXECUTE ON FUNCTION public.speed_resolve_market(UUID)
-  TO anon, authenticated, service_role;
+  TO PUBLIC;
 
 -- ============================================================================
 -- 7) Sanity assertion — fail loudly if any required fee_config row is missing
