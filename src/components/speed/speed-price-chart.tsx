@@ -137,6 +137,13 @@ export function SpeedPriceChart({
   // (every 30s) must NOT call fitContent again — that would reset the
   // user's pan/zoom on every refresh and feel jarring.
   const hasFitContentRef = useRef(false);
+  // Track whether the initial setData() bulk-load has run for the current
+  // series. After the first load, every 30s history refetch is applied
+  // INCREMENTALLY via series.update() per bar — never another setData,
+  // because setData wipes the live-tail's trailing bar and the user sees
+  // the candle vanish for ~50-500ms until the next live tick rebuilds it.
+  // Reset whenever the series swaps (chartType toggle).
+  const hasInitialDataRef = useRef(false);
   // Group C: live-tail update path is RAF-coalesced. Binance bookTicker
   // emits 200–500 events/sec; we don't want to call series.update() per
   // event (browsers paint at most 60 fps anyway). Latest pending bar is
@@ -379,9 +386,10 @@ export function SpeedPriceChart({
     }
 
     seriesRef.current = series;
-    // Force the next data effect to refit + repaint the strike line on
-    // the new series instance.
+    // Force the next data effect to refit + bulk-load + repaint the strike
+    // line on the new series instance.
     hasFitContentRef.current = false;
+    hasInitialDataRef.current = false;
     strikeLineRef.current = null;
     lastBarRef.current = null;
 
@@ -398,7 +406,18 @@ export function SpeedPriceChart({
     };
   }, [chartType, mounted]);
 
-  // Push history into the series
+  // Push history into the series.
+  //
+  // Cleanup: on the FIRST paint we bulk-load via setData(). On every
+  // subsequent 30s refetch we apply each historical bar via per-bar
+  // series.update() AND skip the trailing bar entirely — the live-tail
+  // RAF is mutating that bar in place from oracle ticks, and a fresh
+  // setData would wipe its in-progress state and the user would see
+  // the trailing candle vanish for 50-500ms every refresh until the
+  // next tick rebuilt it. The server's view of the trailing bucket is
+  // strictly less complete than the live-tail's view (oracle ticks
+  // arrive faster than the 30s history refetch), so dropping it is
+  // strictly better.
   useEffect(() => {
     const series = seriesRef.current;
     if (!series || !mounted) return;
@@ -408,6 +427,7 @@ export function SpeedPriceChart({
       // both branches happy without a type assertion gymnastics).
       (series as ISeriesApi<"Candlestick">).setData([]);
       lastBarRef.current = null;
+      hasInitialDataRef.current = false;
       return;
     }
     const data: CandlestickData<UTCTimestamp>[] = candles.map((c) => ({
@@ -417,15 +437,53 @@ export function SpeedPriceChart({
       low: c.low,
       close: c.close,
     }));
-    if (chartType === "candle") {
-      (series as ISeriesApi<"Candlestick">).setData(data);
+
+    if (!hasInitialDataRef.current) {
+      // First paint: bulk-load everything.
+      if (chartType === "candle") {
+        (series as ISeriesApi<"Candlestick">).setData(data);
+      } else {
+        (series as ISeriesApi<"Area">).setData(
+          data.map((d) => ({ time: d.time, value: d.close })),
+        );
+      }
+      lastBarRef.current = data[data.length - 1] ?? null;
+      hasInitialDataRef.current = true;
     } else {
-      // Area series: feed close-price as a single line value
-      (series as ISeriesApi<"Area">).setData(
-        data.map((d) => ({ time: d.time, value: d.close })),
-      );
+      // Subsequent refetches: only push bars whose time is STRICTLY
+      // GREATER than what's already on the chart. lightweight-charts'
+      // series.update() rejects (throws "Cannot update oldest data")
+      // any time <= the current last bar — closed historical bars are
+      // immutable once they roll over, which is correct for our use
+      // case (a closed 15s/60s bucket's OHLC is final). This loop
+      // therefore only ever appends NEW closed buckets that rolled
+      // over since the last 30s refetch — typically 0–2 of them.
+      // The trailing live bucket (whose time matches lastBarRef) is
+      // never touched here; live-tail owns it.
+      const currentLast = lastBarRef.current;
+      const currentLastTime = currentLast ? (currentLast.time as number) : -Infinity;
+      let appended = 0;
+      for (let i = 0; i < data.length; i++) {
+        const bar = data[i];
+        if ((bar.time as number) <= currentLastTime) continue;
+        if (chartType === "candle") {
+          (series as ISeriesApi<"Candlestick">).update(bar);
+        } else {
+          (series as ISeriesApi<"Area">).update({ time: bar.time, value: bar.close });
+        }
+        appended++;
+      }
+      // Advance lastBarRef if we appended new closed buckets and the
+      // live-tail hasn't yet caught up (e.g., oracle stale or pre-open
+      // window). This keeps the chart's "trailing bar" reference in
+      // sync with what's actually rendered.
+      if (appended > 0) {
+        const last = data[data.length - 1] ?? null;
+        if (last && (currentLast == null || (last.time as number) > currentLastTime)) {
+          lastBarRef.current = last;
+        }
+      }
     }
-    lastBarRef.current = data[data.length - 1] ?? null;
     // First-paint focus: zoom to the market window plus a small pre-market
     // buffer instead of fitting all loaded candles. The full 30min of pre-
     // market history is still LOADED — the user can drag-pan left to see

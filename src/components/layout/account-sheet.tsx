@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, usePathname } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
 import {
   Gift,
@@ -40,7 +40,6 @@ export function AccountSheet({ open, onOpenChange }: AccountSheetProps) {
 
   const { user } = useUser();
   const router = useRouter();
-  const pathname = usePathname();
   const { theme, toggleTheme } = useTheme();
   const { openLoginModal } = useAuthModal();
   const { openDepositModal } = useDepositModal();
@@ -48,16 +47,6 @@ export function AccountSheet({ open, onOpenChange }: AccountSheetProps) {
   const t = useTranslations("profileMenu");
   const tSupport = useTranslations("support");
   const tChip = useTranslations("balanceChip");
-  const tDemo = useTranslations("demo");
-
-  // Demo mode is determined by the route, not a user column — matches the
-  // /demo/* contained-route architecture. Toggle ON navigates to demo; OFF
-  // sends user back to live home.
-  const isDemo = pathname?.startsWith("/demo") ?? false;
-  const handleDemoToggle = (checked: boolean) => {
-    close();
-    router.push(checked ? "/demo/markets" : "/");
-  };
 
   const close = () => onOpenChange(false);
 
@@ -102,19 +91,6 @@ export function AccountSheet({ open, onOpenChange }: AccountSheetProps) {
                 {displayName}
               </span>
             </Link>
-
-            {/* Demo / Live toggle */}
-            <div className="px-4 py-3.5 border-b border-border-custom flex items-center justify-between gap-3">
-              <div className="flex flex-col min-w-0">
-                <span className="text-base font-satoshi font-medium text-text">
-                  {tDemo("toggleLabel")}
-                </span>
-                <span className="text-sm text-muted-custom truncate">
-                  {tDemo("toggleCaption")}
-                </span>
-              </div>
-              <ToggleSwitch enabled={isDemo} onToggle={() => handleDemoToggle(!isDemo)} />
-            </div>
 
             {/* Primary menu */}
             <div className="py-1">
