@@ -14,11 +14,14 @@ import { useUser } from "@/lib/auth/hooks";
 import { useAuthModal } from "@/components/auth/auth-modal-provider";
 import { useDepositModal } from "@/components/wallet/deposit-modal-provider";
 
-// Retail speed-flow stake bounds (mirrors the SQL RPC at mig 345).
+// Stake bounds for the trade UI. Server is authoritative — these are
+// just guardrails so the input + preset chips reflect what's currently
+// achievable. Server caps live in fee_config: speed_stake_max_usd
+// (per-bet) + speed_cap_per_side_usd (per-side per market). Mig 0027.
 const SPEED_STAKE_MIN = 1;
-const SPEED_STAKE_MAX = 25;
-const SPEED_STAKE_PRESETS = [1, 5, 10, 25] as const;
-const MAX_AMOUNT_INPUT = 999;
+const SPEED_STAKE_MAX = 1000;
+const SPEED_STAKE_PRESETS = [10, 50, 100, 1000] as const;
+const MAX_AMOUNT_INPUT = 1000;
 
 export function SpeedTradePanel({
   market,

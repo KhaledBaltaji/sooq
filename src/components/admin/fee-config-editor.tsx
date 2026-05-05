@@ -33,6 +33,8 @@ const FEE_LABELS: Record<string, { label: string; hint: string }> = {
   dynamic_spread_multiplier: { label: "Spread Multiplier",      hint: "How aggressively spread widens" },
   min_trade_amount:          { label: "Minimum Trade",          hint: "Smallest allowed buy amount" },
   // Speed risk caps — surfaced so ops can tune live without a migration.
+  speed_stake_max_usd:           { label: "Per-Bet Max Stake",        hint: "Single-bet ceiling. Trade RPC rejects above this." },
+  speed_cap_per_side_usd:        { label: "Per-Side Cap (per market)", hint: "Per-user, per-market, per-side cap. Resets every market cycle (5m / 1h)." },
   speed_max_user_daily_wager:    { label: "Daily Trading Limit",     hint: "Per-user cap on total stake per UTC day" },
   speed_pool_collateral_usd:     { label: "Pool Collateral",          hint: "Notional pool that backs the speed market" },
   speed_max_market_exposure_pct: { label: "Per-Side Market Exposure", hint: "Max one side can hold, % of pool" },
@@ -42,6 +44,8 @@ const FEE_LABELS: Record<string, { label: string; hint: string }> = {
 // Keys whose `rate` column stores a USD amount (not a 0–1 fraction). Format
 // these as currency in the list and in the edit dialog.
 const CURRENCY_KEYS = new Set<string>([
+  "speed_stake_max_usd",
+  "speed_cap_per_side_usd",
   "speed_max_user_daily_wager",
   "speed_pool_collateral_usd",
 ]);
@@ -98,6 +102,8 @@ const FEE_GROUPS: FeeGroup[] = [
     subtitle: "Per-user and pool-wide trading limits",
     icon: "shield",
     types: [
+      "speed_stake_max_usd",
+      "speed_cap_per_side_usd",
       "speed_max_user_daily_wager",
       "speed_pool_collateral_usd",
       "speed_max_market_exposure_pct",

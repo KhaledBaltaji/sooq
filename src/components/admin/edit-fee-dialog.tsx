@@ -44,6 +44,8 @@ const FEE_CONSTRAINTS: Record<string, FeeConstraints> = {
   dynamic_spread_multiplier: { min: 1.0, max: 5.0,   step: 0.1,   label: "Dynamic Spread Multiplier", format: "multiplier", warning: "Changes live trading behavior. Higher = more aggressive spread widening when triggered." },
 
   // Speed risk caps — read by speed_execute_trade on every call, no redeploy needed.
+  speed_stake_max_usd:           { min: 1, max: 10000000, step: 1, label: "Per-Bet Max Stake (USD)", format: "currency", warning: "Hard ceiling on a single bet. Set high (e.g. $1,000,000) when you want the per-side cap to be the binding limit." },
+  speed_cap_per_side_usd:        { min: 1, max: 10000000, step: 10, label: "Per-Side Cap (USD)", format: "currency", warning: "Per-user, per-market, per-side stake cap. Resets every market cycle (5m or 1h). The most common operational lever for stake limits." },
   speed_max_user_daily_wager:    { min: 10, max: 10000000, step: 100, label: "Daily Trading Limit (USD)", format: "currency", warning: "Cap on a single user's total stake per UTC day across all markets. Effective on the next trade." },
   speed_pool_collateral_usd:     { min: 1000, max: 10000000, step: 1000, label: "Pool Collateral (USD)", format: "currency", warning: "Notional pool size. The per-side exposure cap and same-strike-cluster cap are percentages of this. Raise carefully." },
   speed_max_market_exposure_pct: { min: 0.05, max: 1.0, step: 0.01, label: "Per-Side Market Exposure", format: "percentage", warning: "Max fraction of pool collateral one side of a market can hold. Lowering mid-day can lock out new entries on existing markets." },

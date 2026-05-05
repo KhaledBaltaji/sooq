@@ -16,7 +16,7 @@ import { useSpeedExecuteTrade, useSpeedCashout } from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
 import type { SpeedMarket, SpeedPosition, SpeedSide } from "@/types/database";
 
-const STAKE_PRESETS = [1, 5, 10, 25];
+const STAKE_PRESETS = [10, 50, 100, 1000];
 
 /**
  * Fixed-bottom mobile trade bar for /speed/[id].

@@ -69,7 +69,7 @@ function usePnlPop() {
   return useContext(PnlPopContext);
 }
 
-const STAKE_CHIPS = [5, 10, 25, 50, 100];
+const STAKE_CHIPS = [10, 50, 100, 500, 1000];
 
 interface Props {
   market: SpeedMarket;
