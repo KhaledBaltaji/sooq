@@ -22,15 +22,19 @@ export async function GET(req: Request) {
     const rows = await db
       .select({
         id: users.id,
+        email: users.email,
         display_name: users.displayName,
         phone: users.phone,
+        avatar_url: users.avatarUrl,
         balance_usd: users.balanceUsd,
         is_admin: users.isAdmin,
+        is_frozen: users.isFrozen,
         admin_allowed_views: users.adminAllowedViews,
       })
       .from(users)
       .where(
         or(
+          ilike(sql`coalesce(${users.email}, '')`, pattern),
           ilike(sql`coalesce(${users.displayName}, '')`, pattern),
           ilike(sql`coalesce(${users.phone}, '')`, pattern)
         )

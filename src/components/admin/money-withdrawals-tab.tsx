@@ -1,5 +1,10 @@
 "use client";
 
+// Withdrawal requests tab on /admin/money.
+// Two sub-views: Pending (needs approve/reject) and Approved (awaiting send).
+// History (sent + rejected) lives on the unified History tab — every
+// completed money movement is visible there via the transactions ledger.
+
 import { useEffect, useState, useTransition } from "react";
 import { Check, X, Send, RefreshCw, Loader2 } from "lucide-react";
 import { formatCurrency, cn } from "@/lib/utils";
@@ -16,6 +21,8 @@ interface AdminWithdrawal {
     balance_usd: number;
   };
   amount: number;
+  fee_amount: number;
+  net_amount: number | null;
   method: string;
   account_details: Record<string, unknown> | null;
   status: WithdrawalStatus;
@@ -26,47 +33,28 @@ interface AdminWithdrawal {
   created_at: string;
 }
 
-const TABS: { key: "pending" | "approved" | "history"; label: string }[] = [
+const SUB_TABS: { key: "pending" | "approved"; label: string }[] = [
   { key: "pending", label: "Pending" },
   { key: "approved", label: "Approved (awaiting send)" },
-  { key: "history", label: "History" },
 ];
 
-export function WithdrawalsClient() {
-  const [tab, setTab] = useState<"pending" | "approved" | "history">("pending");
+export function MoneyWithdrawalsTab() {
+  const [sub, setSub] = useState<"pending" | "approved">("pending");
   const [rows, setRows] = useState<AdminWithdrawal[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchTab = async (which: "pending" | "approved" | "history") => {
+  const fetchSub = async (which: "pending" | "approved") => {
     setLoading(true);
     setError(null);
     try {
-      // History = both rejected + sent. We do two fetches and merge.
-      if (which === "history") {
-        const [a, b] = await Promise.all([
-          fetch(`/api/admin/withdrawals/list?status=rejected&limit=100`).then(
-            (r) => r.json()
-          ),
-          fetch(`/api/admin/withdrawals/list?status=sent&limit=100`).then((r) =>
-            r.json()
-          ),
-        ]);
-        const merged = [...(a.withdrawals ?? []), ...(b.withdrawals ?? [])].sort(
-          (x: AdminWithdrawal, y: AdminWithdrawal) =>
-            (y.reviewed_at ?? y.created_at).localeCompare(
-              x.reviewed_at ?? x.created_at
-            )
-        );
-        setRows(merged);
-      } else {
-        const r = await fetch(
-          `/api/admin/withdrawals/list?status=${which}&limit=100`
-        );
-        if (!r.ok) throw new Error(`Failed (${r.status})`);
-        const body = (await r.json()) as { withdrawals: AdminWithdrawal[] };
-        setRows(body.withdrawals);
+      const r = await fetch(`/api/admin/withdrawals/list?status=${which}&limit=200`);
+      if (!r.ok) {
+        const b = (await r.json().catch(() => ({}))) as { error?: string };
+        throw new Error(b.error ?? `Failed (${r.status})`);
       }
+      const body = (await r.json()) as { withdrawals: AdminWithdrawal[] };
+      setRows(body.withdrawals);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Load failed");
       setRows([]);
@@ -76,22 +64,21 @@ export function WithdrawalsClient() {
   };
 
   useEffect(() => {
-    void fetchTab(tab);
-  }, [tab]);
+    void fetchSub(sub);
+  }, [sub]);
 
   return (
-    <div className="space-y-4">
-      {/* Tabs */}
+    <div className="space-y-3">
       <div className="flex items-center gap-2">
-        {TABS.map((t) => (
+        {SUB_TABS.map((t) => (
           <button
             key={t.key}
             type="button"
-            onClick={() => setTab(t.key)}
+            onClick={() => setSub(t.key)}
             className={cn(
-              "px-4 py-2 rounded-lg text-sm font-semibold transition-colors",
-              tab === t.key
-                ? "bg-[#2d6cdf] text-white"
+              "px-3 py-1.5 rounded-md text-xs font-semibold transition-colors",
+              sub === t.key
+                ? "bg-[#2a3439] text-white"
                 : "bg-white text-[#566166] hover:text-[#2a3439] border border-[#e9ecef]"
             )}
           >
@@ -100,7 +87,7 @@ export function WithdrawalsClient() {
         ))}
         <button
           type="button"
-          onClick={() => fetchTab(tab)}
+          onClick={() => fetchSub(sub)}
           className="ml-auto p-2 rounded-md text-[#717c82] hover:text-[#2a3439] hover:bg-[#f0f4f7]"
           aria-label="Refresh"
           title="Refresh"
@@ -115,7 +102,6 @@ export function WithdrawalsClient() {
         </div>
       )}
 
-      {/* Table */}
       <div className="bg-white rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.02)] overflow-hidden">
         {loading ? (
           <div className="p-12 text-center text-[#566166] flex items-center justify-center gap-2">
@@ -124,11 +110,9 @@ export function WithdrawalsClient() {
           </div>
         ) : rows.length === 0 ? (
           <div className="p-12 text-center text-[#566166]">
-            {tab === "pending"
-              ? "No pending withdrawals. 🎉"
-              : tab === "approved"
-                ? "No approved withdrawals awaiting send."
-                : "No history yet."}
+            {sub === "pending"
+              ? "No pending withdrawals."
+              : "No approved withdrawals awaiting send."}
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -144,12 +128,7 @@ export function WithdrawalsClient() {
             </thead>
             <tbody>
               {rows.map((r) => (
-                <Row
-                  key={r.id}
-                  row={r}
-                  onChange={() => fetchTab(tab)}
-                  tab={tab}
-                />
+                <Row key={r.id} row={r} sub={sub} onChange={() => fetchSub(sub)} />
               ))}
             </tbody>
           </table>
@@ -161,12 +140,12 @@ export function WithdrawalsClient() {
 
 function Row({
   row,
+  sub,
   onChange,
-  tab,
 }: {
   row: AdminWithdrawal;
+  sub: "pending" | "approved";
   onChange: () => void;
-  tab: "pending" | "approved" | "history";
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -191,14 +170,22 @@ function Row({
     });
   };
 
+  const sendAmount = row.net_amount ?? row.amount;
   const onApprove = () => {
-    if (!confirm(`Approve withdrawal of ${formatCurrency(row.amount)} to ${row.user.email}?`))
-      return;
+    const msg =
+      row.fee_amount > 0
+        ? `Approve withdrawal: send ${formatCurrency(sendAmount)} to ${row.user.email}? (gross ${formatCurrency(row.amount)} − fee ${formatCurrency(row.fee_amount)})`
+        : `Approve withdrawal of ${formatCurrency(row.amount)} to ${row.user.email}?`;
+    if (!confirm(msg)) return;
     void submit("approve");
   };
   const onReject = () => {
     const notes = prompt("Reason for rejection (optional):") ?? null;
-    if (!confirm(`Reject and refund ${formatCurrency(row.amount)} to ${row.user.email}?`))
+    if (
+      !confirm(
+        `Reject and refund ${formatCurrency(row.amount)} (gross) to ${row.user.email}?`
+      )
+    )
       return;
     void submit("reject", { notes });
   };
@@ -226,18 +213,20 @@ function Row({
           </span>
         </div>
       </td>
-      <td className="px-5 py-3 text-right tabular-nums font-bold">
-        {formatCurrency(row.amount)}
+      <td className="px-5 py-3 text-right tabular-nums">
+        <div className="font-bold text-[#2a3439]">{formatCurrency(row.amount)}</div>
+        {row.fee_amount > 0 && row.net_amount !== null && (
+          <div className="text-[10px] text-[#717c82] leading-tight mt-0.5">
+            send <span className="font-mono">{formatCurrency(row.net_amount)}</span>
+            <span className="text-[#a3aaaf]"> · fee {formatCurrency(row.fee_amount)}</span>
+          </div>
+        )}
       </td>
       <td className="px-5 py-3 capitalize">{row.method}</td>
-      <td className="px-5 py-3 font-mono text-xs break-all max-w-[260px]">
-        {dest}
-      </td>
-      <td className="px-5 py-3 text-xs text-[#566166]">
-        {reqAt.toLocaleString()}
-      </td>
+      <td className="px-5 py-3 font-mono text-xs break-all max-w-[260px]">{dest}</td>
+      <td className="px-5 py-3 text-xs text-[#566166]">{reqAt.toLocaleString()}</td>
       <td className="px-5 py-3 text-right">
-        {tab === "pending" && row.status === "pending" && (
+        {sub === "pending" && row.status === "pending" && (
           <div className="flex justify-end gap-2">
             <button
               type="button"
@@ -257,7 +246,7 @@ function Row({
             </button>
           </div>
         )}
-        {tab === "approved" && row.status === "approved" && (
+        {sub === "approved" && row.status === "approved" && (
           <button
             type="button"
             onClick={onMarkSent}
@@ -267,21 +256,7 @@ function Row({
             <Send className="w-3.5 h-3.5" /> Mark sent
           </button>
         )}
-        {tab === "history" && (
-          <span
-            className={cn(
-              "inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded",
-              row.status === "sent"
-                ? "bg-emerald-50 text-emerald-700"
-                : "bg-red-50 text-red-700"
-            )}
-          >
-            {row.status}
-          </span>
-        )}
-        {error && (
-          <p className="text-[10px] text-red-600 mt-1 text-right">{error}</p>
-        )}
+        {error && <p className="text-[10px] text-red-600 mt-1 text-right">{error}</p>}
       </td>
     </tr>
   );
@@ -295,7 +270,6 @@ function formatDestination(
   if (method === "whish") return String(details.phone ?? "—");
   if (method === "crypto")
     return `${String(details.network ?? "")} · ${String(details.address ?? "—")}`;
-  if (method === "bank")
-    return String(details.account ?? details.iban ?? "—");
+  if (method === "bank") return String(details.account ?? details.iban ?? "—");
   return JSON.stringify(details);
 }

@@ -63,7 +63,7 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
   {
     group: "Money",
     items: [
-      { key: "withdrawals", href: "/admin/withdrawals", icon: "request_quote", label: "Withdrawals", badgeKey: "pending_finance" },
+      { key: "withdrawals", href: "/admin/money", icon: "account_balance_wallet", label: "Money", badgeKey: "pending_finance" },
       { key: "fees", href: "/admin/fees", icon: "payments", label: "Fees" },
     ],
   },

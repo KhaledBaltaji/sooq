@@ -188,7 +188,10 @@ export default async function AdminUserDetailPage({
                         {formatCurrency(Number(tx.balanceAfter))}
                       </td>
                       <td className="px-6 py-5 text-sm text-[#566166] whitespace-nowrap">
-                        {tx.createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                        <div>{tx.createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</div>
+                        <div className="text-xs text-[#a3aaaf] tabular-nums">
+                          {tx.createdAt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}
+                        </div>
                       </td>
                     </tr>
                   );
