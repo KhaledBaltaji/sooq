@@ -237,6 +237,8 @@ export const withdrawals = pgTable(
       .notNull()
       .references(() => users.id),
     amount: numeric("amount", { precision: 18, scale: 2 }).notNull(),
+    feeAmount: numeric("fee_amount", { precision: 18, scale: 2 }).notNull().default("0"),
+    netAmount: numeric("net_amount", { precision: 18, scale: 2 }),
     method: text("method").notNull(),
     accountDetails: jsonb("account_details"),
     status: withdrawalStatus("status").notNull().default("pending"),

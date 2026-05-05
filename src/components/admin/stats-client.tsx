@@ -26,6 +26,7 @@ interface RevenueSummary {
   total_payouts: number;
   platform_net: number;
   cashout_premium_total: number;
+  withdrawal_fees_collected: number;
   open_cash_pool: number;
   markets_resolved: number;
   markets_voided: number;
@@ -278,7 +279,7 @@ export function StatsClient() {
       )}
 
       {/* KPI row */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <Kpi
           label="Gross volume"
           value={summary ? formatCurrency(summary.gross_volume) : "—"}
@@ -299,6 +300,13 @@ export function StatsClient() {
           icon={<TrendingUp className="w-4 h-4" />}
           tone="muted"
           hint="Σ(stake − cashout) on early exits"
+        />
+        <Kpi
+          label="Withdrawal fees"
+          value={summary ? formatCurrency(summary.withdrawal_fees_collected) : "—"}
+          icon={<TrendingUp className="w-4 h-4" />}
+          tone="muted"
+          hint="Collected on sent withdrawals"
         />
         <Kpi
           label="Open cash pool"

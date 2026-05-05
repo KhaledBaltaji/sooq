@@ -46,6 +46,9 @@ export function WithdrawModal({ open, onClose }: WithdrawModalProps) {
   const feeRate = useFeeRates().withdrawal;
   const [status, setStatus] = useState<"idle" | "confirmed">("idle");
   const [validationError, setValidationError] = useState<string | null>(null);
+  // Server-authoritative net/fee from process_withdrawal response. Falls
+  // back to the client-side estimate if a stale server omits the fields.
+  const [serverNet, setServerNet] = useState<number | null>(null);
 
   // Reset state when modal closes
   useEffect(() => {
@@ -58,6 +61,7 @@ export function WithdrawModal({ open, onClose }: WithdrawModalProps) {
         setLoading(false);
         setStatus("idle");
         setValidationError(null);
+        setServerNet(null);
       }, 200);
       return () => clearTimeout(t);
     }
@@ -145,6 +149,12 @@ export function WithdrawModal({ open, onClose }: WithdrawModalProps) {
         return;
       }
 
+      const body = (await res.json().catch(() => ({}))) as {
+        net?: number | string;
+      };
+      if (body.net !== undefined && body.net !== null) {
+        setServerNet(Number(body.net));
+      }
       toast.success(tToast("withdrawalSubmitted"));
       setStatus("confirmed");
     } catch (err) {
@@ -199,7 +209,7 @@ export function WithdrawModal({ open, onClose }: WithdrawModalProps) {
                   {t("withdrawalSubmitted")}
                 </p>
                 <p className="text-muted-custom text-sm font-dm-sans">
-                  {t("willBeSent", { amount: formatCurrency(netAmount) })}
+                  {t("willBeSent", { amount: formatCurrency(serverNet ?? netAmount) })}
                 </p>
                 <Button onClick={onClose} className="bg-yes hover:bg-yes/90 text-white h-12 px-8">
                   {tc("done")}

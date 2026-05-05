@@ -18,6 +18,8 @@ interface WithdrawBody {
 interface WithdrawResult {
   withdrawal_id: string;
   amount: number;
+  fee: number;
+  net: number;
   new_balance: number;
   status: string;
 }

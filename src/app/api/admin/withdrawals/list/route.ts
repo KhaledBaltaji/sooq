@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { runAs } from "@/lib/db/run-as";
 import { authErrorToResponse, requireAdminApi } from "@/lib/auth/api-guards";
+import { logger } from "@/lib/logger";
 
 const ALLOWED_STATUSES = ["pending", "approved", "rejected", "sent"] as const;
 
@@ -18,6 +19,8 @@ interface AdminWithdrawalRow {
   user_avatar_url: string | null;
   user_balance_usd: string;
   amount: string;
+  fee_amount: string;
+  net_amount: string | null;
   method: string;
   account_details: unknown;
   status: string;
@@ -62,6 +65,8 @@ export async function GET(req: Request) {
           balance_usd: Number(r.user_balance_usd ?? 0),
         },
         amount: Number(r.amount),
+        fee_amount: Number(r.fee_amount ?? 0),
+        net_amount: r.net_amount == null ? null : Number(r.net_amount),
         method: r.method,
         account_details: r.account_details,
         status: r.status,
@@ -75,11 +80,8 @@ export async function GET(req: Request) {
   } catch (err) {
     const r = authErrorToResponse(err);
     if (r) return r;
-    return NextResponse.json(
-      {
-        error: err instanceof Error ? err.message : "Internal error",
-      },
-      { status: 500 }
-    );
+    const errorMessage = err instanceof Error ? err.message : "Internal error";
+    logger.error("admin/withdrawals/list failed", { source: "api/admin/withdrawals/list", errorMessage }, err);
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }

@@ -11,6 +11,7 @@ interface RevenueSummaryRow {
   total_payouts: string;
   platform_net: string;
   cashout_premium_total: string;
+  withdrawal_fees_collected: string;
   open_cash_pool: string;
   markets_resolved: number;
   markets_voided: number;
@@ -45,6 +46,7 @@ export async function GET(req: Request) {
       total_payouts: Number(r?.total_payouts ?? 0),
       platform_net: Number(r?.platform_net ?? 0),
       cashout_premium_total: Number(r?.cashout_premium_total ?? 0),
+      withdrawal_fees_collected: Number(r?.withdrawal_fees_collected ?? 0),
       open_cash_pool: Number(r?.open_cash_pool ?? 0),
       markets_resolved: Number(r?.markets_resolved ?? 0),
       markets_voided: Number(r?.markets_voided ?? 0),
