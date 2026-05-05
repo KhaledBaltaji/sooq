@@ -528,6 +528,7 @@ function PositionCard({
       : null;
 
   const delta = cashoutValue !== null ? cashoutValue - stake : null;
+  const potentialPayout = entryOfferedProb > 0 ? stake / entryOfferedProb : null;
 
   const handleCashout = useCallback(async () => {
     if (loading || cashoutLocked || cashoutValue === null) return;
@@ -605,12 +606,13 @@ function PositionCard({
         )}
       </div>
 
-      {/* Row 3: delta vs stake — green if winning, red if losing, muted at parity */}
-      <div className="mt-0.5 flex justify-end h-4">
-        {delta !== null && (
+      {/* Row 3: live P/L delta on the left, settlement payout on the right
+          so the user can compare "take $X now" vs "hold to win $Y". */}
+      <div className="mt-0.5 flex items-center justify-between h-4 text-xs font-bold tabular-nums leading-none">
+        {delta !== null ? (
           <span
             className={cn(
-              "font-satoshi text-xs font-bold tabular-nums leading-none",
+              "font-satoshi",
               delta > 0.005
                 ? "text-success"
                 : delta < -0.005
@@ -620,6 +622,13 @@ function PositionCard({
           >
             {delta > 0.005 ? "+" : ""}
             ${delta.toFixed(2)}
+          </span>
+        ) : (
+          <span />
+        )}
+        {potentialPayout !== null && (
+          <span className="font-satoshi text-bg/60 uppercase tracking-wide text-[10px]">
+            {isUp ? t("over") : t("under")} {t("strike")} ${potentialPayout.toFixed(2)}
           </span>
         )}
       </div>

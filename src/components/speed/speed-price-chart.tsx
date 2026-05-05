@@ -67,6 +67,14 @@ interface SpeedPriceChartProps {
    * past closes_at and the dot drifted off the line.
    */
   status?: "open" | "resolving" | "resolved" | "voided";
+  /**
+   * When true, suppress the dashed strike priceLine + the "Target $X"
+   * HTML label overlay. Used by the home-page hero where the strike is
+   * already shown above the chart ("vs strike $X" eyebrow), so a second
+   * indicator on the chart is redundant. Default false (detail page
+   * keeps both).
+   */
+  hideStrikeLine?: boolean;
 }
 
 /**
@@ -95,6 +103,7 @@ export function SpeedPriceChart({
   duration,
   chartType: chartTypeProp,
   status,
+  hideStrikeLine = false,
 }: SpeedPriceChartProps) {
   const chartType: SpeedChartType = chartTypeProp ?? "candle";
   // Anything past "open" means the market has closed (resolving / resolved /
@@ -523,6 +532,7 @@ export function SpeedPriceChart({
       series.removePriceLine(strikeLineRef.current);
       strikeLineRef.current = null;
     }
+    if (hideStrikeLine) return;
     strikeLineRef.current = series.createPriceLine({
       price: strikePrice,
       // Slate gray, dotted, 2px — clearly visible on the chart background
@@ -536,7 +546,7 @@ export function SpeedPriceChart({
       axisLabelVisible: false,
       title: "",
     });
-  }, [strikePrice, mounted, chartType]);
+  }, [strikePrice, mounted, chartType, hideStrikeLine]);
 
   // Live tail: update last candle's high/low/close as oracle ticks arrive.
   // Floor tickTime to resolvedBucket so ticks fold into the same N-second
@@ -794,7 +804,7 @@ export function SpeedPriceChart({
           chart so it never collides with the live-tail pulsing dot at
           the right edge. The dotted line itself is still drawn by the
           chart's createPriceLine. */}
-      {showCanvas && targetY !== null && (
+      {showCanvas && targetY !== null && !hideStrikeLine && (
         <div
           className="pointer-events-none absolute left-3 z-10 whitespace-nowrap rounded-md bg-bg/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-muted-custom ring-1 ring-border-custom backdrop-blur-sm"
           style={{

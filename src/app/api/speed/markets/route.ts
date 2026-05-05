@@ -5,8 +5,7 @@
 //   since       — opens_at >= ISO timestamp
 //   sort        — "asc" (default) | "desc" by opens_at
 //   limit       — max rows (default 50, cap 200)
-// Public endpoint. Polled by use-speed-markets, speed-window-pills,
-// speed-recent-settlements.
+// Public endpoint. Polled by use-speed-markets, speed-window-pills.
 //
 // Mig 369: durations are 5m + 1h only. 15m and 24h were removed in mig 361 +
 // mig 363; the trade RPC explicitly rejects them. Historical markets keep
