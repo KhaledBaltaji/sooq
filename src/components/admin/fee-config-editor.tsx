@@ -32,12 +32,27 @@ const FEE_LABELS: Record<string, { label: string; hint: string }> = {
   dynamic_spread_threshold:  { label: "Spread Widening Trigger", hint: "Price level where spread widens" },
   dynamic_spread_multiplier: { label: "Spread Multiplier",      hint: "How aggressively spread widens" },
   min_trade_amount:          { label: "Minimum Trade",          hint: "Smallest allowed buy amount" },
+  // Speed risk caps — surfaced so ops can tune live without a migration.
+  speed_max_user_daily_wager:    { label: "Daily Trading Limit",     hint: "Per-user cap on total stake per UTC day" },
+  speed_pool_collateral_usd:     { label: "Pool Collateral",          hint: "Notional pool that backs the speed market" },
+  speed_max_market_exposure_pct: { label: "Per-Side Market Exposure", hint: "Max one side can hold, % of pool" },
+  speed_max_strike_cluster_pct:  { label: "Same-Strike Cluster Cap",  hint: "Max % of pool on markets near one strike" },
 };
+
+// Keys whose `rate` column stores a USD amount (not a 0–1 fraction). Format
+// these as currency in the list and in the edit dialog.
+const CURRENCY_KEYS = new Set<string>([
+  "speed_max_user_daily_wager",
+  "speed_pool_collateral_usd",
+]);
 
 function formatRate(fee: FeeRow): string {
   if (fee.fee_type === "dynamic_spread_multiplier") return `${Number(fee.rate)}x`;
   if (fee.fee_type === "amm_default_b" || fee.fee_type === "min_trade_amount")
     return `${Number(fee.rate)}`;
+  if (CURRENCY_KEYS.has(fee.fee_type)) {
+    return `$${Number(fee.rate).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  }
   return `${(fee.rate * 100).toFixed(2)}%`;
 }
 
@@ -76,6 +91,18 @@ const FEE_GROUPS: FeeGroup[] = [
     subtitle: "Master kill switch + oracle freshness gate",
     icon: "bolt",
     types: ["speed_markets_enabled", "speed_oracle_stale_seconds"],
+  },
+  {
+    key: "speed_risk",
+    title: "Speed Risk Caps",
+    subtitle: "Per-user and pool-wide trading limits",
+    icon: "shield",
+    types: [
+      "speed_max_user_daily_wager",
+      "speed_pool_collateral_usd",
+      "speed_max_market_exposure_pct",
+      "speed_max_strike_cluster_pct",
+    ],
   },
 ];
 

@@ -21,12 +21,14 @@ interface EditFeeDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
+type FeeFormat = "percentage" | "raw" | "multiplier" | "currency";
+
 interface FeeConstraints {
   min: number;
   max: number;
   step: number;
   label: string;
-  format: "percentage" | "raw" | "multiplier";
+  format: FeeFormat;
   warning?: string;
 }
 
@@ -40,6 +42,12 @@ const FEE_CONSTRAINTS: Record<string, FeeConstraints> = {
   amm_max_trade_pct:         { min: 0.01, max: 0.20, step: 0.01,  label: "Max Trade Size (% of liquidity)", format: "percentage", warning: "Changes take effect on the next trade. Affects all open markets." },
   dynamic_spread_threshold:  { min: 0.50, max: 0.95, step: 0.01,  label: "Dynamic Spread Threshold", format: "percentage", warning: "Changes live trading behavior. Lower = spread widening triggers more often." },
   dynamic_spread_multiplier: { min: 1.0, max: 5.0,   step: 0.1,   label: "Dynamic Spread Multiplier", format: "multiplier", warning: "Changes live trading behavior. Higher = more aggressive spread widening when triggered." },
+
+  // Speed risk caps — read by speed_execute_trade on every call, no redeploy needed.
+  speed_max_user_daily_wager:    { min: 10, max: 10000000, step: 100, label: "Daily Trading Limit (USD)", format: "currency", warning: "Cap on a single user's total stake per UTC day across all markets. Effective on the next trade." },
+  speed_pool_collateral_usd:     { min: 1000, max: 10000000, step: 1000, label: "Pool Collateral (USD)", format: "currency", warning: "Notional pool size. The per-side exposure cap and same-strike-cluster cap are percentages of this. Raise carefully." },
+  speed_max_market_exposure_pct: { min: 0.05, max: 1.0, step: 0.01, label: "Per-Side Market Exposure", format: "percentage", warning: "Max fraction of pool collateral one side of a market can hold. Lowering mid-day can lock out new entries on existing markets." },
+  speed_max_strike_cluster_pct:  { min: 0.05, max: 1.0, step: 0.01, label: "Same-Strike Cluster Cap", format: "percentage", warning: "Max fraction of pool concentrated on markets within ±0.5% of one strike. Catches correlated risk." },
 };
 
 const COMMISSION_CONSTRAINTS: FeeConstraints = {
@@ -53,15 +61,19 @@ function getConstraints(feeType: string): FeeConstraints {
   return { min: 0, max: 1, step: 0.001, label: "Fee Rate", format: "percentage" };
 }
 
-function formatValue(value: number, format: "percentage" | "raw" | "multiplier"): string {
+function formatValue(value: number, format: FeeFormat): string {
   if (format === "raw") return String(value);
   if (format === "multiplier") return `${value}x`;
+  if (format === "currency") {
+    return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
   return `${(value * 100).toFixed(2)}%`;
 }
 
-function formatInputHint(format: "percentage" | "raw" | "multiplier"): string {
+function formatInputHint(format: FeeFormat): string {
   if (format === "raw") return "Enter the raw value (e.g. 1000)";
   if (format === "multiplier") return "Enter the multiplier (e.g. 1.5 = 1.5x)";
+  if (format === "currency") return "Enter the dollar amount (e.g. 1000000 = $1,000,000)";
   return "Enter as decimal (e.g. 0.005 = 0.5%)";
 }
 
