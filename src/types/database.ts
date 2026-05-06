@@ -127,6 +127,13 @@ export interface SpeedOracleLatest {
   asset: SpeedAsset;
   price: number;
   received_at: string;
+  /**
+   * Server-computed age in milliseconds at the moment of the API response.
+   * Present when sourced from /api/speed/oracle (post-hotfix). Absent
+   * when the row is synthesized client-side from the Binance WS feed
+   * (those use device-local timestamps and don't need it).
+   */
+  age_ms?: number;
 }
 
 // ---- Admin / misc types ----

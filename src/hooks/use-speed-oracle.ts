@@ -78,15 +78,54 @@ export function useSpeedOracleLatest(asset: SpeedAsset = "BTC") {
   const oracle = useFallback ? fallbackOracle : wsOracle;
 
   const price = oracle ? Number(oracle.price) : null;
-  const receivedAt = oracle ? new Date(oracle.received_at).getTime() : null;
-  const staleSeconds = receivedAt ? (now - receivedAt) / 1000 : null;
-  // T3.3: align client staleness gate with server's `speed_oracle_stale_seconds`
-  // (default 2s, admin-tunable from /admin/fees). 1.5x buffer for WS jitter
-  // means user sees "Reconnecting" before the trade RPC starts rejecting.
-  // Pre-T3.3 the threshold was hardcoded at 8s, which let the chart look
-  // fresh while every trade attempt rejected with "Oracle price stale".
+
+  // Source-aware staleness calculation. The two paths feed different timestamp
+  // sources and need different math:
+  //
+  //   - WS path: ws.observedAt is `Date.now()` set inside the browser when the
+  //     Binance WS message handler fires (see lib/binance/ws-client.ts:206).
+  //     Both endpoints of the comparison are device-local clocks, so device
+  //     clock skew vs the server doesn't matter. Just (now - observedAt).
+  //
+  //   - Fallback (polling) path: the server pre-computes `age_ms` at request
+  //     time using its own clock. The client adds elapsed time since the
+  //     response landed (TanStack's dataUpdatedAt), measured in device-local
+  //     wall time. Result: server-clock age + small device-clock delta.
+  //     Critically, NEITHER subtracts a server timestamp from a device
+  //     timestamp directly, so device clock skew can't trigger false stale.
+  //
+  // Pre-fix (commit 753eb86 / T3.3) used `Date.now() - received_at` for both
+  // paths. `received_at` from the polling endpoint is server-clock, so any
+  // device with >3s clock skew read as permanently stale.
+  let staleSeconds: number | null;
+  if (useFallback) {
+    if (
+      fallbackOracle &&
+      typeof fallbackOracle.age_ms === "number" &&
+      fallback.dataUpdatedAt > 0
+    ) {
+      const elapsedSinceFetchMs = Math.max(0, now - fallback.dataUpdatedAt);
+      staleSeconds = (fallbackOracle.age_ms + elapsedSinceFetchMs) / 1000;
+    } else {
+      staleSeconds = null;
+    }
+  } else if (ws.observedAt) {
+    staleSeconds = (now - ws.observedAt) / 1000;
+  } else {
+    staleSeconds = null;
+  }
+
+  // Threshold: align with server's `speed_oracle_stale_seconds` (default 2s,
+  // admin-tunable). 2.5× buffer with a 5s floor absorbs:
+  //   - 2s polling cadence (the next poll arrives up to 2s after the last)
+  //   - ~500ms transit lag
+  //   - momentary WS reconnect blips
+  //   - sub-second drift between server clock and device wall-clock during
+  //     the elapsed-since-fetch interval
+  // Tighter than the pre-T3 hardcoded 8s, so the chart no longer "looks fresh
+  // while server rejects" — but loose enough not to flicker on normal jitter.
   const serverStaleS = feeConfig.pricing.oracleStaleSeconds ?? 2;
-  const clientStaleThresholdS = Math.max(serverStaleS * 1.5, 3);
+  const clientStaleThresholdS = Math.max(serverStaleS * 2.5, 5);
   const isStale = staleSeconds === null || staleSeconds > clientStaleThresholdS;
 
   return {
