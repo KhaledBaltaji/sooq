@@ -62,8 +62,12 @@ export async function POST(request: Request) {
       }
     }
 
-    // Generate fresh 6-digit code.
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    // T5.1: Generate fresh 6-digit code with cryptographic RNG. Math.random
+    // is not cryptographically secure; predictable PRNG state across requests
+    // would let an attacker recover the seed and brute-force OTPs. crypto
+    // .randomInt sources from /dev/urandom (or equivalent) and is designed
+    // for this use case. Range [100000, 1000000) gives uniform 6-digit codes.
+    const code = crypto.randomInt(100000, 1000000).toString();
     const codeHash = hashOTP(code);
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
@@ -92,9 +96,12 @@ export async function POST(request: Request) {
     const result = await sendWhatsAppOTP(phone, code, "en");
 
     if (!result.success) {
+      // T5.12: don't log raw phone numbers (PII). The phone hash is enough
+      // to correlate failures from a single number across log lines without
+      // shipping the number itself to Sentry / the log aggregator.
       logger.error("VerifyWay delivery failed", {
         source: "auth/send-otp",
-        phone,
+        phone_hash: hashOTP(phone).slice(0, 12),
         errorMessage: result.error,
       });
       return NextResponse.json(

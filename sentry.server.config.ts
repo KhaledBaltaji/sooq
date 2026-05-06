@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
+import { scrubEvent, scrubBreadcrumb } from "@/lib/sentry-scrub";
 
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
@@ -13,4 +14,8 @@ Sentry.init({
     "NEXT_REDIRECT",
     "transformAlgorithm", // Node.js SSR TransformStream internal
   ],
+
+  // T5.7: redact PII (phone, email, balance, amounts, IP) before shipping.
+  beforeSend: scrubEvent,
+  beforeBreadcrumb: scrubBreadcrumb,
 });

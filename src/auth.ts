@@ -45,7 +45,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     sessionsTable: sessions,
     verificationTokensTable: verificationTokens,
   }),
-  session: { strategy: "jwt" },
+  // T5.13: cap session lifetime at 7 days. Default Auth.js JWT lifetime is
+  // 30 days — too long for a real-money fintech. updateAge means the JWT
+  // is silently re-signed on every authenticated request that's at least
+  // 24h since the last sign, so active users don't get logged out
+  // mid-session, but a stolen session token only stays valid for 24h
+  // unless the attacker keeps refreshing it.
+  session: {
+    strategy: "jwt",
+    maxAge: 7 * 24 * 60 * 60,   // 7 days absolute
+    updateAge: 24 * 60 * 60,    // refresh sliding window every 24h
+  },
   trustHost: true,
   providers: [
     Google({
