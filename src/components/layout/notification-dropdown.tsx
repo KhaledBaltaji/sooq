@@ -64,7 +64,8 @@ export function NotificationDropdown({ onOpen }: { onOpen?: () => void } = {}) {
     if (hrs < 24) return `${hrs}h`;
     const days = Math.floor(hrs / 24);
     if (days < 7) return `${days}d`;
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    // T6.7: locale-aware fallback for older notifications (≥7 days old).
+    return d.toLocaleDateString(locale, { month: "short", day: "numeric" });
   }
 
   return (

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useLocale } from "next-intl";
 import { useTransactions } from "@/hooks/use-transactions";
 import { useSession } from "@/lib/auth/hooks";
 import { SignInPrompt } from "@/components/auth/sign-in-prompt";
@@ -53,6 +54,9 @@ export default function TransactionsPage() {
   const { user, loading: authLoading } = useSession();
   const { transactions, loading } = useTransactions(100);
   const [filter, setFilter] = useState<Filter>("all");
+  // T6.7: locale-aware date headers (was hardcoded "en-US"). next-intl
+  // gives us "en" or "ar" — matches whatever the user has set.
+  const locale = useLocale();
 
   // Anonymous — prevent any REST/realtime fetch and show sign-in prompt
   if (!authLoading && !user) {
@@ -69,9 +73,9 @@ export default function TransactionsPage() {
     ? transactions.filter((tx) => FILTER_TYPES[filter]!.includes(tx.type))
     : transactions;
 
-  // Group by date
+  // Group by date (locale-aware)
   const grouped = filtered.reduce<Record<string, typeof filtered>>((acc, tx) => {
-    const date = new Date(tx.created_at).toLocaleDateString("en-US", {
+    const date = new Date(tx.created_at).toLocaleDateString(locale, {
       month: "short",
       day: "numeric",
       year: "numeric",

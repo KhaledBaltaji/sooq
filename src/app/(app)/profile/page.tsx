@@ -11,6 +11,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useLocale } from "next-intl";
 import { ResponsiveContainer, AreaChart, Area, YAxis } from "recharts";
 import {
   Settings,
@@ -56,6 +57,8 @@ export default function ProfilePage() {
   const { openWithdrawModal } = useWithdrawModal();
   const { positions, loading: posLoading } = useSpeedPositions();
   const { transactions, loading: txLoading } = useTransactions(30);
+  // T6.7: locale-aware join date (was hardcoded "en-US").
+  const locale = useLocale();
 
   const [pnlRange, setPnlRange] = useState<PnlRange>("ALL");
   const [activeTab, setActiveTab] = useState<"positions" | "activity">(
@@ -89,7 +92,7 @@ export default function ProfilePage() {
 
   const totalBalance = (user?.balance_usd ?? 0) + totalStaked;
   const joinDate = user
-    ? new Date(user.created_at).toLocaleDateString("en-US", {
+    ? new Date(user.created_at).toLocaleDateString(locale, {
         month: "short",
         year: "numeric",
       })

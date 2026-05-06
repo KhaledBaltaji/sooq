@@ -39,7 +39,12 @@ interface PopState {
   amount: number;
 }
 
-const TOAST_HOLD_MS = 4500;
+// T6.6: bumped 4500 → 9000ms. Real-money fintech: a "You won $500" toast
+// vanishing in 4.5s while the user is mid-tap on the next round meant
+// people frequently missed their own settlements. Doubling the hold time
+// gives a comfortable read window without making the UI feel sticky. Tap
+// to dismiss is still wired (toasts.map onClick → exiting=true).
+const TOAST_HOLD_MS = 9000;
 const TOAST_EXIT_MS = 280;
 // Match the .speed-pnl-pop / .speed-settlement-pop keyframe duration in
 // globals.css. Must clear the DOM after the animation completes so the
