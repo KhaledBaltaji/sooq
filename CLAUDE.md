@@ -34,25 +34,31 @@
 
 - **Asset:** BTC only at launch; `speed_assets` table is extensible (room for ETH/SOL etc.)
 - **Durations:** `5m`, `1h` (active). The `speed_duration` enum still carries `15m` and `24h` for historical FK integrity, but the trade RPC rejects them at runtime. New markets are 5m + 1h only.
-- **Stake range:** $1–$25 per bet (hardcoded retail caps), $200 cap per side per market
-- **Pricing:** `speed_fair_prob_over` from BSM-style normal CDF (oracle price, strike, time-left, IV) + half-spread offset (`speed_spread_pct = 0.05`, so +2.5% per side baked into `offered_prob`). Mig 369 raised spread 0.04 → 0.05 (absorbed the deleted phantom handle fee). IV from realized-vol cache (90s freshness) via `_speed_get_iv()`, falls back to `speed_iv_btc`. Spread layers: base + Seam 3 quadratic widening past ±0.45 + 3-tier late-window surcharge (last 60s +20%, last 30s +30%, last 10s reject).
+- **Stake range:** admin-tunable per duration via `fee_config.speed_stake_max_5m_usd` ($25 default) and `speed_stake_max_1h_usd` ($50 default). Per-user-per-market-per-side cap via `speed_cap_per_side_usd` ($200 default, mig 0028 reset from 0027's $1k). All admin-tunable from `/admin/fees`.
+- **Pricing (v2, mig 0028+):** `speed_fair_prob_over` from BSM-style normal CDF + half-spread offset (`speed_spread_pct = 0.05` baseline). Spread layers: base + Seam 3 quadratic widening past ±0.45 + **multiplicative** late-window escalation (last 60s × 1.4, last 30s × 1.8, last 10s reject). **No 0.99 saturation clamp** (dropped in mig 0028); instead, hard reject when `fair_prob_side > 0.97` or `< 0.03`. **Last-30s deep-tail block:** in last 30s, reject when `|fair_prob_side − 0.5| > 0.30` (closes Rami's pattern-matching exploit). IV from `_speed_get_iv()` (mig 0029) which reads `speed_volatility_cache` (multi-horizon, fail-closed when stale via `speed_iv_fail_closed` flag). Server NEVER prices with client-supplied IV; client `expected_iv` is stale-quote check ONLY.
 - **Oracle architecture (Group C, 0018):** EC2 worker at `services/speed-oracle/` subscribes to `wss://stream.binance.com:9443/ws/btcusdt@bookTicker` (~200–500 events/sec for BTCUSDT) and writes the top-of-book mid `(best_bid + best_ask)/2` throttled at 10 Hz to `speed_oracle_latest` + `speed_oracle_ticks`. Mid was chosen over @trade prices to eliminate the bid/ask sawtooth that showed up as visible chart bouncing on calm markets — mid is monotonic, no alternation, and is the standard derivatives reference price. Frontend reads via Binance WS DIRECTLY (`useBinanceTicker` → `lib/binance/ws-client.ts` `subscribeBookTicker`) for sub-second chart smoothness; falls back to `/api/speed/oracle` polling if Binance WS unreachable from the user's network. Trade execution + settlement still read `speed_oracle_latest` from the DB inside their RPCs — server is always the source of truth. Chart-side smoothing (Group C): autoscaleInfoProvider with 0.25% min Y-range floor + 0.85 EMA on the displayed range, RAF-coalesced `series.update()`, framer-motion `useSpring` on the live dot. Public health endpoint at `/api/health/oracle` reports oldest tick age; cron at `.github/workflows/oracle-monitor.yml` alerts on >5s staleness. Worker host: EC2 `i-03411906c55af48af` (`63.183.214.217`), systemd unit `speed-oracle.service`. Wick detector threshold tightened 0.003 → 0.0015 in mig 0018 (mid is much quieter than @trade, so tighter manipulation defense without false positives). Stream history: `@kline_1s` (initial) → `@trade` (Group B, mig 0017) → `@bookTicker` mid (Group C, mig 0018).
 - **Resolution:** exact oracle tick at-or-before `closes_at` (mig 369; pre-369 used 30s TWAP). Wick detector compares to 5s-before tick — if delta >0.1% (`speed_wick_threshold_pct`), falls back to median-of-last-30-ticks. Voids if no ticks (or wick fallback can't compute). `at_strike` is a push (refund). NO resolution fee — winners get exactly `stake / entry_offered_prob`. Per-market audit row written to `speed_market_settlement_audit`.
-- **Cashout:** continuous mark-to-market formula (mig 369): `cashout = stake × (mark_prob / entry_offered_prob) × decay_curve(duration, pct) × liq_discount(seconds_left)`. No winner/loser branch. Decay endpoints in fee_config keyed `speed_cashout_decay_<dur>_<bucket>`. Last 5s rejected entirely (last-tick arbitrage protection).
+- **Cashout (v2, mig 0028+):** profit-based margin (option C) — direction-matching invariant: if `mark_prob > entry_offered_prob` (chart moving user's way), cashout > stake **always**; if losing, cashout < stake. Formula: `fair_profit = stake × (mark_prob/entry_offered_prob − 1)`; winning side `cashout = stake + fair_profit × (1 − margin_winning)`; losing side `cashout = stake + fair_profit × (1 + margin_losing)`. Margin is base + saturation premium (winning) / desperation premium (losing) + late-window premium. Eight new fee_config keys (replace old decay matrix): `speed_cashout_winning_base_5m`, `_1h`, `speed_cashout_losing_base_5m`, `_1h`, `speed_cashout_saturation_coef`, `speed_cashout_desperation_coef`, `speed_cashout_late_window_winning_coef`, `_losing_coef`. Last 10s rejected (mig 0028 tightened from 5s). Last 30s near-decided block (mirror of entry-side defense). Defensive RPC-side invariant assertion raises on direction-matching violation.
 - **Strike capture:** market's strike is the oracle tick at-or-just-before `opens_at` (mig 0014). Header label and chart price match exactly at the open boundary.
-- **Risk caps (mig 369):** per-side 25% of pool collateral, per-user-per-market $200, per-user-daily-wager $500, same-strike-cluster 30% of pool, daily NGR floor -$500 (circuit breaker — halts new entries when settled NGR crosses; cashouts and resolution stay live; auto-resets at UTC midnight). Pool collateral configured via `speed_pool_collateral_usd` ($10k default).
-- **IV snapshot pattern:** trade and cashout RPCs accept optional `expected_iv`. If client snapshot drifts >10% from server's `_speed_get_iv()`, RPC returns `IV_DRIFT` so UI can re-render. Closes the quote/execute parity hole around RV cache expiry. IV used is recorded on `speed_trades.iv_used`.
+- **Risk caps (mig 0028 + 0031):** per-side 25% of pool collateral, per-user-per-market-per-side $200 (admin-tunable), same-strike-cluster 30% of pool, daily NGR floor -$500 (circuit breaker, auto-reset UTC midnight). Pool collateral via `speed_pool_collateral_usd` ($10k default). **No daily wager cap** (founder choice mig 0031). Replaced by soft guards: `speed_per_user_velocity_max` (30 bets/min hard reject), `speed_per_user_open_exposure_pct` (15% pool max liability across all open positions, hard reject), `speed_per_user_daily_handle_alert` ($5K threshold, telemetry-only via `speed_user_alerts` table).
+- **Quote/execute parity (mig 0030):** `/api/speed/quote` returns server-computed snapshot (spot, fair_prob, offered_prob, mark_prob, cashout_amount, seconds_left_bucket, iv_used). Client echoes back as `expected_*` params on subsequent execute. RPC rejects with `PARITY_DRIFT` if any param drifted beyond tolerance: 2% relative for probabilities + cashout_amount, 0.1% relative for spot, exact match for seconds_left_bucket. Closes race-window exploits and replaces the lone `expected_iv` check from mig 0016.
 
-## Revenue model (locked in W11)
+## Revenue model (locked in W12, pricing engine v2)
 
 | Source | How | Visible to user? |
 |---|---|---|
-| **AMM spread** | 5% baked into `offered_prob` at trade open (mig 369: was 4%, raised to absorb the deleted phantom handle fee) | Implicit (in the price) |
-| **Cashout premium** | Continuous decay × liq_discount on early exits, duration-specific (mig 369). Replaces the old winner/loser × bucket matrix. | Visible — user sees the cashout amount on the button. Fair_value display removed (casino framing — user compares cashout to stake, not to fair_value). |
-| **Handle fee** | DELETED (mig 369). Phantom row removed from `fee_config`. `speed_trades.handle_fee` column kept for historical rows; new trades store NULL. | n/a |
+| **AMM spread** | 5% baked into `offered_prob` at trade open. Multiplicative late-window escalation: × 1.4 last 60s, × 1.8 last 30s. Mig 0028 dropped the 0.99 saturation clamp that was collapsing this to zero on near-decided trades. | Implicit (in the price) |
+| **Cashout winning margin** | 2.5–5% (option C profit-based, mig 0028). Invisible — user sees a profitable cashout amount; platform booked margin = ratio of `(1 − margin)` × fair_profit. CFD-style spread on close. | Implicit |
+| **Cashout losing margin** | 8–14% (option C profit-based, mig 0028). User cuts loss; margin amplifies the loss vs fair value. CFD-style slippage on stops. | Implicit |
+| **Handle fee** | DELETED (mig 0013). | n/a |
 | **Resolution fee** | NEVER ADDED. Winners get clean `stake/offered_prob` payout. | n/a |
 
-**Math per market:** `platform_net = stakes_in − payouts_out` (industry-standard AMM accounting). Spread + cashout premium fall out as the platform's edge. Loser stakes flow into the cash pool that funds winner payouts; the loss itself is NOT direct revenue. See `/admin/stats` page.
+**Direction-matching invariant (founder hard rule, enforced by formula shape):**
+`mark_prob > entry_offered_prob ⇒ cashout > stake. Always.` Verified algebraically + by RPC-side defensive assertion + by `scripts/w12-cashout-direction.mjs` across 10K random scenarios.
+
+**Positioning:** "fair-trading sensation, CFD-style economics." Interface feels like Polymarket; extraction is calibrated like Plus500. Only the visible 20% of the experience (settlement, withdrawals, winning cashouts always > stake, push refunds) is fair; the invisible 80% (spreads, margins, late-window escalation, IV mispricing recovery) extracts CFD-grade revenue. Marketing copy uses "trade BTC fast" — never "casino" or "gambling".
+
+**Math per market:** `platform_net = stakes_in − payouts_out − cashouts_out − refunds_out` (industry-standard accounting). Spread + cashout margin fall out as the platform's edge. Loser stakes flow into the cash pool that funds winner payouts. See `/admin/fees` (mig 0028+ rework — admin-tunable per-fee inputs grouped by category).
 
 ## Commission, Branches, Agents — STRIPPED
 
@@ -69,7 +75,7 @@ Re-add in a later phase if growth needs it. Plan via a separate spec, not by un-
 
 ## Migrations
 
-15 Drizzle migrations under `drizzle/migrations/` (0000–0015). Run via `scripts/apply-*.mjs` against RDS. The Drizzle journal (`__drizzle_migrations` table) is in sync with `_journal.json` — backfilled in W11 cleanup.
+32 Drizzle migrations under `drizzle/migrations/` (0000–0031). Run via `scripts/apply-*.mjs` against RDS. The Drizzle journal (`__drizzle_migrations` table) is the source of truth; `_journal.json` was last backfilled at 0021 and is intentionally not updated for newer migrations (apply scripts handle that).
 
 | File | What |
 |---|---|
@@ -83,12 +89,28 @@ Re-add in a later phase if growth needs it. Plan via a separate spec, not by un-
 | `0007_chart_rpcs.sql` | `get_speed_klines`, `get_speed_price_history`, `get_speed_volatility` |
 | `0008_speed_oracle_ticks_unique.sql` | Unique index for ON CONFLICT dedupe |
 | `0009_speed_trade_enum_fix.sql` | text→speed_side cast fix + seed missing fee_config rows |
-| `0010_speed_cashout_multipliers.sql` | 18-row cashout multiplier matrix |
+| `0010_speed_cashout_multipliers.sql` | 18-row cashout multiplier matrix (replaced by mig 0016) |
 | `0011_cron_gap_and_cashout_shape.sql` | `_next_clean_boundary` tolerance + cashout `payout` alias |
 | `0012_help_center.sql` | help_collections + help_articles (admin CRUD content) |
 | `0013_drop_handle_fee_and_polish.sql` | Drop handle_fee, void-count fix, LN(0) guard, cashout advisory lock |
 | `0014_strike_at_opens_at.sql` | Strike captured from tick-at-opens_at, not live oracle |
 | `0015_admin_withdrawals_and_stats.sql` | No-PIN admin withdrawal queue + stats RPCs |
+| `0016_speed_casino_mode.sql` | Casino-mode pricing rewrite (was "mig 369"): exact-tick settlement, cashout multiplier matrix, IV snapshot pattern |
+| `0017_wick_threshold_tune.sql` | Wick detector threshold raise (0.001 → 0.003) for @trade noise |
+| `0018_oracle_mid_pricing.sql` | Oracle stream switched @trade → @bookTicker mid; wick threshold tightened back to 0.0015 |
+| `0019_speed_duration_add_1h.sql` | Add `1h` to `speed_duration` enum |
+| `0020_enable_1h_markets.sql` | Activate 1h markets (cron + market roll) |
+| `0021_resolve_type_cast_fix.sql` | Cast fix in `speed_resolve_market` |
+| `0022_cashout_kill_switch.sql` | `speed_cashout_enabled` fee_config flag for instant ops halt |
+| `0023_recent_speed_trades_rpc.sql` | Anonymized recent-trades feed for live tape |
+| `0024_admin_stats_grouped.sql` | Per-market grouped stats for `/admin/stats` |
+| `0025_withdrawal_fee.sql` | Per-asset withdrawal fee structure |
+| `0026_money_admin.sql` | Admin deposits queue + manual balance adjust + money ledger |
+| `0027_speed_stake_caps_tunable.sql` | Stake max + per-side cap tunable from fee_config (raised both to "no cap" for VIP testing) |
+| `0028_pricing_engine_v2.sql` | **Pricing engine v2 core.** Drops 0.99 clamp; hard rejects on `fair_prob > 0.97 / < 0.03`; multiplicative late-window spread escalation (1.4× / 1.8×); profit-based cashout (option C — direction-matching invariant); daily cap timezone fix; cap defaults reset to admin-tunable sane values; kills `expected_iv` as pricing input (server-only IV). |
+| `0029_iv_cache_and_helper.sql` | CREATE `speed_volatility_cache` table + `_speed_get_iv()` helper. Multi-horizon RV cache (5m, 15m, 1h, 24h, ewma). Fail-closed mode toggleable via `speed_iv_fail_closed`. RPCs refactored to call helper. |
+| `0030_quote_execute_parity.sql` | Full quote/execute parity. New params: `expected_spot`, `expected_seconds_left_bucket`, `expected_fair_prob`, `expected_offered_prob` (and `expected_mark_prob` + `expected_cashout_amount` for cashout). Drift tolerances tunable. |
+| `0031_schema_sync_caps_softguards.sql` | Drops daily wager cap (founder choice). Adds soft guards: per-user velocity limiter (30/min), per-user open-exposure (15% pool), daily-handle telemetry alert ($5K). Creates `speed_user_alerts` table. |
 
 ## Environments
 

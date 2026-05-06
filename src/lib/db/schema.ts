@@ -350,7 +350,13 @@ export const speedTrades = pgTable(
     fairProb: numeric("fair_prob", { precision: 6, scale: 4 }).notNull(),
     offeredProb: numeric("offered_prob", { precision: 6, scale: 4 }).notNull(),
     handleFee: numeric("handle_fee", { precision: 18, scale: 6 }),
+    // Mig 0028+: stores the applied cashout margin (option C profit-based formula).
+    // Pre-mig-0028 rows store the old decay multiplier — semantics differ; use
+    // created_at to disambiguate. Column kept under same name for backwards
+    // compatibility with existing dashboards/queries.
     cashoutMultiplier: numeric("cashout_multiplier", { precision: 6, scale: 4 }),
+    // Mig 0016: IV used at trade execution. NULL for pre-0016 trades.
+    ivUsed: numeric("iv_used", { precision: 8, scale: 6 }),
     idempotencyKey: text("idempotency_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -405,6 +411,46 @@ export const speedOracleTicks = pgTable(
   },
   (t) => ({
     assetTsIdx: index("speed_oracle_ticks_asset_ts_idx").on(t.asset, t.ts),
+  })
+);
+
+// Mig 0029: realized volatility cache. Multi-horizon (5m, 15m, 1h, 24h, ewma).
+// Written by services/speed-oracle/ at 30s cadence. Read by _speed_get_iv()
+// inside speed_execute_trade and speed_execute_cashout.
+export const speedVolatilityCache = pgTable(
+  "speed_volatility_cache",
+  {
+    asset: text("asset").notNull(),
+    horizon: text("horizon").notNull(),
+    sigmaAnnualized: numeric("sigma_annualized", { precision: 8, scale: 6 }).notNull(),
+    sampleCount: integer("sample_count"),
+    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.asset, t.horizon] }),
+    computedIdx: index("speed_volatility_cache_computed_idx").on(t.computedAt),
+  })
+);
+
+// Mig 0031: per-user behavioral alerts (velocity, exposure, daily-handle).
+// daily_handle is one-row-per-user-per-day (unique constraint). Read by
+// /admin/fees alert feed tile.
+export const speedUserAlerts = pgTable(
+  "speed_user_alerts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    alertType: text("alert_type").notNull(),
+    alertDate: timestamp("alert_date", { mode: "date" }).notNull(),
+    threshold: numeric("threshold", { precision: 18, scale: 2 }),
+    observed: numeric("observed", { precision: 18, scale: 2 }),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    recentIdx: index("speed_user_alerts_recent_idx").on(t.createdAt),
   })
 );
 
@@ -521,6 +567,10 @@ export type SpeedMarket = typeof speedMarkets.$inferSelect;
 export type SpeedPosition = typeof speedPositions.$inferSelect;
 export type NewSpeedPosition = typeof speedPositions.$inferInsert;
 export type SpeedTrade = typeof speedTrades.$inferSelect;
+export type SpeedVolatilityCache = typeof speedVolatilityCache.$inferSelect;
+export type NewSpeedVolatilityCache = typeof speedVolatilityCache.$inferInsert;
+export type SpeedUserAlert = typeof speedUserAlerts.$inferSelect;
+export type NewSpeedUserAlert = typeof speedUserAlerts.$inferInsert;
 export type Notification = typeof notifications.$inferSelect;
 export type HelpCollection = typeof helpCollections.$inferSelect;
 export type NewHelpCollection = typeof helpCollections.$inferInsert;

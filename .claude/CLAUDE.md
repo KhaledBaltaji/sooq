@@ -55,14 +55,18 @@ NEVER start implementing without understanding what you're touching first.
 - Phases W1–W11 are done. W12 (production cutover) is parked until Khaled greenlights relaunch.
 - LMSR / branches / commission / demo / prelaunch / handle_fee / resolution_fee are all stripped or never wired in. Don't re-add without a fresh spec.
 
-## Locked-in Financial Decisions (current as of mig 369)
+## Locked-in Financial Decisions (current as of mig 0028–0031, pricing engine v2)
 
-- **No handle fee.** Mig 369 deleted `speed_handle_fee_pct` from `fee_config` entirely; trade RPC no longer touches `speed_trades.handle_fee` (column kept for pre-mig-369 historical rows, new trades store NULL). The 1% phantom fee was rolled into the spread.
+- **No handle fee.** Mig 0013 deleted `speed_handle_fee_pct`. New trades store NULL in `speed_trades.handle_fee` (column kept for historical rows).
 - **No resolution fee.** Winners get exactly `stake / entry_offered_prob`. No haircut.
-- **Sole revenue:** AMM spread (5% baseline, baked into `offered_prob` — raised from 4% in mig 369 to absorb the deleted handle fee) + cashout premium (continuous duration-specific decay × liq_discount, mig 369). Cashout premium is the casino moneymaker; no winner/loser branch.
-- **Active durations:** 5m + 1h only. Trade RPC rejects 15m / 24h at runtime. Enum values stay for historical FK integrity.
-- **Risk caps (mig 369):** per-side 25% of pool collateral, per-user-per-market $200, per-user-daily $500, same-strike-cluster 30% of pool, daily NGR floor -$500 (auto-resets at UTC midnight). All tunable via `fee_config`.
-- **Settlement:** exact oracle tick at-or-before `closes_at` (mig 369; pre-369 used 30s TWAP). Wick detector with 0.15% threshold (mig 0018; pre-0018 was 0.30% to absorb @trade noise; now using bookTicker mid which is much quieter) falls back to median-of-30-ticks. Audit row to `speed_market_settlement_audit`.
-- **Late window (entries):** last 60s +20% spread, last 30s +30% spread, last 10s reject. Cashouts: last 5s reject (last-tick arbitrage protection).
-- **Cash pool ≠ revenue.** Open positions' stakes are held funds; the platform's `net = stakes_in − payouts_out − cashout_out − refund_out` per UTC day, cached in `speed_daily_ngr`.
-- **Withdrawals are no-PIN.** Admin auth via `is_admin` flag through Auth.js + `app.user_id` GUC. New flow uses `admin_approve_withdrawal` / `admin_reject_withdrawal` / `admin_mark_withdrawal_sent_v2` from mig 0015. **Withdrawal SLA is the moat — sub-2-min for amounts under $500. Casino-mode pricing is conditional on this staying solid.**
+- **Active durations:** 5m + 1h only. Trade RPC rejects 15m / 24h at runtime. Enum values stay for FK integrity.
+- **Pricing engine v2 (mig 0028):** No 0.99 saturation clamp. Hard reject when `fair_prob_side > 0.97` or `< 0.03`. In last 30s, additionally reject when `|fair − 0.5| > 0.30` (closes Rami's pattern-matching exploit). Multiplicative late-window spread escalation (× 1.4 last 60s, × 1.8 last 30s). Last 10s rejected entirely.
+- **IV (mig 0029):** read from `speed_volatility_cache` via `_speed_get_iv()` helper. Multi-horizon (5m, 15m, 1h, 24h, ewma). Fail-closed mode toggleable via `speed_iv_fail_closed`. Server NEVER prices with client-supplied IV.
+- **Cashout (mig 0028, option C profit-based):** direction-matching invariant — `mark_prob > entry_offered_prob ⇒ cashout > stake. Always.` Winning side margin: 2.5–5% (CFD-style invisible spread on close). Losing side margin: 8–14% (CFD-style slippage on stops). 8 fee_config keys (replace old 10-key decay matrix). Last 10s rejected. Last 30s near-decided block.
+- **Quote/execute parity (mig 0030):** `/api/speed/quote` returns snapshot; client echoes as `expected_*` params; RPC rejects with `PARITY_DRIFT` on any drift beyond tolerance (2% probs, 0.1% spot, exact bucket).
+- **Risk caps (mig 0028 + 0031):** per-side 25% of pool collateral, per-user-per-market-per-side $200 (admin-tunable), same-strike-cluster 30% of pool, daily NGR floor -$500 circuit breaker (auto-reset UTC midnight). Pool collateral via `speed_pool_collateral_usd` ($10k default).
+- **No daily wager cap (founder choice, mig 0031).** Replaced by soft guards: per-user velocity limiter (30 bets/min hard reject), per-user open-exposure (15% pool hard reject), per-user daily-handle telemetry alert ($5K threshold, no enforcement, logs to `speed_user_alerts`).
+- **Settlement:** exact oracle tick at-or-before `closes_at`. Wick detector with 0.15% threshold (mig 0018) falls back to median-of-30-ticks. Audit row to `speed_market_settlement_audit`.
+- **Cash pool ≠ revenue.** Platform `net = stakes_in − payouts_out − cashouts_out − refunds_out` per UTC day, cached in `speed_daily_ngr`.
+- **Withdrawals are no-PIN.** Admin auth via `is_admin` flag + `app.user_id` GUC. Flow: `admin_approve_withdrawal` / `admin_reject_withdrawal` / `admin_mark_withdrawal_sent_v2` (mig 0015). **At launch withdrawal SLA starts at 15–60min with risk scoring + manual review**, tightening to sub-2min after fraud profile is known (Codex pushback: sub-2min at launch is dangerous, not the moat — fraud drains before review).
+- **Positioning: "fair trading sensation, CFD economics."** UX feels like Polymarket; extraction is Plus500-grade. Direction-matching cashout, exact-tick settlement, withdrawals work — those are non-negotiably fair. Spread, late-window escalation, cashout margin — invisible, baked into prices. Marketing uses "trade" never "casino".

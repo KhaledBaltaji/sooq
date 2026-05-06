@@ -105,6 +105,40 @@ const WATCHDOG_BOOT_GRACE_MS = 30_000;
 // well within the 2s execution-gate threshold.
 const FLUSH_INTERVAL_MS = 100;
 
+// Mig 0029: realized volatility cache. Computed from speed_oracle_ticks
+// at multiple horizons, written to speed_volatility_cache. Read by
+// _speed_get_iv() inside speed_execute_trade and speed_execute_cashout.
+//
+// Cadence: 5s. Codex review caught this: 30s cadence vs the 5m freshness
+// gate of 10s left a 20s window every 30s where the cache was stale and
+// (under fail-closed) the trade RPC would reject. 5s cadence + 30s
+// freshness for 5m gives us 6× headroom.
+const RV_INTERVAL_MS = 5_000;
+const RV_HORIZONS = [
+  { label: "5m",  windowSeconds: 5 * 60 },
+  { label: "15m", windowSeconds: 15 * 60 },
+  { label: "1h",  windowSeconds: 60 * 60 },
+  { label: "24h", windowSeconds: 24 * 60 * 60 },
+] as const;
+const SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60;
+// EWMA blend weights. Newer horizons weighted higher; sums to 1.
+// 5m: 50%, 15m: 25%, 1h: 15%, 24h: 10%. Tunable; current values err
+// toward responsiveness over stability for fast-cycle markets.
+const RV_EWMA_WEIGHTS: Record<string, number> = {
+  "5m":  0.50,
+  "15m": 0.25,
+  "1h":  0.15,
+  "24h": 0.10,
+};
+// Min sample count to publish a horizon. Below this, we have too few
+// data points for sigma to be meaningful — skip the write.
+const RV_MIN_SAMPLES = 20;
+// Floor / ceiling for sigma_annualized matching the CHECK constraint
+// in mig 0029. Out-of-range gets clamped to the nearest bound (rather
+// than rejected) so we don't drop the row entirely on calm markets.
+const RV_SIGMA_FLOOR = 0.05;
+const RV_SIGMA_CEILING = 2.0;
+
 if (SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,
@@ -191,6 +225,185 @@ function backoffMs(): number {
   const attempt = Math.min(state.reconnectAttempts, 10);
   const ms = Math.min(RECONNECT_MIN_MS * Math.pow(2, attempt), RECONNECT_MAX_MS);
   return ms + Math.floor(Math.random() * 500);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Mig 0029: realized volatility writer
+// ────────────────────────────────────────────────────────────────────
+//
+// Pulls the last `windowSeconds` of ticks for an asset, computes the
+// standard deviation of per-tick log returns, and scales to annualized
+// sigma using the per-tick interval (NOT the window length).
+//
+// Math (corrected per Codex review):
+//   For N ticks at average interval dt = window/(N-1):
+//     log_return_i = ln(p_{i+1} / p_i)         (N-1 returns)
+//     sigma_per_tick = stddev(log_returns)     (per-tick volatility)
+//     sigma_annualized = sigma_per_tick * sqrt(SECONDS_PER_YEAR / dt)
+//
+// Why per-tick, not per-window: stddev of log_returns measures the
+// volatility of a single ~100ms interval, not the volatility over the
+// whole window. To annualize, scale by sqrt(year_seconds / dt). The
+// previous formula sqrt(year/window) understated vol by sqrt(N), which
+// at 10Hz over 5m is ~55× — would have replaced "stuck at 0.60" with
+// "stuck near 0.05 floor".
+//
+// Brownian assumption: log returns are i.i.d. with constant per-second
+// variance σ². Then variance over dt seconds is σ²·dt, so stddev over
+// dt is σ·√dt = sigma_per_tick. Solving: σ = sigma_per_tick / √dt =
+// sigma_per_tick · √(1/dt). Annualizing to 1 year of seconds: σ_year =
+// σ · √year_seconds = sigma_per_tick · √(year_seconds / dt). ✓
+
+interface RvSummary {
+  horizonLabel: string;
+  windowSeconds: number;
+  sigmaAnnualized: number;
+  sampleCount: number;
+}
+
+function clampSigma(sigma: number): number {
+  if (!Number.isFinite(sigma) || sigma <= 0) return RV_SIGMA_FLOOR;
+  if (sigma < RV_SIGMA_FLOOR) return RV_SIGMA_FLOOR;
+  if (sigma > RV_SIGMA_CEILING) return RV_SIGMA_CEILING;
+  return sigma;
+}
+
+async function computeRvForHorizon(
+  client: import("pg").PoolClient,
+  asset: string,
+  windowSeconds: number
+): Promise<{ sigmaAnnualized: number; sampleCount: number } | null> {
+  // Fetch ticks ordered by ts. The unique index on (asset, ts, source)
+  // means duplicates are already deduped at write time.
+  const result = await client.query<{ price: string }>(
+    `SELECT price::text AS price
+       FROM speed_oracle_ticks
+      WHERE asset = $1
+        AND ts > NOW() - ($2 || ' seconds')::interval
+      ORDER BY ts ASC`,
+    [asset, windowSeconds]
+  );
+
+  const n = result.rows.length;
+  if (n < RV_MIN_SAMPLES) return null;
+
+  // Compute log returns between consecutive ticks.
+  const returns: number[] = [];
+  let prevPrice = Number(result.rows[0].price);
+  for (let i = 1; i < n; i++) {
+    const p = Number(result.rows[i].price);
+    if (p > 0 && prevPrice > 0) {
+      returns.push(Math.log(p / prevPrice));
+    }
+    prevPrice = p;
+  }
+  if (returns.length < RV_MIN_SAMPLES) return null;
+
+  // Sample standard deviation (n-1 denominator) of per-tick log returns.
+  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const variance =
+    returns.reduce((acc, r) => acc + (r - mean) ** 2, 0) /
+    Math.max(1, returns.length - 1);
+  const sigmaPerTick = Math.sqrt(variance);
+
+  // Annualize using the AVERAGE per-tick interval (not the window length).
+  // dt = window_seconds / N_returns. Then sigma_annualized =
+  // sigma_per_tick × sqrt(year_seconds / dt). Equivalent to
+  // sigma_per_tick × sqrt(year_seconds × N_returns / window_seconds).
+  const dtSeconds = windowSeconds / returns.length;
+  const sigmaAnnualized = sigmaPerTick * Math.sqrt(SECONDS_PER_YEAR / dtSeconds);
+
+  return {
+    sigmaAnnualized: clampSigma(sigmaAnnualized),
+    sampleCount: returns.length,
+  };
+}
+
+async function writeRvSnapshot(): Promise<void> {
+  // Skip if buffer is empty (no ticks at all yet).
+  if (state.lastTickAt === 0) return;
+
+  const client = await pool.connect();
+  try {
+    const summaries: RvSummary[] = [];
+    for (const horizon of RV_HORIZONS) {
+      const rv = await computeRvForHorizon(client, ASSET, horizon.windowSeconds);
+      if (rv) {
+        summaries.push({
+          horizonLabel: horizon.label,
+          windowSeconds: horizon.windowSeconds,
+          sigmaAnnualized: rv.sigmaAnnualized,
+          sampleCount: rv.sampleCount,
+        });
+      }
+    }
+
+    if (summaries.length === 0) {
+      // Not enough data yet (cold start, recent restart, gap). Skip.
+      return;
+    }
+
+    // Compute EWMA blend if all four horizons present. Skip otherwise.
+    let ewmaSigma: number | null = null;
+    if (summaries.length === RV_HORIZONS.length) {
+      let weighted = 0;
+      let weightSum = 0;
+      for (const s of summaries) {
+        const w = RV_EWMA_WEIGHTS[s.horizonLabel] ?? 0;
+        weighted += s.sigmaAnnualized * w;
+        weightSum += w;
+      }
+      if (weightSum > 0) {
+        ewmaSigma = clampSigma(weighted / weightSum);
+      }
+    }
+
+    // Upsert all horizons in one transaction.
+    await client.query("BEGIN");
+    for (const s of summaries) {
+      await client.query(
+        `INSERT INTO speed_volatility_cache
+           (asset, horizon, sigma_annualized, sample_count, computed_at)
+         VALUES ($1, $2, $3::numeric, $4, NOW())
+         ON CONFLICT (asset, horizon) DO UPDATE
+           SET sigma_annualized = EXCLUDED.sigma_annualized,
+               sample_count = EXCLUDED.sample_count,
+               computed_at = EXCLUDED.computed_at`,
+        [ASSET, s.horizonLabel, s.sigmaAnnualized.toFixed(6), s.sampleCount]
+      );
+    }
+    if (ewmaSigma !== null) {
+      // EWMA row uses sample_count = sum of horizon samples for visibility.
+      const totalSamples = summaries.reduce((a, b) => a + b.sampleCount, 0);
+      await client.query(
+        `INSERT INTO speed_volatility_cache
+           (asset, horizon, sigma_annualized, sample_count, computed_at)
+         VALUES ($1, 'ewma', $2::numeric, $3, NOW())
+         ON CONFLICT (asset, horizon) DO UPDATE
+           SET sigma_annualized = EXCLUDED.sigma_annualized,
+               sample_count = EXCLUDED.sample_count,
+               computed_at = EXCLUDED.computed_at`,
+        [ASSET, ewmaSigma.toFixed(6), totalSamples]
+      );
+    }
+    await client.query("COMMIT");
+
+    // Heartbeat log every RV write so we can spot-check from the EC2 logs.
+    const summary = summaries
+      .map((s) => `${s.horizonLabel}=${(s.sigmaAnnualized * 100).toFixed(2)}%`)
+      .join(" ");
+    const ewmaLog = ewmaSigma !== null
+      ? ` ewma=${(ewmaSigma * 100).toFixed(2)}%`
+      : "";
+    console.log(`[oracle][rv] ${summary}${ewmaLog}`);
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[oracle][rv] write failed: ${msg}`);
+    reportFailure("rv-write", err);
+  } finally {
+    client.release();
+  }
 }
 
 async function writeTick(trade: BufferedTrade): Promise<void> {
@@ -332,6 +545,15 @@ setInterval(() => {
   state.buffer = null;
   void writeTick(trade);
 }, FLUSH_INTERVAL_MS);
+
+// Mig 0029: realized volatility cache writer. 30s cadence — fast enough
+// that the helper's 10s/30s freshness gates stay green between writes,
+// slow enough that we don't load the DB with redundant computation.
+// Skips when no ticks have arrived (lastTickAt === 0) or when a horizon
+// has insufficient samples.
+setInterval(() => {
+  void writeRvSnapshot();
+}, RV_INTERVAL_MS);
 
 setInterval(() => {
   const ws = state.ws;
