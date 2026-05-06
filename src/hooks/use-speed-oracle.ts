@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { SpeedAsset, SpeedOracleLatest } from "@/types/database";
 import { useBinanceTicker } from "@/hooks/use-binance-ticker";
+import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
 
 interface ListResponse {
   oracle: SpeedOracleLatest[];
@@ -29,6 +30,7 @@ const ASSET_TO_BINANCE_SYMBOL: Record<SpeedAsset, string> = {
  */
 export function useSpeedOracleLatest(asset: SpeedAsset = "BTC") {
   const [now, setNow] = useState<number>(Date.now());
+  const feeConfig = useSpeedFeeConfig();
 
   // 1Hz tick drives countdown + staleness UI even if oracle pauses.
   useEffect(() => {
@@ -78,9 +80,14 @@ export function useSpeedOracleLatest(asset: SpeedAsset = "BTC") {
   const price = oracle ? Number(oracle.price) : null;
   const receivedAt = oracle ? new Date(oracle.received_at).getTime() : null;
   const staleSeconds = receivedAt ? (now - receivedAt) / 1000 : null;
-  // 8s threshold catches outages while tolerating normal poll jitter.
-  // Authoritative cut-off (2s) lives server-side in speed_execute_trade.
-  const isStale = staleSeconds === null || staleSeconds > 8;
+  // T3.3: align client staleness gate with server's `speed_oracle_stale_seconds`
+  // (default 2s, admin-tunable from /admin/fees). 1.5x buffer for WS jitter
+  // means user sees "Reconnecting" before the trade RPC starts rejecting.
+  // Pre-T3.3 the threshold was hardcoded at 8s, which let the chart look
+  // fresh while every trade attempt rejected with "Oracle price stale".
+  const serverStaleS = feeConfig.pricing.oracleStaleSeconds ?? 2;
+  const clientStaleThresholdS = Math.max(serverStaleS * 1.5, 3);
+  const isStale = staleSeconds === null || staleSeconds > clientStaleThresholdS;
 
   return {
     oracle,

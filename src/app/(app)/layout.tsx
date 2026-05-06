@@ -5,6 +5,7 @@ import { CompleteProfileModal } from "@/components/auth/complete-profile-modal";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { PageTransitionProvider } from "@/components/providers/page-transition-provider";
 import { BottomNavGate } from "@/components/layout/bottom-nav-gate";
+import { OfflineBanner } from "@/components/layout/offline-banner";
 import { SpeedSettlementToaster } from "@/components/speed/speed-settlement-toaster";
 
 export default function AppLayout({
@@ -16,6 +17,10 @@ export default function AppLayout({
 }) {
   return (
     <div className="min-h-screen bg-bg">
+      {/* T3.6: shows when navigator.onLine flips false; no-op otherwise. */}
+      <ErrorBoundary fallback={null}>
+        <OfflineBanner />
+      </ErrorBoundary>
       <Suspense>
         <TopNav />
       </Suspense>

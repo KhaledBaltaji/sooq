@@ -82,6 +82,15 @@ export function SpeedTradePanel({
   // displayed offered prob matches what `speed_execute_trade` will price
   // the bet at. Falls back to fee_config IV when RV is missing.
   const sigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
+
+  // T3.1: gate trade entry on RV cache being loaded. If the kill switch
+  // for RV is OFF, the server is reading speed_iv_btc directly, so the
+  // gate is a no-op (any sigma the client uses matches).
+  // If RV is ON but the snapshot hasn't arrived yet, sigma falls back to
+  // the static IV — which may differ from the RV the server is using by
+  // more than the IV_DRIFT tolerance, producing a confusing reject after
+  // the user taps Bet. Block until snapshot arrives.
+  const rvLoaded = !feeConfig.useRealizedVol || Boolean(realizedVol?.[market.asset]);
   const fairOver = livePrice
     ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
     : null;
@@ -126,7 +135,8 @@ export function SpeedTradePanel({
     hasBalance &&
     !loading &&
     !lateRejected &&
-    !nearDecidedReject;
+    !nearDecidedReject &&
+    rvLoaded;
 
   const handleAmountInput = useCallback((val: string) => {
     const cleaned = val.replace(/[^0-9.]/g, "");

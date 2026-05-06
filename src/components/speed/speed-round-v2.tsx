@@ -674,6 +674,8 @@ function Dock({
   const strike = Number(market.strike_price);
   const sigma =
     fee.realizedVol?.[market.asset]?.rv ?? fee.iv[market.asset] ?? 0.6;
+  // T3.1: gate Dock bet buttons on RV snapshot being loaded.
+  const rvLoaded = !fee.useRealizedVol || Boolean(fee.realizedVol?.[market.asset]);
   const fairOver =
     livePrice !== null && !isStale
       ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
@@ -707,9 +709,9 @@ function Dock({
       ? isEntryRejectedNearDecided(fairDownForGate, secondsLeft, fee)
       : false;
   const canBetOver =
-    !expired && !isStale && fairOver !== null && stake > 0 && !loading && !upBlocked;
+    !expired && !isStale && fairOver !== null && stake > 0 && !loading && !upBlocked && rvLoaded;
   const canBetUnder =
-    !expired && !isStale && fairOver !== null && stake > 0 && !loading && !downBlocked;
+    !expired && !isStale && fairOver !== null && stake > 0 && !loading && !downBlocked && rvLoaded;
 
   const handleBet = useCallback(
     async (side: SpeedSide) => {

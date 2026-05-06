@@ -83,6 +83,9 @@ export function SpeedMobileTradeBar({
     const strike = Number(market.strike_price);
     // Mig 0028+: prefer realized-vol σ from RV cache so client matches server.
     const sigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
+    // T3.1: gate on RV cache being loaded — see speed-trade-panel.tsx for
+    // the rationale. When useRealizedVol is OFF, gate is a no-op.
+    const rvLoaded = !feeConfig.useRealizedVol || Boolean(realizedVol?.[market.asset]);
     const fairOver =
       livePrice && !isStale
         ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
@@ -112,10 +115,10 @@ export function SpeedMobileTradeBar({
         : false;
     const canBetOver =
       !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
-      !lateRejected && !fairOverGate;
+      !lateRejected && !fairOverGate && rvLoaded;
     const canBetUnder =
       !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
-      !lateRejected && !fairUnderGate;
+      !lateRejected && !fairUnderGate && rvLoaded;
 
     const handleBet = async (side: SpeedSide) => {
       const allowed = side === "over" ? canBetOver : canBetUnder;
