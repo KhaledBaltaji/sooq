@@ -26,12 +26,12 @@ export type SpeedChartType = "candle" | "line";
 export const SPEED_CHART_TYPE_KEY = "speed-chart-type";
 
 export function readSpeedChartType(): SpeedChartType {
-  if (typeof window === "undefined") return "candle";
+  if (typeof window === "undefined") return "line";
   try {
     const v = window.localStorage.getItem(SPEED_CHART_TYPE_KEY);
-    return v === "line" ? "line" : "candle";
+    return v === "candle" ? "candle" : "line";
   } catch {
-    return "candle";
+    return "line";
   }
 }
 
@@ -105,7 +105,7 @@ export function SpeedPriceChart({
   status,
   hideStrikeLine = false,
 }: SpeedPriceChartProps) {
-  const chartType: SpeedChartType = chartTypeProp ?? "candle";
+  const chartType: SpeedChartType = chartTypeProp ?? "line";
   // Anything past "open" means the market has closed (resolving / resolved /
   // voided). Used by every effect that touches the live oracle so the
   // chart visually freezes at closes_at instead of trailing the still-
