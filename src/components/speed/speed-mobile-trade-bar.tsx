@@ -1,18 +1,26 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Minus, Plus } from "lucide-react";
+import { Loader2, Minus, Plus } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { cn, triggerHapticConfirm } from "@/lib/utils";
+import { cn, formatCurrency, triggerHapticConfirm } from "@/lib/utils";
 import {
   CASHOUT_REJECT_WINDOW_SECONDS,
-  durationToSeconds,
-  speedCashoutMultiplier,
+  computeCashoutAmount,
+  ENTRY_LATE_WINDOW_REJECT_S,
+  isCashoutRejectedNearDecided,
+  isEntryRejectedNearDecided,
+  speedCashoutMargin,
   speedFairProbOver,
-  speedLiqDiscount,
   speedOfferedProb,
+  speedSecondsLeftBucket,
 } from "@/lib/speed/pricing";
-import { useSpeedExecuteTrade, useSpeedCashout } from "@/hooks/use-speed-trade";
+import {
+  useSpeedExecuteTrade,
+  useSpeedCashout,
+  type CashoutParitySnapshot,
+  type TradeParitySnapshot,
+} from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
 import type { SpeedMarket, SpeedPosition, SpeedSide } from "@/types/database";
 
@@ -57,9 +65,8 @@ export function SpeedMobileTradeBar({
   const { placeBet, loading: betLoading } = useSpeedExecuteTrade();
   const { cashout, loading: cashLoading } = useSpeedCashout();
   const feeConfig = useSpeedFeeConfig();
-  const { iv, spread, extremeSpreadCoeff, realizedVol } = feeConfig;
+  const { iv, realizedVol } = feeConfig;
   const [stake, setStake] = useState<number>(5);
-  const totalSeconds = durationToSeconds(market.duration);
   const closesAt = new Date(market.closes_at).getTime();
   const [now, setNow] = useState<number>(Date.now());
 
@@ -74,31 +81,57 @@ export function SpeedMobileTradeBar({
   // ── No-position branch: stake stepper + Up/Down ────────────────────────
   if (!position || position.status !== "open") {
     const strike = Number(market.strike_price);
-    // Mig 352 (Seam 4): prefer realized-vol σ from RV cache so client matches server.
+    // Mig 0028+: prefer realized-vol σ from RV cache so client matches server.
     const sigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
     const fairOver =
       livePrice && !isStale
         ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
         : null;
-    // Mig 352 (Seam 3): speedOfferedProb no longer returns null — widens spread instead.
-    // Mig 356: secondsLeft enables late-window surcharge in the last 30s.
+    // Mig 0028: multiplicative late-window spread escalation; clamp to [0.03, 0.97].
     const offeredOver =
-      fairOver !== null ? speedOfferedProb(fairOver, "over", spread, extremeSpreadCoeff, secondsLeft) : null;
+      fairOver !== null ? speedOfferedProb(fairOver, "over", feeConfig, secondsLeft) : null;
     const offeredUnder =
-      fairOver !== null ? speedOfferedProb(fairOver, "under", spread, extremeSpreadCoeff, secondsLeft) : null;
+      fairOver !== null ? speedOfferedProb(fairOver, "under", feeConfig, secondsLeft) : null;
 
     const upPayout = offeredOver ? stake / offeredOver : null;
     const downPayout = offeredUnder ? stake / offeredUnder : null;
     const upProfit = upPayout !== null ? upPayout - stake : null;
     const downProfit = downPayout !== null ? downPayout - stake : null;
 
-    const canBet = !expired && !isStale && fairOver !== null && stake > 0 && !betLoading;
+    // Mig 0028 entry-side gating mirrored on client.
+    const lateRejectS =
+      feeConfig.pricing.cashoutLateRejectS ?? ENTRY_LATE_WINDOW_REJECT_S;
+    const lateRejected = secondsLeft < lateRejectS;
+    const fairOverGate =
+      fairOver !== null
+        ? isEntryRejectedNearDecided(fairOver, secondsLeft, feeConfig)
+        : false;
+    const fairUnderGate =
+      fairOver !== null
+        ? isEntryRejectedNearDecided(1 - fairOver, secondsLeft, feeConfig)
+        : false;
+    const canBetOver =
+      !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
+      !lateRejected && !fairOverGate;
+    const canBetUnder =
+      !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
+      !lateRejected && !fairUnderGate;
 
     const handleBet = async (side: SpeedSide) => {
-      if (!canBet) return;
+      const allowed = side === "over" ? canBetOver : canBetUnder;
+      if (!allowed) return;
       triggerHapticConfirm();
-      // Mig 369: send IV snapshot for quote/execute parity.
-      const { error: err } = await placeBet(market.id, side, stake, sigma);
+      // Mig 0030: full quote/execute parity snapshot.
+      const fairForSide = side === "over" ? fairOver : 1 - (fairOver ?? 0);
+      const offeredForSide = side === "over" ? offeredOver : offeredUnder;
+      const parity: TradeParitySnapshot = {
+        expectedIv: sigma,
+        expectedSpot: livePrice ?? undefined,
+        expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
+        expectedFairProb: fairForSide ?? undefined,
+        expectedOfferedProb: offeredForSide ?? undefined,
+      };
+      const { error: err } = await placeBet(market.id, side, stake, parity);
       if (!err) onBetPlaced();
     };
 
@@ -149,7 +182,7 @@ export function SpeedMobileTradeBar({
           <button
             type="button"
             onClick={() => handleBet("over")}
-            disabled={!canBet}
+            disabled={!canBetOver}
             className={cn(
               "flex flex-col items-center justify-center rounded-xl px-4 py-3 font-satoshi font-bold text-white shadow-sm transition active:translate-y-px",
               "bg-success disabled:opacity-50 disabled:cursor-not-allowed",
@@ -164,14 +197,14 @@ export function SpeedMobileTradeBar({
             </div>
             {upProfit !== null && (
               <span className="text-[11px] font-bold tabular-nums opacity-90">
-                +${upProfit.toFixed(2)}
+                +{formatCurrency(upProfit)}
               </span>
             )}
           </button>
           <button
             type="button"
             onClick={() => handleBet("under")}
-            disabled={!canBet}
+            disabled={!canBetUnder}
             className={cn(
               "flex flex-col items-center justify-center rounded-xl px-4 py-3 font-satoshi font-bold text-white shadow-sm transition active:translate-y-px",
               "bg-destructive disabled:opacity-50 disabled:cursor-not-allowed",
@@ -186,7 +219,7 @@ export function SpeedMobileTradeBar({
             </div>
             {downProfit !== null && (
               <span className="text-[11px] font-bold tabular-nums opacity-90">
-                +${downProfit.toFixed(2)}
+                +{formatCurrency(downProfit)}
               </span>
             )}
           </button>
@@ -199,15 +232,14 @@ export function SpeedMobileTradeBar({
   const strike = Number(market.strike_price);
   const stakeAmt = Number(position.stake);
   const entryProb = Number(position.entry_offered_prob);
-  // Mig 369: payoutPerDollar (=1/entryProb) is now baked into the cashout
-  // formula via (markProb / entryProb), no separate variable needed.
 
-  // Mig 369: continuous mark-to-market formula
-  //   cashout = stake × (mark_prob / entry_offered) × decay × liq_discount
-  // Use realized vol when fresh; falls back to fee_config IV. Cashout is
-  // rejected entirely in the last 5 seconds.
+  // Mig 0028: option-C profit-based cashout. Use realized vol when fresh;
+  // falls back to fee_config IV. Cashout rejected in last 10s + last-30s
+  // near-decided block.
   const cashoutSigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
-  const cashoutLocked = secondsLeft < CASHOUT_REJECT_WINDOW_SECONDS;
+  const lateRejectS =
+    feeConfig.pricing.cashoutLateRejectS ?? CASHOUT_REJECT_WINDOW_SECONDS;
+  const cashoutLockedLate = secondsLeft < lateRejectS;
   const fairOver =
     livePrice && !isStale
       ? speedFairProbOver(livePrice, strike, secondsLeft, cashoutSigma)
@@ -215,21 +247,57 @@ export function SpeedMobileTradeBar({
   const markProb =
     fairOver !== null ? (position.side === "over" ? fairOver : 1 - fairOver) : null;
 
-  const pct = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
-  const decay = speedCashoutMultiplier(market.duration, pct, feeConfig);
-  const liqDiscount = speedLiqDiscount(secondsLeft);
-
   let estCashout: number | null = null;
-  if (markProb !== null && decay !== null) {
-    const raw = stakeAmt * (markProb / entryProb) * decay * liqDiscount;
+  if (markProb !== null) {
+    const isWinning = markProb >= entryProb;
+    const margin = speedCashoutMargin(
+      market.duration,
+      isWinning,
+      markProb,
+      secondsLeft,
+      feeConfig,
+    );
+    const raw = computeCashoutAmount(
+      stakeAmt,
+      entryProb,
+      markProb,
+      isWinning,
+      margin,
+    );
     estCashout = Math.max(0, Math.round(raw * 100) / 100);
   }
+
+  const cashoutLockedNearDecided =
+    markProb !== null &&
+    isCashoutRejectedNearDecided(markProb, secondsLeft, feeConfig);
+  const cashoutLocked = cashoutLockedLate || cashoutLockedNearDecided;
 
   const handleCashout = async () => {
     if (cashLoading || expired || cashoutLocked) return;
     triggerHapticConfirm();
-    await cashout(position.id, cashoutSigma);
+    // Mig 0030: full quote/execute parity snapshot.
+    const parity: CashoutParitySnapshot = {
+      expectedIv: cashoutSigma,
+      expectedSpot: livePrice ?? undefined,
+      expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
+      expectedMarkProb: markProb ?? undefined,
+      expectedCashoutAmount: estCashout ?? undefined,
+    };
+    await cashout(position.id, parity);
   };
+
+  let cashoutLabel: string;
+  if (cashLoading) {
+    cashoutLabel = "";
+  } else if (cashoutLockedLate) {
+    cashoutLabel = t("cashoutLockedLate");
+  } else if (cashoutLockedNearDecided) {
+    cashoutLabel = t("cashoutLockedNearDecided");
+  } else if (estCashout !== null) {
+    cashoutLabel = `${t("cashOut")} · ${formatCurrency(estCashout)}`;
+  } else {
+    cashoutLabel = t("cashOut");
+  }
 
   return (
     <div
@@ -240,16 +308,18 @@ export function SpeedMobileTradeBar({
       <button
         type="button"
         onClick={handleCashout}
-        disabled={cashLoading || expired || isStale}
+        disabled={cashLoading || expired || isStale || cashoutLocked}
         className={cn(
           "flex w-full items-center justify-center rounded-xl px-4 py-3 font-satoshi text-base font-extrabold uppercase tracking-wide text-white shadow-sm transition active:translate-y-px",
           "bg-warning disabled:opacity-50 disabled:cursor-not-allowed",
           "min-h-[56px]",
         )}
       >
-        {cashLoading
-          ? "…"
-          : `${t("cashOut")}${estCashout !== null ? ` · $${estCashout.toFixed(2)}` : ""}`}
+        {cashLoading ? (
+          <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+        ) : (
+          cashoutLabel
+        )}
       </button>
     </div>
   );

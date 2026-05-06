@@ -2,21 +2,27 @@
 
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
-import { Zap } from "lucide-react";
+import { Loader2, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { cn, triggerHapticConfirm } from "@/lib/utils";
+import { cn, formatCurrency, triggerHapticConfirm } from "@/lib/utils";
 import {
   CASHOUT_REJECT_WINDOW_SECONDS,
+  computeCashoutAmount,
   durationToSeconds,
   formatSpeedCountdown,
+  isCashoutRejectedNearDecided,
   isUrgent,
-  speedCashoutMultiplier,
+  speedCashoutMargin,
   speedFairProbOver,
-  speedLiqDiscount,
+  speedSecondsLeftBucket,
 } from "@/lib/speed/pricing";
+import { mapSpeedRpcError } from "@/lib/speed/errors";
 import type { SpeedMarket, SpeedPosition } from "@/types/database";
-import { useSpeedCashout } from "@/hooks/use-speed-trade";
+import {
+  useSpeedCashout,
+  type CashoutParitySnapshot,
+} from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
 
 export function SpeedPositionPanel({
@@ -46,48 +52,99 @@ export function SpeedPositionPanel({
   const secondsLeft = Math.max(0, Math.floor((closesAt - now) / 1000));
   const expired = secondsLeft <= 0;
   const urgent = isUrgent(totalSeconds, secondsLeft);
-  // Mig 369: cashout rejected in last 5s.
-  const cashoutLocked = secondsLeft < CASHOUT_REJECT_WINDOW_SECONDS;
 
   const strike = Number(market.strike_price);
   const stake = Number(position.stake);
   const entryOfferedProb = Number(position.entry_offered_prob);
-  const payoutPerDollar = 1 / entryOfferedProb;
+  const payoutPerDollar = entryOfferedProb > 0 ? 1 / entryOfferedProb : 0;
   const potentialPayout = stake * payoutPerDollar;
 
-  // Mig 369: continuous mark-to-market formula.
-  //   cashout = stake × (mark_prob / entry_offered) × decay × liq_discount
-  // Use realized vol when fresh (matches server `_speed_get_iv`); fall back to
-  // static IV when RV is missing or stale. Same lookup the trade panel uses.
-  // Cached IV is also what the API will send as `expected_iv` for parity.
+  // Mig 0028+: option-C profit-based cashout. Use realized vol when fresh
+  // (matches server `_speed_get_iv`); fall back to static IV when RV is
+  // missing or stale. Same lookup the trade panel uses. Cached IV is also
+  // what the API will send as `expected_iv` for parity.
   const sigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
   const ivUsed = sigma;
-  const fairOver = livePrice && !isStale
-    ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
-    : null;
-  const markProb = fairOver !== null
-    ? position.side === "over"
-      ? fairOver
-      : 1 - fairOver
-    : null;
+  const fairOver =
+    livePrice && !isStale
+      ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
+      : null;
+  const markProb =
+    fairOver !== null
+      ? position.side === "over"
+        ? fairOver
+        : 1 - fairOver
+      : null;
 
-  const pct = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
-  const decay = speedCashoutMultiplier(market.duration, pct, feeConfig);
-  const liqDiscount = speedLiqDiscount(secondsLeft);
-
+  // Mig 0028: cashout amount via option-C profit-based formula. Direction-
+  // matching invariant (winning ⇒ cashout > stake) holds by construction.
   let estCashout: number | null = null;
-  if (markProb !== null && decay !== null) {
-    const raw = stake * (markProb / entryOfferedProb) * decay * liqDiscount;
-    estCashout = Math.max(0, Math.round(raw * 100) / 100);
+  let isWinning = false;
+  let margin = 0;
+  if (markProb !== null) {
+    isWinning = markProb >= entryOfferedProb;
+    margin = speedCashoutMargin(
+      market.duration,
+      isWinning,
+      markProb,
+      secondsLeft,
+      feeConfig,
+    );
+    estCashout = computeCashoutAmount(
+      stake,
+      entryOfferedProb,
+      markProb,
+      isWinning,
+      margin,
+    );
+    estCashout = Math.round(estCashout * 100) / 100;
   }
+
+  // Mig 0028: cashout gating predicates.
+  // - Last 10s of round: cashout rejected entirely (server: speed_cashout_late_reject_s).
+  // - Last 30s + near-decided (|mark − 0.5| > 0.30): rejected to mirror entry-side defense.
+  const cashoutLockedLate =
+    secondsLeft < (feeConfig.pricing.cashoutLateRejectS ?? CASHOUT_REJECT_WINDOW_SECONDS);
+  const cashoutLockedNearDecided =
+    markProb !== null &&
+    isCashoutRejectedNearDecided(markProb, secondsLeft, feeConfig);
+  const cashoutLocked = cashoutLockedLate || cashoutLockedNearDecided;
 
   const sideColor = position.side === "over" ? "text-success" : "text-destructive";
   const sideBg = position.side === "over" ? "bg-success/10" : "bg-destructive/10";
 
+  // Mig 0030: full quote/execute parity snapshot. Server validates these on
+  // execute and rejects with PARITY_DRIFT if anything moved beyond tolerance.
+  function buildParitySnapshot(): CashoutParitySnapshot {
+    return {
+      expectedIv: ivUsed,
+      expectedSpot: livePrice ?? undefined,
+      expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
+      expectedMarkProb: markProb ?? undefined,
+      expectedCashoutAmount: estCashout ?? undefined,
+    };
+  }
+
   async function handleCashout() {
     if (cashLoading || expired || cashoutLocked) return;
     triggerHapticConfirm();
-    await cashout(position.id, ivUsed);
+    await cashout(position.id, buildParitySnapshot());
+  }
+
+  const mappedError = cashError ? mapSpeedRpcError(cashError) : null;
+
+  // Cashout button label — surfaces the actual gating reason instead of going grey.
+  let cashoutLabel: string;
+  if (cashLoading) {
+    cashoutLabel = ""; // spinner instead of text
+  } else if (cashoutLockedLate) {
+    cashoutLabel = t("cashoutLockedLate");
+  } else if (cashoutLockedNearDecided) {
+    cashoutLabel = t("cashoutLockedNearDecided");
+  } else if (estCashout !== null) {
+    cashoutLabel = `${t("cashOut")} · ${formatCurrency(estCashout)}`;
+  } else {
+    cashoutLabel = t("cashOut");
   }
 
   return (
@@ -117,7 +174,7 @@ export function SpeedPositionPanel({
               {t("stake")}
             </div>
             <div className="font-satoshi text-xl font-bold tabular-nums">
-              ${stake.toFixed(2)}
+              {formatCurrency(stake)}
             </div>
           </div>
           <div className="text-right">
@@ -125,26 +182,26 @@ export function SpeedPositionPanel({
               {t("payoutIfWin")}
             </div>
             <div className={cn("font-satoshi text-xl font-bold tabular-nums", sideColor)}>
-              ${potentialPayout.toFixed(2)}
+              {formatCurrency(potentialPayout)}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Mig 369: hide fair_value / "current value" — user compares cashout
-          button vs stake, not vs fair value. Same money, casino framing. */}
+      {/* Mig 0028: hide fair_value / "current value" — user compares cashout
+          button vs stake, not vs fair value. Casino framing. */}
       <div className="space-y-2 rounded-lg bg-bg p-3">
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-custom">{t("spotPrice")}</span>
           <span className="font-satoshi font-bold tabular-nums">
-            {livePrice ? `$${livePrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "—"}
+            {livePrice ? formatCurrency(livePrice) : "—"}
           </span>
         </div>
       </div>
 
-      {cashError && (
+      {mappedError && (
         <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive ring-1 ring-destructive/30">
-          {cashError}
+          {mappedError.userMessage}
         </div>
       )}
 
@@ -157,11 +214,11 @@ export function SpeedPositionPanel({
             disabled={cashLoading || isStale || cashoutLocked}
             className="h-12 w-full font-satoshi text-sm font-bold uppercase tracking-wide"
           >
-            {cashLoading
-              ? "…"
-              : cashoutLocked
-                ? "Market closing"
-                : `${t("cashOut")}${estCashout !== null ? ` · $${estCashout.toFixed(2)}` : ""}`}
+            {cashLoading ? (
+              <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+            ) : (
+              cashoutLabel
+            )}
           </Button>
           {estCashout !== null && !cashoutLocked && !cashLoading && (
             <div className="flex items-baseline justify-between gap-2 px-1">
@@ -176,10 +233,10 @@ export function SpeedPositionPanel({
                 )}
               >
                 {estCashout - stake > 0.005 ? "+" : ""}
-                ${(estCashout - stake).toFixed(2)}
+                {formatCurrency(estCashout - stake)}
               </span>
               <span className="text-[11px] text-muted-custom">
-                {t("ifYouWinSettlement")}: ${potentialPayout.toFixed(2)}
+                {t("ifYouWinSettlement")}: {formatCurrency(potentialPayout)}
               </span>
             </div>
           )}
@@ -200,27 +257,26 @@ export function SpeedPositionPanel({
             {t("ifYouWin")}
           </div>
           <div className="font-satoshi text-3xl font-black tabular-nums text-text">
-            ${potentialPayout.toFixed(2)}
+            {formatCurrency(potentialPayout)}
           </div>
         </div>
       )}
 
-      {/* Won — big winnings card (replaces the small inline badge) */}
+      {/* Won — big winnings card */}
       {position.status === "won" && position.payout_amount && (
         <div className="rounded-xl border border-success/40 bg-success/5 p-4 text-center">
           <div className="text-[10px] uppercase tracking-wide text-muted-custom">
             {t("youWon")}
           </div>
           <div className="font-satoshi text-3xl font-black tabular-nums text-success">
-            +${(Number(position.payout_amount) - stake).toFixed(2)}
+            +{formatCurrency(Number(position.payout_amount) - stake)}
           </div>
           <div className="mt-1 text-xs text-muted-custom tabular-nums">
-            {t("payoutIfWin")}: ${Number(position.payout_amount).toFixed(2)}
+            {t("payoutIfWin")}: {formatCurrency(Number(position.payout_amount))}
           </div>
         </div>
       )}
 
-      {/* Lost — gentle "better luck next round" */}
       {position.status === "lost" && (
         <div className="rounded-lg bg-bg p-3 text-center text-sm">
           <div className="font-bold uppercase tracking-wide text-destructive">
@@ -230,7 +286,6 @@ export function SpeedPositionPanel({
         </div>
       )}
 
-      {/* Cashed out / refunded — keep the existing small inline badge */}
       {(position.status === "cashed_out" || position.status === "refunded") && (
         <div className="rounded-lg bg-bg p-3 text-center text-sm">
           <span className="font-bold uppercase tracking-wide">
@@ -239,7 +294,7 @@ export function SpeedPositionPanel({
           </span>
           {position.payout_amount && (
             <span className="ml-2 font-satoshi tabular-nums">
-              ${Number(position.payout_amount).toFixed(2)}
+              {formatCurrency(Number(position.payout_amount))}
             </span>
           )}
         </div>

@@ -43,13 +43,55 @@ const FEE_CONSTRAINTS: Record<string, FeeConstraints> = {
   dynamic_spread_threshold:  { min: 0.50, max: 0.95, step: 0.01,  label: "Dynamic Spread Threshold", format: "percentage", warning: "Changes live trading behavior. Lower = spread widening triggers more often." },
   dynamic_spread_multiplier: { min: 1.0, max: 5.0,   step: 0.1,   label: "Dynamic Spread Multiplier", format: "multiplier", warning: "Changes live trading behavior. Higher = more aggressive spread widening when triggered." },
 
-  // Speed risk caps — read by speed_execute_trade on every call, no redeploy needed.
-  speed_stake_max_usd:           { min: 1, max: 10000000, step: 1, label: "Per-Bet Max Stake (USD)", format: "currency", warning: "Hard ceiling on a single bet. Set high (e.g. $1,000,000) when you want the per-side cap to be the binding limit." },
-  speed_cap_per_side_usd:        { min: 1, max: 10000000, step: 10, label: "Per-Side Cap (USD)", format: "currency", warning: "Per-user, per-market, per-side stake cap. Resets every market cycle (5m or 1h). The most common operational lever for stake limits." },
-  speed_max_user_daily_wager:    { min: 10, max: 10000000, step: 100, label: "Daily Trading Limit (USD)", format: "currency", warning: "Cap on a single user's total stake per UTC day across all markets. Effective on the next trade." },
-  speed_pool_collateral_usd:     { min: 1000, max: 10000000, step: 1000, label: "Pool Collateral (USD)", format: "currency", warning: "Notional pool size. The per-side exposure cap and same-strike-cluster cap are percentages of this. Raise carefully." },
-  speed_max_market_exposure_pct: { min: 0.05, max: 1.0, step: 0.01, label: "Per-Side Market Exposure", format: "percentage", warning: "Max fraction of pool collateral one side of a market can hold. Lowering mid-day can lock out new entries on existing markets." },
-  speed_max_strike_cluster_pct:  { min: 0.05, max: 1.0, step: 0.01, label: "Same-Strike Cluster Cap", format: "percentage", warning: "Max fraction of pool concentrated on markets within ±0.5% of one strike. Catches correlated risk." },
+  // ── Speed master switches (read by speed_execute_trade/cashout per call) ──
+  speed_markets_enabled:         { min: 0, max: 1,       step: 1,    label: "Speed Markets Enabled", format: "raw", warning: "Master kill switch. 0 = trade RPC rejects all new bets. Cashouts + resolution still run." },
+  speed_cashout_enabled:         { min: 0, max: 1,       step: 1,    label: "Cashout Enabled", format: "raw", warning: "When 0, every cashout RPC call rejects. Use during oracle outages." },
+  speed_oracle_stale_seconds:    { min: 1, max: 60,      step: 1,    label: "Oracle Stale Seconds", format: "raw", warning: "Trade RPC rejects when last oracle tick is older than this. Lower = stricter." },
+
+  // ── Per-user / per-market caps ──
+  speed_stake_max_5m_usd:        { min: 1, max: 10000000, step: 1, label: "Per-Bet Max — 5m markets (USD)", format: "currency", warning: "Single-bet ceiling for 5m duration. Server enforces." },
+  speed_stake_max_1h_usd:        { min: 1, max: 10000000, step: 1, label: "Per-Bet Max — 1h markets (USD)", format: "currency", warning: "Single-bet ceiling for 1h duration." },
+  speed_stake_max_usd:           { min: 1, max: 10000000, step: 1, label: "Per-Bet Max (legacy, USD)", format: "currency", warning: "Pre-mig-0027 single-bet cap. Use the per-duration keys instead." },
+  speed_cap_per_side_usd:        { min: 1, max: 10000000, step: 10, label: "Per-Side Cap (USD)", format: "currency", warning: "Per-user, per-market, per-side stake cap. Resets every market cycle." },
+  speed_per_user_per_market_cap_usd: { min: 1, max: 10000000, step: 10, label: "Per-User Per-Market Cap (USD)", format: "currency", warning: "Mig 0028 canonical name for the per-side cap." },
+
+  // ── Pool-wide caps (mig 0028) ──
+  speed_pool_collateral_usd:     { min: 1000, max: 10000000, step: 1000, label: "Pool Collateral (USD)", format: "currency", warning: "Notional pool size. Per-side cap and cluster cap are percentages of this." },
+  speed_per_side_cap_pct:        { min: 0.01, max: 1.0, step: 0.01, label: "Per-Side Cap (% of pool)", format: "percentage", warning: "When stake on one side exceeds this fraction of pool, no more bets accepted." },
+  speed_same_strike_cluster_cap_pct: { min: 0.01, max: 1.0, step: 0.01, label: "Same-Strike Cluster Cap (% of pool)", format: "percentage", warning: "Max exposure across markets sharing one strike. Catches correlated risk." },
+  speed_daily_ngr_floor_usd:     { min: -1000000, max: 0, step: 100, label: "Daily NGR Floor (USD, negative)", format: "currency", warning: "Circuit breaker. When daily NGR crosses this (negative), new entries blocked. Auto-resets UTC midnight." },
+
+  // ── Pricing engine v2 (mig 0028) ──
+  speed_spread_pct:              { min: 0.01, max: 0.20, step: 0.005, label: "Base Spread", format: "percentage", warning: "Baked into offered_prob both sides. Default 0.05 = 5%." },
+  speed_extreme_spread_coeff:    { min: 0, max: 100, step: 0.5, label: "Extreme Spread Coefficient", format: "raw", warning: "Quadratic widening beyond ±0.45 from 0.5 fair_prob." },
+  speed_late_60s_spread_mult:    { min: 1.0, max: 5.0, step: 0.05, label: "Late 60s Spread Multiplier", format: "multiplier", warning: "Spread × this in last 60s of round. Default 1.4." },
+  speed_late_30s_spread_mult:    { min: 1.0, max: 5.0, step: 0.05, label: "Late 30s Spread Multiplier", format: "multiplier", warning: "Spread × this in last 30s of round. Default 1.8." },
+  speed_fair_prob_reject_high:   { min: 0.80, max: 0.999, step: 0.005, label: "Fair Prob Reject — High", format: "percentage", warning: "Reject entry when fair_prob_side > this. Replaces 0.99 saturation clamp. Default 0.97." },
+  speed_fair_prob_reject_low:    { min: 0.001, max: 0.20, step: 0.005, label: "Fair Prob Reject — Low", format: "percentage", warning: "Reject entry when fair_prob_side < this. Default 0.03." },
+  speed_late_30s_imbalance_reject: { min: 0.05, max: 0.50, step: 0.01, label: "Late 30s Imbalance Reject", format: "percentage", warning: "In last 30s, reject entry when |fair − 0.5| exceeds this. Closes deep-tail exploit. Default 0.30." },
+  speed_cashout_late_30s_imbalance_reject: { min: 0.05, max: 0.50, step: 0.01, label: "Late 30s Cashout Imbalance Reject", format: "percentage", warning: "Mirror of entry-side defense for cashout." },
+  speed_cashout_late_reject_s:   { min: 0, max: 60, step: 1, label: "Cashout Late Reject (seconds)", format: "raw", warning: "Reject cashouts when seconds remaining is below this. Default 10." },
+
+  // ── Cashout option-C margins (mig 0028) ──
+  speed_cashout_winning_base_5m: { min: 0, max: 0.20, step: 0.005, label: "Cashout Winning Base — 5m", format: "percentage", warning: "Margin extracted from winning side cashout, 5m. Default 2.5%." },
+  speed_cashout_winning_base_1h: { min: 0, max: 0.20, step: 0.005, label: "Cashout Winning Base — 1h", format: "percentage", warning: "Margin extracted from winning side cashout, 1h. Default 3.0%." },
+  speed_cashout_losing_base_5m:  { min: 0, max: 0.30, step: 0.005, label: "Cashout Losing Base — 5m", format: "percentage", warning: "Margin amplifying losing side cashout, 5m. Default 8.0%." },
+  speed_cashout_losing_base_1h:  { min: 0, max: 0.30, step: 0.005, label: "Cashout Losing Base — 1h", format: "percentage", warning: "Margin amplifying losing side cashout, 1h. Default 9.0%." },
+  speed_cashout_saturation_coef: { min: 0, max: 2.0, step: 0.05, label: "Saturation Coef (winning)", format: "raw", warning: "Premium added when |mark − 0.5| > 0.35 on winning side. Default 0.20." },
+  speed_cashout_desperation_coef: { min: 0, max: 2.0, step: 0.05, label: "Desperation Coef (losing)", format: "raw", warning: "Premium added when mark < 0.5 on losing side. Default 0.40." },
+  speed_cashout_late_window_winning_coef: { min: 0, max: 0.20, step: 0.005, label: "Late Window Coef — Winning", format: "raw", warning: "Margin ramp on winning side as time runs out. Default 0.015." },
+  speed_cashout_late_window_losing_coef:  { min: 0, max: 0.50, step: 0.005, label: "Late Window Coef — Losing",  format: "raw", warning: "Margin ramp on losing side as time runs out. Default 0.05." },
+
+  // ── IV / parity (mig 0029, 0030) ──
+  speed_iv_btc:                  { min: 0.05, max: 5.0, step: 0.05, label: "IV Fallback (BTC)", format: "raw", warning: "Constant IV used when realized-vol cache is stale or empty." },
+  speed_iv_drift_tolerance_pct:  { min: 0, max: 1.0, step: 0.01, label: "IV Drift Tolerance", format: "percentage", warning: "Stale-quote check. If client_iv drifts beyond this, reject with IV_DRIFT." },
+  speed_iv_fail_closed:          { min: 0, max: 1, step: 1, label: "IV Fail-Closed Mode", format: "raw", warning: "When 1, reject trades if RV cache is stale (no fallback to constant IV). Operational gate." },
+  speed_use_realized_vol:        { min: 0, max: 1, step: 1, label: "Use Realized Vol", format: "raw", warning: "Master switch. When 0, server bypasses RV cache and uses speed_iv_btc directly." },
+
+  // ── Soft guards (mig 0031) ──
+  speed_per_user_velocity_max:   { min: 1, max: 10000, step: 1, label: "Velocity Cap (bets/min)", format: "raw", warning: "Hard reject when user exceeds this many bets per rolling minute. Default 30." },
+  speed_per_user_open_exposure_pct: { min: 0.01, max: 1.0, step: 0.01, label: "Open Exposure Cap (% of pool)", format: "percentage", warning: "Hard reject when user's total open liability exceeds this fraction of pool. Default 15%." },
+  speed_per_user_daily_handle_alert: { min: 100, max: 10000000, step: 100, label: "Daily Handle Alert (USD)", format: "currency", warning: "Telemetry-only. Logs to speed_user_alerts when daily handle crosses this. No enforcement." },
 };
 
 const COMMISSION_CONSTRAINTS: FeeConstraints = {

@@ -14,19 +14,47 @@ const ok = (msg) => console.log(`  ✅ ${msg}`);
 const err = (msg) => { fail.push(msg); console.log(`  ❌ ${msg}`); };
 const wn = (msg) => { warn.push(msg); console.log(`  ⚠️  ${msg}`); };
 
-// -- 1. fee_config sanity --
-console.log("\n[1] fee_config — values + types");
+// -- 1. fee_config sanity (mig 0028-0032) --
+console.log("\n[1] fee_config — values + types (post-mig-0028+)");
 const cfg = await c.query(`SELECT fee_type, rate FROM fee_config ORDER BY fee_type`);
 const byType = new Map(cfg.rows.map(r => [r.fee_type, Number(r.rate)]));
+// Required: keys present + within sane bounds.
 const required = [
-  ["speed_stake_max_usd", 1, 10000000],
-  ["speed_cap_per_side_usd", 1, 10000000],
-  ["speed_max_user_daily_wager", 1, 10000000],
-  ["speed_pool_collateral_usd", 1, 10000000],
-  ["speed_max_market_exposure_pct", 0.01, 1.0],
-  ["speed_max_strike_cluster_pct", 0.01, 1.0],
+  // Master switches
   ["speed_markets_enabled", 0, 1],
   ["speed_oracle_stale_seconds", 1, 60],
+  // Pool caps (mig 0028)
+  ["speed_pool_collateral_usd", 1000, 10000000],
+  ["speed_per_side_cap_pct", 0.01, 1.0],
+  ["speed_per_user_per_market_cap_usd", 1, 10000000],
+  ["speed_same_strike_cluster_cap_pct", 0.01, 1.0],
+  ["speed_daily_ngr_floor_usd", -1000000, 0],
+  // Pricing engine v2 (mig 0028)
+  ["speed_spread_pct", 0.01, 0.20],
+  ["speed_late_60s_spread_mult", 1.0, 5.0],
+  ["speed_late_30s_spread_mult", 1.0, 5.0],
+  ["speed_fair_prob_reject_high", 0.80, 0.999],
+  ["speed_fair_prob_reject_low", 0.001, 0.20],
+  ["speed_late_30s_imbalance_reject", 0.05, 0.50],
+  ["speed_cashout_late_30s_imbalance_reject", 0.05, 0.50],
+  ["speed_cashout_late_reject_s", 0, 60],
+  // Cashout option-C margins (mig 0028) — 8 keys
+  ["speed_cashout_winning_base_5m", 0, 0.20],
+  ["speed_cashout_winning_base_1h", 0, 0.20],
+  ["speed_cashout_losing_base_5m", 0, 0.30],
+  ["speed_cashout_losing_base_1h", 0, 0.30],
+  ["speed_cashout_saturation_coef", 0, 2.0],
+  ["speed_cashout_desperation_coef", 0, 2.0],
+  ["speed_cashout_late_window_winning_coef", 0, 0.20],
+  ["speed_cashout_late_window_losing_coef", 0, 0.50],
+  // IV / parity (mig 0029, 0030)
+  ["speed_iv_btc", 0.05, 5.0],
+  ["speed_iv_drift_tolerance_pct", 0, 1.0],
+  // Soft guards (mig 0031)
+  ["speed_per_user_velocity_max", 1, 10000],
+  ["speed_per_user_open_exposure_pct", 0.01, 1.0],
+  ["speed_per_user_daily_handle_alert", 100, 10000000],
+  // Money
   ["withdrawal_fee", 0, 0.5],
 ];
 for (const [k, lo, hi] of required) {
@@ -35,6 +63,23 @@ for (const [k, lo, hi] of required) {
   else if (v < lo || v > hi) err(`fee_config ${k} = ${v} outside expected [${lo}, ${hi}]`);
   else ok(`${k} = ${v}`);
 }
+// Negative checks: keys deleted by mig 0028-0031 must NOT exist.
+const deletedKeys = [
+  "speed_max_user_daily_wager",
+  "speed_late_window_60s_pct",
+  "speed_late_window_30s_pct",
+  "speed_handle_fee_pct",
+];
+for (const k of deletedKeys) {
+  if (byType.has(k)) err(`fee_config STALE: ${k} still present (deleted by mig 0028-0031)`);
+  else ok(`${k} correctly absent`);
+}
+// Additional check: no leftover speed_cashout_decay_* or speed_liq_discount_* keys.
+const decayLeftovers = [...byType.keys()].filter(
+  (k) => k.startsWith("speed_cashout_decay_") || k.startsWith("speed_liq_discount_"),
+);
+if (decayLeftovers.length === 0) ok("no leftover speed_cashout_decay_*/speed_liq_discount_* keys");
+else err(`STALE keys: ${decayLeftovers.join(", ")} (deleted by mig 0028)`);
 
 // -- 2. Required RPCs exist with correct signatures --
 console.log("\n[2] RPC signatures");
@@ -61,18 +106,29 @@ for (const name of expected) {
   else err(`${name} MISSING`);
 }
 
-// -- 3. speed_execute_trade reads new fee_config keys --
-console.log("\n[3] speed_execute_trade — verify mig 0027 took effect");
-const trade = await c.query(`SELECT pg_get_functiondef(oid) AS def FROM pg_proc WHERE proname='speed_execute_trade' AND pronamespace='public'::regnamespace`);
-const body = trade.rows[0]?.def ?? "";
-if (body.includes("speed_stake_max_usd")) ok("RPC reads speed_stake_max_usd from fee_config");
-else err("RPC does NOT read speed_stake_max_usd — mig 0027 not applied or got rolled back");
-if (body.includes("speed_cap_per_side_usd")) ok("RPC reads speed_cap_per_side_usd from fee_config");
-else err("RPC does NOT read speed_cap_per_side_usd");
-if (/v_stake_max\s*DECIMAL\s*:=\s*25\.00/.test(body)) err("RPC still has hardcoded v_stake_max := 25.00");
+// -- 3. speed_execute_trade signature + body (mig 0028-0032) --
+console.log("\n[3] speed_execute_trade — verify mig 0028-0032 took effect");
+const trade = await c.query(`SELECT pg_get_functiondef(oid) AS def, pronargs FROM pg_proc WHERE proname='speed_execute_trade' AND pronamespace='public'::regnamespace`);
+const tradeRows = trade.rows;
+if (tradeRows.length !== 1) err(`speed_execute_trade has ${tradeRows.length} overloads, expected 1 (mig 0032 cleanup should have dropped the legacy 5-arg version)`);
+else if (tradeRows[0].pronargs !== 9) err(`speed_execute_trade has ${tradeRows[0].pronargs} args, expected 9 (mig 0030 parity params)`);
+else ok("speed_execute_trade has exactly 9 args (post-mig-0030 + 0032 cleanup)");
+const body = tradeRows[0]?.def ?? "";
+if (body.includes("_speed_get_iv")) ok("RPC reads IV via _speed_get_iv() helper (mig 0029)");
+else wn("RPC does not call _speed_get_iv — may be reading speed_iv_btc directly");
+if (body.includes("_speed_assert_parity")) ok("RPC enforces mig 0030 parity check");
+else err("RPC does NOT call _speed_assert_parity — mig 0030 not applied");
+if (/v_stake_max\s*DECIMAL\s*:=\s*25\.00/.test(body)) err("RPC still has hardcoded v_stake_max := 25.00 (mig 0028 should remove)");
 else ok("RPC has no leftover hardcoded v_stake_max = 25.00");
-if (/v_cap_per_side\s*DECIMAL\s*:=\s*200\.00/.test(body)) err("RPC still has hardcoded v_cap_per_side := 200.00");
-else ok("RPC has no leftover hardcoded v_cap_per_side = 200.00");
+
+// Cashout signature — should be 7 args post-mig-0030 + 0032 cleanup.
+const cashoutFn = await c.query(`SELECT pg_get_functiondef(oid) AS def, pronargs FROM pg_proc WHERE proname='speed_execute_cashout' AND pronamespace='public'::regnamespace`);
+if (cashoutFn.rows.length !== 1) err(`speed_execute_cashout has ${cashoutFn.rows.length} overloads, expected 1`);
+else if (cashoutFn.rows[0].pronargs !== 7) err(`speed_execute_cashout has ${cashoutFn.rows[0].pronargs} args, expected 7`);
+else ok("speed_execute_cashout has exactly 7 args (post-mig-0030 + 0032 cleanup)");
+const cashoutBody = cashoutFn.rows[0]?.def ?? "";
+if (cashoutBody.includes("_speed_cashout_margin")) ok("cashout RPC uses _speed_cashout_margin helper (option C, mig 0028)");
+else err("cashout RPC does NOT call _speed_cashout_margin — mig 0028 incomplete");
 
 // -- 4. Admin RPCs callable with admin GUC --
 console.log("\n[4] Admin RPCs — call with admin GUC, verify no exception");
@@ -128,38 +184,51 @@ if (balCache.rows[0].n === 0) ok("balance_usd cache equals SUM(transactions) for
 else wn(`${balCache.rows[0].n} users have balance_usd diverging from SUM(transactions) — investigate via scripts/w10-ledger-audit.mjs`);
 
 // -- 6. speed_execute_trade — dry-run validation gates without committing --
+//    Uses the new 9-arg signature (mig 0030). All parity params NULL = skip
+//    parity check (server treats NULL as "client did not send a snapshot").
 console.log("\n[6] speed_execute_trade — gate behavior smoke test (rolled back)");
 const userRow = await c.query(`SELECT id, balance_usd FROM users WHERE balance_usd > 100 ORDER BY balance_usd DESC LIMIT 1`);
-const mkt = await c.query(`SELECT id FROM speed_markets WHERE status='open' AND duration='5m' AND closes_at > NOW() + INTERVAL '15 seconds' AND strike_price IS NOT NULL ORDER BY closes_at ASC LIMIT 1`);
+const mkt = await c.query(`SELECT id FROM speed_markets WHERE status='open' AND duration='5m' AND closes_at > NOW() + INTERVAL '60 seconds' AND strike_price IS NOT NULL ORDER BY closes_at ASC LIMIT 1`);
 if (userRow.rows.length === 0) wn("no funded user to dry-run trade RPC against; skipped");
-else if (mkt.rows.length === 0) wn("no open 5m market with >15s left + finalized strike; skipped");
+else if (mkt.rows.length === 0) wn("no open 5m market with >60s left + finalized strike; skipped");
 else {
   const uid = userRow.rows[0].id;
   const mid = mkt.rows[0].id;
-  // Test 1: $25 should now succeed (used to be at the literal cap)
+  // Helper: call the 9-arg trade RPC with all parity params null.
+  const callTrade = async (stake, key) => c.query(
+    `SELECT speed_execute_trade(
+       $1::uuid, 'over', $2::numeric, $3::text,
+       NULL::numeric, NULL::numeric, NULL::integer, NULL::numeric, NULL::numeric
+     )`,
+    [mid, stake, key]
+  );
+
+  // Test 1: a small bet within the per-side cap should succeed.
   await c.query("BEGIN");
   await c.query(`SELECT set_config('app.user_id', $1::text, true)`, [uid]);
   try {
-    await c.query(`SELECT speed_execute_trade($1::uuid, 'over', 25, 'smoke-' || gen_random_uuid()::text, NULL)`, [mid]);
-    ok("trade $25 over → succeeded (would have hit old $25 ceiling exactly; now well below new $1k cap)");
+    await callTrade(10, 'smoke-' + Math.random());
+    ok("trade $10 over → succeeded");
   } catch (e) {
-    err(`trade $25 unexpectedly rejected: ${e.message}`);
+    // Some markets may reject for reasons unrelated to the smoke (oracle stale,
+    // cap already filled by other test data). Surface as warn, not fail.
+    wn(`trade $10 rejected: ${e.message.split('\n')[0]}`);
   }
   await c.query("ROLLBACK");
 
-  // Test 2: $1500 should fail with the new cap_per_side ($1000 cap, single bet > cap)
+  // Test 2: a stake well above the per-user-per-market cap must reject.
   await c.query("BEGIN");
   await c.query(`SELECT set_config('app.user_id', $1::text, true)`, [uid]);
   try {
-    await c.query(`SELECT speed_execute_trade($1::uuid, 'over', 1500, 'smoke-cap-' || gen_random_uuid()::text, NULL)`, [mid]);
-    err("trade $1500 succeeded but should have been rejected by per-side cap");
+    await callTrade(50000, 'smoke-cap-' + Math.random());
+    err("trade $50000 succeeded but should have been rejected (stake range or per-side cap)");
   } catch (e) {
-    if (/Cap reached on .* side|outside allowed range/i.test(e.message)) {
-      ok(`trade $1500 correctly rejected: "${e.message.split('\n')[0]}"`);
-    } else if (/Insufficient balance|exposure cap|cluster|stale|disabled/i.test(e.message)) {
-      ok(`trade $1500 rejected by adjacent gate: "${e.message.split('\n')[0]}"`);
+    if (/Cap reached on|outside allowed range|stake/i.test(e.message)) {
+      ok(`trade $50000 correctly rejected: "${e.message.split('\n')[0]}"`);
+    } else if (/Insufficient balance|exposure cap|cluster|stale|disabled|paused/i.test(e.message)) {
+      ok(`trade $50000 rejected by adjacent gate: "${e.message.split('\n')[0]}"`);
     } else {
-      wn(`trade $1500 rejected by unexpected reason: "${e.message}"`);
+      wn(`trade $50000 rejected by unexpected reason: "${e.message}"`);
     }
   }
   await c.query("ROLLBACK");

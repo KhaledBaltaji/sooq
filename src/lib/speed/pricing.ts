@@ -1,14 +1,17 @@
 /**
  * Client-side speed-market pricing.
  *
- * Mirrors the Postgres functions defined in mig 318:
+ * Mirrors the Postgres functions defined in mig 0028+:
  *   - normal_cdf
  *   - speed_fair_prob_over
- *   - speed_time_bucket
+ *   - _speed_cashout_margin (option C profit-based, mig 0028)
+ *   - _speed_seconds_left_bucket (mig 0030)
+ *   - speed_execute_trade spread escalation (mig 0028)
  *
- * Used by the trade page to render live OVER/UNDER probabilities and the
- * cashout footer's fair-value preview. The server RPCs always re-compute at
- * commit time (oracle freshness, idempotency); these are display-only.
+ * Used for live OVER/UNDER prob display, cashout-amount preview, button-
+ * gate predicates (last 30s near-decided block, last 10s reject), and
+ * parity snapshot generation. Server RPCs always re-compute at execute
+ * time; these helpers are display-only + parity-snapshot inputs.
  */
 
 import type { SpeedDuration, SpeedSide } from "@/types/database";
@@ -16,13 +19,10 @@ import type { SpeedFeeConfig } from "@/lib/query/speed-fees/queries";
 
 /**
  * Standard normal CDF — Abramowitz & Stegun 26.2.17 polynomial.
- * Accuracy ~7.5e-8. Pure function.
+ * Accuracy ~7.5e-8.
  *
- * Mirrors mig 352 (Seam 2a): at |x| >= 37 the polynomial result is already
- * indistinguishable from the asymptote (0 or 1) within float64 precision.
- * JS doesn't throw on Math.exp(-722) (it returns 0 silently), but clip
- * anyway for parity with the SQL helper and to avoid relying on that
- * silent-zero behavior.
+ * At |x| >= 37 the polynomial is indistinguishable from the asymptote
+ * within float64; clip for parity with the SQL helper.
  */
 export function normalCdf(x: number): number {
   const absX = Math.abs(x);
@@ -52,17 +52,8 @@ export function normalCdf(x: number): number {
 /**
  * Black-Scholes binary fair probability that spot > strike at expiry.
  *
- * Output clipped to [0.01, 0.99] to match mig 357 (which reverts mig 352
- * Seam 2's [0.001, 0.999] widening). The wider clip created a round-trip
- * arbitrage at extreme moneyness because fair could exceed the offered_prob
- * cap of 0.99 — caught by speed-cashout-invariant.test.ts. The "visible flat
- * region" Seam 2 tried to remove is less harmful than the arbitrage; Seam 3's
- * quadratic spread widening still does user-facing work at the edge.
- *
- * @param spot Current asset price
- * @param strike Market strike price
- * @param secondsLeft Time to expiry in seconds (clamped >= 1)
- * @param iv Implied volatility (annualized, e.g. 0.6 for BTC)
+ * Output clipped to [0.01, 0.99] to match the SQL clip in mig 357.
+ * The wider clip created a round-trip arbitrage at extreme moneyness.
  */
 export function speedFairProbOver(
   spot: number,
@@ -74,7 +65,6 @@ export function speedFairProbOver(
   const yearsLeft = secondsLeft / (365 * 24 * 3600);
   const sigmaSqrtT = iv * Math.sqrt(yearsLeft);
   if (sigmaSqrtT === 0) {
-    // Edge: zero time or zero vol → step function (matches mig 357 SQL clip)
     return spot > strike ? 0.99 : 0.01;
   }
   const d2 = (Math.log(spot / strike) - (iv * iv * yearsLeft) / 2) / sigmaSqrtT;
@@ -82,126 +72,206 @@ export function speedFairProbOver(
   return Math.max(0.01, Math.min(0.99, fairProb));
 }
 
-/**
- * Continuous cashout decay multiplier — duration-specific (mig 369).
- *
- * Mirrors `speed_cashout_multiplier(duration, pct)` in mig 369. One formula
- * for both winners and losers — no role branch, no role-boundary
- * discontinuity. Linear interpolation between five endpoints stored in
- * fee_config as `speed_cashout_decay_<duration>_<bucket>`.
- *
- * Endpoint stop list (in increasing pct):
- *   pct=0.00 → ${dur}_lt20         (anchor at 0% time-left)
- *   pct=0.20 → ${dur}_lt20 / ${dur}_20to40 boundary
- *   pct=0.40 → ${dur}_20to40 / ${dur}_40to60 boundary
- *   pct=0.60 → ${dur}_40to60 / ${dur}_60to80 boundary
- *   pct=0.80 → ${dur}_60to80 / ${dur}_ge80 boundary
- *   pct≥0.80 → ${dur}_ge80 (flat)
- *
- * Returns `null` if endpoints aren't loaded yet — caller renders "—" until
- * fee_config arrives.
- */
-export function speedCashoutMultiplier(
-  duration: SpeedDuration,
-  pct: number,
-  config: SpeedFeeConfig,
-): number | null {
-  const ge80   = config.cashoutMultipliers[`speed_cashout_decay_${duration}_ge80`];
-  const _60to80 = config.cashoutMultipliers[`speed_cashout_decay_${duration}_60to80`];
-  const _40to60 = config.cashoutMultipliers[`speed_cashout_decay_${duration}_40to60`];
-  const _20to40 = config.cashoutMultipliers[`speed_cashout_decay_${duration}_20to40`];
-  const lt20   = config.cashoutMultipliers[`speed_cashout_decay_${duration}_lt20`];
-  if (
-    ge80 === undefined || _60to80 === undefined || _40to60 === undefined ||
-    _20to40 === undefined || lt20 === undefined
-  ) {
-    return null;
-  }
-  const p = Math.max(0, Math.min(1, pct));
-  if (p >= 0.80) return ge80;
-  if (p >= 0.60) return _60to80 + (ge80    - _60to80) * ((p - 0.60) / 0.20);
-  if (p >= 0.40) return _40to60 + (_60to80 - _40to60) * ((p - 0.40) / 0.20);
-  if (p >= 0.20) return _20to40 + (_40to60 - _20to40) * ((p - 0.20) / 0.20);
-  return lt20 + (_20to40 - lt20) * (p / 0.20);
-}
+// ============================================================================
+// Mig 0028+ helpers
+// ============================================================================
 
 /**
- * Liquidation discount — applied multiplicatively on top of the decay curve
- * (mig 369). Mirrors `speed_liq_discount(secondsLeft)`. Sharp drops near
- * expiry. < 5s returns 0 — the RPC also rejects, but defense-in-depth.
+ * Mig 0028: hard reject window for cashouts. Server-tunable via
+ * fee_config.speed_cashout_late_reject_s (default 10s).
  */
-export function speedLiqDiscount(secondsLeft: number): number {
-  if (secondsLeft < 5) return 0;
-  // Match server: `> 30` → 1.0 (fee_config row is `speed_liq_discount_gt30`).
-  // Previously used `>= 30` which caused a ~15% display/pay mismatch in the
-  // ~200ms window where the client floor showed "30s" while the server saw
-  // a sub-30s float.
-  if (secondsLeft > 30) return 1.0;
-  if (secondsLeft >= 10) return 0.85;
-  return 0.6; // 5-10s
-}
+export const CASHOUT_REJECT_WINDOW_SECONDS = 10;
 
-/**
- * Mig 369: hard reject window for cashouts (last 5s).
- */
-export const CASHOUT_REJECT_WINDOW_SECONDS = 5;
-
-/**
- * Mig 369: 3-tier late-window surcharge on entries.
- * 60s window → +20%, 30s window → +30%, < 10s → reject (handled at call site).
- * Mirrors `speed_late_window_surcharge_pct(secondsLeft)` in mig 369.
- */
-export const ENTRY_LATE_WINDOW_60S_PCT = 0.20;
-export const ENTRY_LATE_WINDOW_30S_PCT = 0.30;
+/** Mig 0028: entries rejected entirely in the last N seconds (matches server). */
 export const ENTRY_LATE_WINDOW_REJECT_S = 10;
 
-export function isInLateWindow(secondsLeft: number): boolean {
-  return secondsLeft < 60;
-}
-
-export function entryLateWindowSurchargePct(secondsLeft: number | null): number {
-  if (secondsLeft === null) return 0;
-  if (secondsLeft < 30) return ENTRY_LATE_WINDOW_30S_PCT;
-  if (secondsLeft < 60) return ENTRY_LATE_WINDOW_60S_PCT;
-  return 0;
-}
-
-/**
- * Returns true when entries are rejected entirely (last 10s).
- */
+/** Returns true when entries are rejected entirely (last 10s). */
 export function isEntryRejectedLate(secondsLeft: number): boolean {
   return secondsLeft < ENTRY_LATE_WINDOW_REJECT_S;
 }
 
+/** Returns true when we're in any late-window tier (display purposes). */
+export function isInLateWindow(secondsLeft: number): boolean {
+  return secondsLeft < 60;
+}
+
+/**
+ * Mig 0030: 4-bucket time discretisation.
+ * Mirrors `_speed_seconds_left_bucket(secondsLeft)` SQL helper.
+ *
+ *   0  →  60s+         (no late-window surcharge)
+ *   1  →  [30s, 60s)   (×1.4 spread)
+ *   2  →  [10s, 30s)   (×1.8 spread + last-30s near-decided block)
+ *   3  →  <10s         (rejected at execute)
+ */
+export function speedSecondsLeftBucket(secondsLeft: number): 0 | 1 | 2 | 3 {
+  if (secondsLeft >= 60) return 0;
+  if (secondsLeft >= 30) return 1;
+  if (secondsLeft >= 10) return 2;
+  return 3;
+}
+
+/**
+ * Mig 0028: multiplicative spread escalation.
+ * Mirrors the `v_spread_mult` block inside `speed_execute_trade`.
+ *
+ *   secondsLeft >= 60   → 1.0   (no escalation)
+ *   secondsLeft ∈ [30, 60)  → fc.pricing.late60sSpreadMult  (default 1.4)
+ *   secondsLeft < 30    → fc.pricing.late30sSpreadMult       (default 1.8)
+ */
+export function speedSpreadMultiplier(
+  secondsLeft: number,
+  fc: SpeedFeeConfig,
+): number {
+  if (secondsLeft < 30) return fc.pricing.late30sSpreadMult;
+  if (secondsLeft < 60) return fc.pricing.late60sSpreadMult;
+  return 1.0;
+}
+
+/**
+ * Mig 0028: option-C profit-based cashout margin.
+ * Mirrors `_speed_cashout_margin(duration, is_winning, mark_prob, seconds_left)`.
+ *
+ *   Winning side:
+ *     margin = base_winning + saturation_premium + late_window_premium
+ *     saturation = max(0, |mark − 0.5| − 0.35) × saturation_coef
+ *     late_window = max(0, (60 − s)/60) × late_window_winning_coef
+ *
+ *   Losing side:
+ *     margin = base_losing + desperation_premium + late_window_premium
+ *     desperation = max(0, 0.50 − mark) × desperation_coef
+ *     late_window = max(0, (60 − s)/60) × late_window_losing_coef
+ *
+ * Hard-capped at 0.50 (matches server defensive ceiling); floored at 0.
+ */
+export function speedCashoutMargin(
+  duration: SpeedDuration,
+  isWinning: boolean,
+  markProb: number,
+  secondsLeft: number,
+  fc: SpeedFeeConfig,
+): number {
+  const lateRamp = Math.max(0, (60 - secondsLeft) / 60);
+  let margin: number;
+  if (isWinning) {
+    const base =
+      duration === "5m"
+        ? fc.cashoutMargins.winningBase5m
+        : fc.cashoutMargins.winningBase1h;
+    const saturation =
+      Math.max(0, Math.abs(markProb - 0.5) - 0.35) *
+      fc.cashoutMargins.saturationCoef;
+    const lateWindow = lateRamp * fc.cashoutMargins.lateWindowWinningCoef;
+    margin = base + saturation + lateWindow;
+  } else {
+    const base =
+      duration === "5m"
+        ? fc.cashoutMargins.losingBase5m
+        : fc.cashoutMargins.losingBase1h;
+    const desperation =
+      Math.max(0, 0.5 - markProb) * fc.cashoutMargins.desperationCoef;
+    const lateWindow = lateRamp * fc.cashoutMargins.lateWindowLosingCoef;
+    margin = base + desperation + lateWindow;
+  }
+  if (margin > 0.5) margin = 0.5;
+  if (margin < 0) margin = 0;
+  return margin;
+}
+
+/**
+ * Mig 0028: option-C cashout amount.
+ *
+ *   fair_profit = stake × (mark_prob / entry_offered_prob − 1)
+ *   winning side  cashout = stake + fair_profit × (1 − margin)
+ *   losing  side  cashout = stake + fair_profit × (1 + margin)
+ *
+ * Direction-matching invariant by construction:
+ *   mark_prob > entry_offered_prob ⇒ fair_profit > 0 ⇒ cashout > stake.
+ *
+ * Server floors at 0; we mirror that here for display.
+ */
+export function computeCashoutAmount(
+  stake: number,
+  entryOfferedProb: number,
+  markProb: number,
+  isWinning: boolean,
+  margin: number,
+): number {
+  if (entryOfferedProb <= 0) return 0;
+  const fairProfit = stake * (markProb / entryOfferedProb - 1);
+  const cashout = isWinning
+    ? stake + fairProfit * (1 - margin)
+    : stake + fairProfit * (1 + margin);
+  return Math.max(0, cashout);
+}
+
+/**
+ * Mig 0028: predicate for entry-side gating.
+ *   - Hard reject when fair_prob_side > fairProbRejectHigh (default 0.97)
+ *   - Hard reject when fair_prob_side < fairProbRejectLow  (default 0.03)
+ *   - In last 30s, reject when |fair − 0.5| > late30sImbalanceReject (default 0.30)
+ */
+export function isEntryRejectedNearDecided(
+  fairProbSide: number,
+  secondsLeft: number,
+  fc: SpeedFeeConfig,
+): boolean {
+  if (fairProbSide > fc.pricing.fairProbRejectHigh) return true;
+  if (fairProbSide < fc.pricing.fairProbRejectLow) return true;
+  if (
+    secondsLeft < 30 &&
+    Math.abs(fairProbSide - 0.5) > fc.pricing.late30sImbalanceReject
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Mig 0028: predicate for cashout-side near-decided gating.
+ * In last 30s, reject when |mark − 0.5| > cashoutLate30sImbalanceReject.
+ */
+export function isCashoutRejectedNearDecided(
+  markProb: number,
+  secondsLeft: number,
+  fc: SpeedFeeConfig,
+): boolean {
+  return (
+    secondsLeft < 30 &&
+    Math.abs(markProb - 0.5) > fc.pricing.cashoutLate30sImbalanceReject
+  );
+}
+
 /**
  * Offered probability — fair probability adjusted by a spread that widens
- * quadratically as fair approaches 0 or 1, plus the 3-tier late-window
- * surcharge (mig 369).
+ * quadratically as fair approaches 0 or 1, then SCALED by the multiplicative
+ * late-window factor (mig 0028).
  *
- * Mig 369 spec:
- *   distance = |fair - 0.5|
- *   overage  = max(0, distance - 0.45)
- *   spread   = base_spread + overage² × extreme_coeff
- *   spread  += late_window_surcharge_pct(secondsLeft)
- *   offered  = fair + spread/2, clamped to [0.01, 0.99]
+ *   distance = |fair − 0.5|
+ *   overage  = max(0, distance − 0.45)
+ *   spread   = (base_spread + overage² × extreme_coeff) × spread_mult(s)
+ *   offered  = fair + spread/2
  *
- * Default base_spread is 0.05 (mig 369 raised 0.04 → 0.05; absorbed the
- * former 1% phantom handle fee into the spread).
+ * Output clipped to [0.03, 0.97] to match the mig 0028 hard-reject thresholds
+ * (was [0.01, 0.99] pre-mig-0028; the new clip prevents display from drifting
+ * into the rejected zone).
  */
 export function speedOfferedProb(
   fairProbOver: number,
   side: SpeedSide,
-  spread: number = 0.05,
-  extremeCoeff: number = 8,
+  fc: SpeedFeeConfig,
   secondsLeft: number | null = null,
 ): number {
   const fair = side === "over" ? fairProbOver : 1 - fairProbOver;
   const distance = Math.abs(fair - 0.5);
   const overage = Math.max(0, distance - 0.45);
-  let widenedSpread = spread + overage * overage * extremeCoeff;
-  widenedSpread = widenedSpread + entryLateWindowSurchargePct(secondsLeft);
+  const baseWidened =
+    fc.pricing.spreadPct + overage * overage * fc.pricing.extremeSpreadCoeff;
+  const mult =
+    secondsLeft === null ? 1.0 : speedSpreadMultiplier(secondsLeft, fc);
+  const widenedSpread = baseWidened * mult;
   const offered = fair + widenedSpread / 2;
-  return Math.max(0.01, Math.min(0.99, offered));
+  return Math.max(0.03, Math.min(0.97, offered));
 }
 
 /**
@@ -233,10 +303,7 @@ export function formatSpeedCountdown(secondsLeft: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/**
- * Returns true when countdown should switch to urgent styling
- * (<20% of duration remaining). Same threshold as `low` bucket.
- */
+/** True when countdown should switch to urgent styling (<20% remaining). */
 export function isUrgent(secondsTotal: number, secondsLeft: number): boolean {
   if (secondsTotal <= 0) return true;
   return secondsLeft / secondsTotal < 0.2;
@@ -245,12 +312,10 @@ export function isUrgent(secondsTotal: number, secondsLeft: number): boolean {
 /**
  * Returns true when a market's `opens_at` aligns to a clean clock boundary
  * for its duration. Cron-created markets always do (mig 341 +
- * `_next_clean_boundary`). Test-created markets typically don't (they use
- * `NOW()` directly, leaving sub-second precision and arbitrary minutes).
+ * `_next_clean_boundary`). Test-created markets typically don't.
  *
  * Used by frontend queries to filter out leaked test markets so the live UI
- * only shows real, on-schedule rounds. Defense-in-depth: even if backend
- * cleanup misses something, the UI never displays it.
+ * only shows real, on-schedule rounds.
  *
  * Boundaries (UTC):
  *   5m  → minute % 5 === 0, sec/ms === 0

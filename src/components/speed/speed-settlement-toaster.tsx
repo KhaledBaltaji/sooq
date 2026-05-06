@@ -24,7 +24,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, X } from "lucide-react";
 import { useSpeedPositions } from "@/hooks/use-speed-positions";
 import { useUserContext } from "@/components/providers/user-provider";
-import { cn } from "@/lib/utils";
+import { cn, formatCurrency } from "@/lib/utils";
 
 interface ToastState {
   id: number;
@@ -164,7 +164,7 @@ export function SpeedSettlementToaster() {
           className={cn("speed-settlement-pop", pop.type)}
           aria-hidden
         >
-          {pop.amount >= 0 ? "+" : "−"}${Math.abs(pop.amount).toFixed(2)}
+          {pop.amount >= 0 ? "+" : "−"}{formatCurrency(Math.abs(pop.amount))}
         </div>
       )}
       {toasts.length > 0 && (
@@ -193,7 +193,7 @@ export function SpeedSettlementToaster() {
                   {t.type === "win" ? "Trade closed · Profit" : "Trade closed · Loss"}
                 </span>
                 <span className="speed-toast-amount">
-                  {t.amount >= 0 ? "+" : "−"}${Math.abs(t.amount).toFixed(2)}
+                  {t.amount >= 0 ? "+" : "−"}{formatCurrency(Math.abs(t.amount))}
                 </span>
               </div>
             </div>

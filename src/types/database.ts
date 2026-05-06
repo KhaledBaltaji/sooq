@@ -72,6 +72,8 @@ export interface SpeedTrade {
 
 // ---- RPC return shapes (jsonb) ----
 
+// Mig 0028+: pricing engine v2.
+// Mig 0030+: adds seconds_left_bucket for parity gating.
 export interface SpeedExecuteTradeResult {
   success: boolean;
   position_id: string;
@@ -83,24 +85,40 @@ export interface SpeedExecuteTradeResult {
   fair_prob: number;
   offered_prob: number;
   payout_if_won: number;
-  // Mig 369: handle_fee removed from RPC return shape (phantom field deleted).
-  iv_used?: number;
-  late_window_pct?: number;
+  // Mig 0028: spread multiplier applied at trade open (1.0 / 1.4 / 1.8 by
+  // late-window). Always present; 1.0 outside late window.
+  spread_mult: number;
+  // Mig 0030: 0=60s+, 1=30-60s, 2=10-30s, 3=<10s (rejected at execute).
+  seconds_left_bucket: number;
+  // Mig 0029: IV used at execute time (from speed_volatility_cache helper).
+  iv_used: number;
   idempotent?: boolean;
   message?: string;
 }
 
-// Mig 369: continuous formula — no winner/loser branch, no buckets.
-//   cashout = stake × (mark_prob / entry_offered) × decay × liq_discount
+// Mig 0028+: profit-based margin (option C). Direction-matching invariant
+// enforced algebraically: mark_prob > entry_offered_prob ⇒ cashout > stake.
+//   fair_profit = stake × (mark_prob/entry_offered_prob − 1)
+//   winning side  cashout = stake + fair_profit × (1 − margin_winning)
+//   losing side   cashout = stake + fair_profit × (1 + margin_losing)
+//   margin = base + saturation/desperation premium + late_window premium
+// Mig 0030+: adds seconds_left_bucket for parity gating.
 export interface SpeedExecuteCashoutResult {
   success: boolean;
   trade_id: string;
+  position_id: string;
   cashout_amount: number;
   mark_prob: number;
-  decay: number;
-  liq_discount: number;
+  // Mig 0028: true if user is winning at mark (mark_prob >= entry_offered_prob).
+  is_winning: boolean;
+  // Mig 0028: total margin applied (base + premium tiers).
+  margin_applied: number;
+  // Mig 0028: profit at fair value before margin (signed; positive = winning).
+  fair_profit: number;
   iv_used: number;
   pct_time_left: number;
+  // Mig 0030: 0=60s+, 1=30-60s, 2=10-30s, 3=<10s (rejected at execute).
+  seconds_left_bucket: number;
   idempotent?: boolean;
   message?: string;
 }

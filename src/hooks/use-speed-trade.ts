@@ -32,6 +32,30 @@ interface PositionsListResponse {
   positions: SpeedPositionWithMarket[];
 }
 
+/**
+ * Mig 0030 quote/execute parity snapshot. The client computes these at
+ * quote time and echoes them back at execute time so the server can
+ * detect drift (price moved, IV cache flipped, late-window crossed)
+ * between the two events. All optional — server treats NULL as skip,
+ * which preserves backwards-compat for older clients.
+ */
+export interface TradeParitySnapshot {
+  expectedIv?: number;
+  expectedSpot?: number;
+  /** 0=60s+, 1=30-60s, 2=10-30s, 3=<10s. */
+  expectedSecondsLeftBucket?: 0 | 1 | 2 | 3;
+  expectedFairProb?: number;
+  expectedOfferedProb?: number;
+}
+
+export interface CashoutParitySnapshot {
+  expectedIv?: number;
+  expectedSpot?: number;
+  expectedSecondsLeftBucket?: 0 | 1 | 2 | 3;
+  expectedMarkProb?: number;
+  expectedCashoutAmount?: number;
+}
+
 export function useSpeedExecuteTrade() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +68,7 @@ export function useSpeedExecuteTrade() {
       marketId: string,
       side: SpeedSide,
       stake: number,
-      expectedIv?: number,
+      parity: TradeParitySnapshot = {},
     ) => {
       setLoading(true);
       setError(null);
@@ -63,7 +87,13 @@ export function useSpeedExecuteTrade() {
             side,
             stake,
             idempotency_key: idempotencyKey,
-            expected_iv: expectedIv,
+            // Mig 0030 parity snapshot — all fields optional; server treats
+            // missing as skip-check (backwards-compat).
+            expected_iv: parity.expectedIv,
+            expected_spot: parity.expectedSpot,
+            expected_seconds_left_bucket: parity.expectedSecondsLeftBucket,
+            expected_fair_prob: parity.expectedFairProb,
+            expected_offered_prob: parity.expectedOfferedProb,
           }),
         });
 
@@ -152,7 +182,7 @@ export function useSpeedCashout() {
   const { adjustBalance, refetch: refetchUser } = useUserContext();
 
   const cashout = useCallback(
-    async (positionId: string, expectedIv?: number) => {
+    async (positionId: string, parity: CashoutParitySnapshot = {}) => {
       setLoading(true);
       setError(null);
       const bucket = Math.floor(Date.now() / 5000);
@@ -165,7 +195,12 @@ export function useSpeedCashout() {
           body: JSON.stringify({
             position_id: positionId,
             idempotency_key: idempotencyKey,
-            expected_iv: expectedIv,
+            // Mig 0030 parity snapshot — all fields optional.
+            expected_iv: parity.expectedIv,
+            expected_spot: parity.expectedSpot,
+            expected_seconds_left_bucket: parity.expectedSecondsLeftBucket,
+            expected_mark_prob: parity.expectedMarkProb,
+            expected_cashout_amount: parity.expectedCashoutAmount,
           }),
         });
 

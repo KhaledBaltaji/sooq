@@ -6,9 +6,19 @@ import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { ChevronDown, Info } from "lucide-react";
 import { cn, formatCurrency, formatNumber, triggerHapticConfirm } from "@/lib/utils";
-import { speedFairProbOver, speedOfferedProb } from "@/lib/speed/pricing";
+import {
+  ENTRY_LATE_WINDOW_REJECT_S,
+  isEntryRejectedNearDecided,
+  speedFairProbOver,
+  speedOfferedProb,
+  speedSecondsLeftBucket,
+} from "@/lib/speed/pricing";
+import { mapSpeedRpcError } from "@/lib/speed/errors";
 import type { SpeedMarket, SpeedSide } from "@/types/database";
-import { useSpeedExecuteTrade } from "@/hooks/use-speed-trade";
+import {
+  useSpeedExecuteTrade,
+  type TradeParitySnapshot,
+} from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
 import { useUser } from "@/lib/auth/hooks";
 import { useAuthModal } from "@/components/auth/auth-modal-provider";
@@ -16,8 +26,11 @@ import { useDepositModal } from "@/components/wallet/deposit-modal-provider";
 
 // Stake bounds for the trade UI. Server is authoritative — these are
 // just guardrails so the input + preset chips reflect what's currently
-// achievable. Server caps live in fee_config: speed_stake_max_usd
-// (per-bet) + speed_cap_per_side_usd (per-side per market). Mig 0027.
+// achievable. Server caps live in fee_config:
+//   speed_stake_max_<duration>_usd (per-bet, per-duration; mig 0028+)
+//   speed_per_user_per_market_cap_usd (per-side per market; mig 0028+)
+// Falls back to a generous SPEED_STAKE_MAX if fee_config doesn't have
+// the per-duration row yet — server will reject above the real cap.
 const SPEED_STAKE_MIN = 1;
 const SPEED_STAKE_MAX = 1000;
 const SPEED_STAKE_PRESETS = [10, 50, 100, 1000] as const;
@@ -37,7 +50,8 @@ export function SpeedTradePanel({
   const t = useTranslations("speed");
   const tTrade = useTranslations("trade");
   const { placeBet, loading, error } = useSpeedExecuteTrade();
-  const { iv, spread, extremeSpreadCoeff, realizedVol } = useSpeedFeeConfig();
+  const feeConfig = useSpeedFeeConfig();
+  const { iv, realizedVol } = feeConfig;
   const { user } = useUser();
   const { openLoginModal } = useAuthModal();
   const { openDepositModal } = useDepositModal();
@@ -64,33 +78,45 @@ export function SpeedTradePanel({
   // Pricing math — odds are always derived from the last-known oracle price
   // so the UI stays informative through transient realtime drops. Staleness
   // gates only trade execution (canTrade), not display.
-  // Mig 352 (Seam 4): prefer realized-volatility σ when available so the
-  // client-displayed offered prob matches what `speed_execute_trade` will
-  // actually price the bet at. Falls back to fee_config IV when RV is missing.
-  const sigma =
-    realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
+  // Mig 0028+: prefer realized-volatility σ when available so the client-
+  // displayed offered prob matches what `speed_execute_trade` will price
+  // the bet at. Falls back to fee_config IV when RV is missing.
+  const sigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
   const fairOver = livePrice
     ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
     : null;
-  // Mig 352 (Seam 3): speedOfferedProb no longer returns null — it widens the
-  // spread quadratically at extremes instead. The null branches below are
-  // effectively dead now (only fire when fairOver is null because livePrice
-  // is null), but kept for symmetry with `fairOver` gating.
-  // Mig 356: pass secondsLeft so the displayed offered prob includes the
-  // late-window surcharge in the last 30s — UI matches what server will charge.
+  // Mig 0028: speedOfferedProb uses multiplicative late-window spread
+  // escalation (×1.4 last 60s, ×1.8 last 30s) and clamps to [0.03, 0.97]
+  // to match the server's hard-reject thresholds.
   const offeredOver =
-    fairOver !== null ? speedOfferedProb(fairOver, "over", spread, extremeSpreadCoeff, secondsLeft) : null;
+    fairOver !== null ? speedOfferedProb(fairOver, "over", feeConfig, secondsLeft) : null;
   const offeredUnder =
-    fairOver !== null ? speedOfferedProb(fairOver, "under", spread, extremeSpreadCoeff, secondsLeft) : null;
+    fairOver !== null ? speedOfferedProb(fairOver, "under", feeConfig, secondsLeft) : null;
   const offeredForSide = side === "over" ? offeredOver : offeredUnder;
+  const fairForSide = fairOver !== null ? (side === "over" ? fairOver : 1 - fairOver) : null;
   const payoutPerDollar = offeredForSide ? 1 / offeredForSide : null;
   const toWin = payoutPerDollar && amount > 0 ? amount * payoutPerDollar : 0;
+
+  // Mig 0028: server-side gating predicates mirrored on the client so the
+  // button correctly disables BEFORE the user taps. Server rejects with raw
+  // exception strings; the client gate avoids the reject + toast cycle.
+  const lateRejectS =
+    feeConfig.pricing.cashoutLateRejectS ?? ENTRY_LATE_WINDOW_REJECT_S;
+  const lateRejected = secondsLeft < lateRejectS;
+  const nearDecidedReject =
+    fairForSide !== null &&
+    isEntryRejectedNearDecided(fairForSide, secondsLeft, feeConfig);
+
+  // Per-duration stake max from fee_config (admin-tunable per duration),
+  // falling back to the generic UI ceiling.
+  const stakeMaxForDuration =
+    feeConfig.stakeMaxByDuration[market.duration] ?? SPEED_STAKE_MAX;
 
   // Auth-gate cascade mirroring prediction-market trade-panel.
   const isZeroBalance = !user || balance <= 0;
   const hasBalance = !!user && balance >= amount && amount > 0;
   const aboveMin = amount >= SPEED_STAKE_MIN;
-  const aboveMax = amount > SPEED_STAKE_MAX;
+  const aboveMax = amount > stakeMaxForDuration;
   const canTrade =
     !expired &&
     !isStale &&
@@ -98,7 +124,9 @@ export function SpeedTradePanel({
     aboveMin &&
     !aboveMax &&
     hasBalance &&
-    !loading;
+    !loading &&
+    !lateRejected &&
+    !nearDecidedReject;
 
   const handleAmountInput = useCallback((val: string) => {
     const cleaned = val.replace(/[^0-9.]/g, "");
@@ -158,7 +186,7 @@ export function SpeedTradePanel({
     }
     if (aboveMax) {
       return {
-        text: tTrade("hintMaxTrade", { max: formatCurrency(SPEED_STAKE_MAX) }),
+        text: tTrade("hintMaxTrade", { max: formatCurrency(stakeMaxForDuration) }),
         type: "warning" as const,
       };
     }
@@ -169,15 +197,31 @@ export function SpeedTradePanel({
         type: "error" as const,
       };
     }
+    if (lateRejected) {
+      return {
+        text: t("entryLockedLate"),
+        type: "warning" as const,
+      };
+    }
+    if (nearDecidedReject) {
+      return {
+        text: t("entryLockedNearDecided"),
+        type: "warning" as const,
+      };
+    }
     return null;
-  }, [amount, aboveMax, balance, user, tTrade]);
+  }, [amount, aboveMax, balance, user, tTrade, t, stakeMaxForDuration, lateRejected, nearDecidedReject]);
 
   const getButtonLabel = () => {
     if (loading) return tTrade("processing");
     if (isZeroBalance) return tTrade("depositToTrade");
     if (!hasBalance && amount > 0) return tTrade("insufficientBalance");
-    return `${t("placeBet")} · ${side === "over" ? t("up") : t("down")} · $${amount}`;
+    if (lateRejected) return t("entryLockedLate");
+    if (nearDecidedReject) return t("entryLockedNearDecided");
+    return `${t("placeBet")} · ${side === "over" ? t("up") : t("down")} · ${formatCurrency(amount)}`;
   };
+
+  const mappedError = error ? mapSpeedRpcError(error) : null;
 
   const isButtonDisabled = () => {
     if (loading) return true;
@@ -185,11 +229,23 @@ export function SpeedTradePanel({
     return !canTrade;
   };
 
+  // Mig 0030: full quote/execute parity snapshot. Server validates these
+  // on execute and rejects with PARITY_DRIFT if anything moved beyond
+  // tolerance. All optional — leaving any field undefined skips that
+  // particular drift check on the server.
+  function buildParitySnapshot(): TradeParitySnapshot {
+    return {
+      expectedIv: sigma,
+      expectedSpot: livePrice ?? undefined,
+      expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
+      expectedFairProb: fairForSide ?? undefined,
+      expectedOfferedProb: offeredForSide ?? undefined,
+    };
+  }
+
   async function handleButtonClick() {
     triggerHapticConfirm();
-    // Auth-gate cascade — same pattern as the regular trade panel
-    // (src/app/(app)/market/[id]/page.tsx:118): no user → login, no
-    // balance → deposit, otherwise place the bet.
+    // Auth-gate cascade — no user → login, no balance → deposit, then bet.
     if (!user) {
       openLoginModal();
       return;
@@ -199,9 +255,13 @@ export function SpeedTradePanel({
       return;
     }
     if (!canTrade) return;
-    // Mig 369: send the IV we used to compute the displayed odds so the server
-    // can detect drift and either honour the snapshot or return IV_DRIFT.
-    const { error: err } = await placeBet(market.id, side, amount, sigma);
+    // Mig 0030: send full parity snapshot so server can detect drift.
+    const { error: err } = await placeBet(
+      market.id,
+      side,
+      amount,
+      buildParitySnapshot(),
+    );
     if (!err) onBetPlaced();
   }
 
@@ -311,7 +371,7 @@ export function SpeedTradePanel({
           </div>
           <div className="flex justify-between text-[10px] text-dim mt-1">
             <span>
-              {tTrade("hintMaxTrade", { max: formatCurrency(SPEED_STAKE_MAX) })}
+              {tTrade("hintMaxTrade", { max: formatCurrency(stakeMaxForDuration) })}
             </span>
             <span>
               {tTrade("balanceLabel")} {user ? formatCurrency(balance) : "$0.00"}
@@ -386,9 +446,9 @@ export function SpeedTradePanel({
         )}
       </div>
 
-      {error && (
+      {mappedError && (
         <div className="mt-4 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive ring-1 ring-destructive/30">
-          {error}
+          {mappedError.userMessage}
         </div>
       )}
 

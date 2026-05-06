@@ -21,7 +21,7 @@ import {
   CandlestickChart,
   LineChart as LineChartIcon,
 } from "lucide-react";
-import { cn, triggerHapticConfirm } from "@/lib/utils";
+import { cn, formatCurrency, triggerHapticConfirm } from "@/lib/utils";
 import {
   SpeedPriceChart,
   SPEED_CHART_TYPE_KEY,
@@ -32,6 +32,8 @@ import { SpeedWindowPills } from "@/components/speed/speed-window-pills";
 import {
   useSpeedExecuteTrade,
   useSpeedCashout,
+  type CashoutParitySnapshot,
+  type TradeParitySnapshot,
 } from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
 import { useSpeedPositions } from "@/hooks/use-speed-positions";
@@ -40,12 +42,16 @@ import {
   CASHOUT_REJECT_WINDOW_SECONDS,
   formatSpeedCountdown,
   isUrgent,
-  speedCashoutMultiplier,
+  computeCashoutAmount,
+  isCashoutRejectedNearDecided,
+  isEntryRejectedNearDecided,
+  speedCashoutMargin,
   speedFairProbOver,
-  speedLiqDiscount,
   speedOfferedProb,
+  speedSecondsLeftBucket,
   durationToSeconds,
 } from "@/lib/speed/pricing";
+import { mapSpeedRpcError } from "@/lib/speed/errors";
 import { OdometerNumber } from "./odometer-number";
 import type {
   SpeedMarket,
@@ -221,7 +227,7 @@ function Strip({
       {/* Balance moved here from price row — prominent at top-right */}
       <div className="flex flex-col items-end gap-[2px] pr-1">
         <span className="font-satoshi text-[17px] font-bold tabular-nums leading-none tracking-[-0.03em] text-text">
-          ${(balance ?? 0).toFixed(2)}
+          {formatCurrency(balance ?? 0)}
         </span>
         <span className="text-[9px] uppercase tracking-[0.08em] text-muted-custom font-medium">
           Bal
@@ -496,10 +502,9 @@ function PositionCard({
   const entryOfferedProb = Number(pos.entry_offered_prob);
   const isUp = pos.side === "over";
 
-  // Match the SQL formula exactly (mig 0016 line 879-882):
-  //   cashout = stake × (mark_prob / entry_offered) × decay × liq_discount
-  // Same client mirror that speed-position-panel.tsx:74-81 uses; quote/
-  // execute parity within ±$0.01 (mig 369 contract).
+  // Mig 0028+: option-C profit-based cashout. Direction-matching invariant
+  // by construction (winning ⇒ cashout > stake). Quote/execute parity via
+  // mig 0030 expected_* params (sent below).
   const totalSeconds = durationToSeconds(market.duration);
   const closesAtMs = new Date(market.closes_at).getTime();
   const [now, setNow] = useState(Date.now());
@@ -508,7 +513,8 @@ function PositionCard({
     return () => clearInterval(id);
   }, []);
   const secondsLeft = Math.max(0, Math.floor((closesAtMs - now) / 1000));
-  const cashoutLocked = secondsLeft < CASHOUT_REJECT_WINDOW_SECONDS;
+  const lateRejectS = fee.pricing.cashoutLateRejectS ?? CASHOUT_REJECT_WINDOW_SECONDS;
+  const cashoutLockedLate = secondsLeft < lateRejectS;
   const urgent = isUrgent(totalSeconds, secondsLeft);
 
   const sigma = fee.realizedVol?.[market.asset]?.rv ?? fee.iv[market.asset] ?? 0.6;
@@ -518,14 +524,18 @@ function PositionCard({
       : null;
   const markProb =
     fairOver !== null ? (isUp ? fairOver : 1 - fairOver) : null;
-  const pct = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
-  const decay = speedCashoutMultiplier(market.duration, pct, fee);
-  const liq = speedLiqDiscount(secondsLeft);
 
-  const cashoutValue =
-    markProb !== null && decay !== null
-      ? Math.max(0, Math.round(stake * (markProb / entryOfferedProb) * decay * liq * 100) / 100)
-      : null;
+  let cashoutValue: number | null = null;
+  if (markProb !== null) {
+    const isWinning = markProb >= entryOfferedProb;
+    const margin = speedCashoutMargin(market.duration, isWinning, markProb, secondsLeft, fee);
+    const raw = computeCashoutAmount(stake, entryOfferedProb, markProb, isWinning, margin);
+    cashoutValue = Math.max(0, Math.round(raw * 100) / 100);
+  }
+
+  const cashoutLockedNearDecided =
+    markProb !== null && isCashoutRejectedNearDecided(markProb, secondsLeft, fee);
+  const cashoutLocked = cashoutLockedLate || cashoutLockedNearDecided;
 
   const delta = cashoutValue !== null ? cashoutValue - stake : null;
   const potentialPayout = entryOfferedProb > 0 ? stake / entryOfferedProb : null;
@@ -533,11 +543,16 @@ function PositionCard({
   const handleCashout = useCallback(async () => {
     if (loading || cashoutLocked || cashoutValue === null) return;
     triggerHapticConfirm();
-    // Optimistic pop using the displayed value (within ±$0.01 of the RPC).
-    // The actual realized PnL reconciles to the same animation either way.
     pnlBus?.pop(cashoutValue - stake);
-    await cashout(pos.id, sigma);
-  }, [loading, cashoutLocked, cashoutValue, pnlBus, stake, cashout, pos.id, sigma]);
+    const parity: CashoutParitySnapshot = {
+      expectedIv: sigma,
+      expectedSpot: livePrice ?? undefined,
+      expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
+      expectedMarkProb: markProb ?? undefined,
+      expectedCashoutAmount: cashoutValue ?? undefined,
+    };
+    await cashout(pos.id, parity);
+  }, [loading, cashoutLocked, cashoutValue, pnlBus, stake, cashout, pos.id, sigma, livePrice, secondsLeft, markProb]);
 
   return (
     <button
@@ -548,7 +563,7 @@ function PositionCard({
         "relative w-full rounded-2xl bg-text text-bg overflow-hidden px-4 py-2.5 text-left",
         "active:scale-[0.98] transition disabled:opacity-60",
       )}
-      aria-label={`Cash out for ${cashoutValue !== null ? `$${cashoutValue.toFixed(2)}` : ""}`}
+      aria-label={`Cash out for ${cashoutValue !== null ? formatCurrency(cashoutValue) : ""}`}
     >
       {/* 4px colored side bar — UP=success, DOWN=destructive. Visual
           double-redundancy with the side chip in row 1. */}
@@ -582,7 +597,7 @@ function PositionCard({
           </span>
         </div>
         <span className="tabular-nums text-bg/55">
-          ${stake.toFixed(2)} {t("stake")}
+          {formatCurrency(stake)} {t("stake")}
         </span>
       </div>
 
@@ -621,14 +636,14 @@ function PositionCard({
             )}
           >
             {delta > 0.005 ? "+" : ""}
-            ${delta.toFixed(2)}
+            {formatCurrency(delta)}
           </span>
         ) : (
           <span />
         )}
         {potentialPayout !== null && (
           <span className="font-satoshi text-bg/60 uppercase tracking-wide text-[10px]">
-            {isUp ? t("over") : t("under")} {t("strike")} ${potentialPayout.toFixed(2)}
+            {isUp ? t("over") : t("under")} {t("strike")} {formatCurrency(potentialPayout)}
           </span>
         )}
       </div>
@@ -665,23 +680,11 @@ function Dock({
       : null;
   const offeredOver =
     fairOver !== null
-      ? speedOfferedProb(
-          fairOver,
-          "over",
-          fee.spread,
-          fee.extremeSpreadCoeff,
-          secondsLeft,
-        )
+      ? speedOfferedProb(fairOver, "over", fee, secondsLeft)
       : null;
   const offeredUnder =
     fairOver !== null
-      ? speedOfferedProb(
-          fairOver,
-          "under",
-          fee.spread,
-          fee.extremeSpreadCoeff,
-          secondsLeft,
-        )
+      ? speedOfferedProb(fairOver, "under", fee, secondsLeft)
       : null;
 
   const upMul = offeredOver ? 1 / offeredOver : null;
@@ -692,19 +695,42 @@ function Dock({
   const downPayout = downMul !== null ? stake * downMul : null;
 
   const expired = secondsLeft <= 0 || market.status !== "open";
-  const canBet =
-    !expired && !isStale && fairOver !== null && stake > 0 && !loading;
+  // Mig 0028: entry-side gating predicates mirrored on client.
+  const fairUpForGate = fairOver;
+  const fairDownForGate = fairOver !== null ? 1 - fairOver : null;
+  const upBlocked =
+    fairUpForGate !== null
+      ? isEntryRejectedNearDecided(fairUpForGate, secondsLeft, fee)
+      : false;
+  const downBlocked =
+    fairDownForGate !== null
+      ? isEntryRejectedNearDecided(fairDownForGate, secondsLeft, fee)
+      : false;
+  const canBetOver =
+    !expired && !isStale && fairOver !== null && stake > 0 && !loading && !upBlocked;
+  const canBetUnder =
+    !expired && !isStale && fairOver !== null && stake > 0 && !loading && !downBlocked;
 
   const handleBet = useCallback(
     async (side: SpeedSide) => {
-      if (!canBet) return;
+      const allowed = side === "over" ? canBetOver : canBetUnder;
+      if (!allowed) return;
       triggerHapticConfirm();
       setTapFire(side);
       setTimeout(() => setTapFire(null), 380);
-      // B7: send the IV snapshot for quote/execute parity (mig 0016).
-      await placeBet(market.id, side, stake, sigma);
+      // Mig 0030: full quote/execute parity snapshot.
+      const fairForSide = side === "over" ? fairOver : 1 - (fairOver ?? 0);
+      const offeredForSide = side === "over" ? offeredOver : offeredUnder;
+      const parity: TradeParitySnapshot = {
+        expectedIv: sigma,
+        expectedSpot: livePrice ?? undefined,
+        expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
+        expectedFairProb: fairForSide ?? undefined,
+        expectedOfferedProb: offeredForSide ?? undefined,
+      };
+      await placeBet(market.id, side, stake, parity);
     },
-    [canBet, placeBet, market.id, stake, sigma],
+    [canBetOver, canBetUnder, placeBet, market.id, stake, sigma, livePrice, secondsLeft, fairOver, offeredOver, offeredUnder],
   );
 
   return (
@@ -764,14 +790,14 @@ function Dock({
           dir="over"
           payout={upPayout}
           onClick={() => handleBet("over")}
-          disabled={!canBet}
+          disabled={!canBetOver}
           fired={tapFire === "over"}
         />
         <BetButton
           dir="under"
           payout={downPayout}
           onClick={() => handleBet("under")}
-          disabled={!canBet}
+          disabled={!canBetUnder}
           fired={tapFire === "under"}
         />
       </div>
@@ -815,7 +841,7 @@ function BetButton({
       </span>
       {/* A6: total payout (stake + profit) instead of marginal profit. */}
       <span className="text-[14px] font-black tabular-nums leading-none">
-        {payout !== null ? `$${payout.toFixed(2)}` : "—"}
+        {payout !== null ? formatCurrency(payout) : "—"}
       </span>
       {fired && (
         <span
