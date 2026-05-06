@@ -76,8 +76,28 @@ const cashoutMissing = await c.query(`
       WHERE st.position_id = p.id AND st.kind = 'cashout' AND t.type = 'speed_cashout'
     )
 `);
-if (cashoutMissing.rows[0].n === 0) pass("every cashed_out has a payout tx");
+if (cashoutMissing.rows[0].n === 0) pass("every cashed_out (>0 payout) has a payout tx");
 else fail(`${cashoutMissing.rows[0].n} cashouts missing payout tx`);
+
+// 5a) T4.1 (mig 0033): every cashout speed_trades row should have a paired
+// transactions row, even when amount = 0. Pre-mig-0033 the IF guard around
+// the post-trade INSERT skipped writing a tx when v_cashout_amount was 0,
+// leaving an orphan trade row. Mig 0033 dropped the guard. This check
+// catches any regression OR any orphans that pre-date the migration.
+sec("$0 cashout trades — every cashout speed_trades row paired with tx (mig 0033)");
+const zeroCashoutMissing = await c.query(`
+  SELECT count(*)::int AS n FROM speed_trades st
+  WHERE st.kind = 'cashout'
+    AND NOT EXISTS (
+      SELECT 1 FROM transactions t
+      WHERE t.reference_id = st.id AND t.type = 'speed_cashout'
+    )
+`);
+if (zeroCashoutMissing.rows[0].n === 0) pass("every cashout trade has a paired tx (incl. $0)");
+else fail(
+  `${zeroCashoutMissing.rows[0].n} cashout trades have no paired tx — ` +
+  `pre-mig-0033 orphans or post-mig regression`,
+);
 
 // 6) Won positions missing payout tx
 sec("Won positions without payout tx");
@@ -92,6 +112,22 @@ const wonMissing = await c.query(`
 `);
 if (wonMissing.rows[0].n === 0) pass("every won has a payout tx");
 else fail(`${wonMissing.rows[0].n} won positions missing payout tx`);
+
+// 6a) T4.1 (post-0028): refunded positions should have a paired refund tx.
+// Refunded covers two paths: voided markets (mig 366 'at_strike' = push) and
+// markets with no oracle ticks at expiry (resolve void path).
+sec("Refunded positions without refund tx");
+const refundMissing = await c.query(`
+  SELECT count(*)::int AS n FROM speed_positions p
+  WHERE p.status = 'refunded'
+    AND COALESCE(p.payout_amount, 0) > 0
+    AND NOT EXISTS (
+      SELECT 1 FROM transactions t
+      WHERE t.user_id = p.user_id AND t.type = 'speed_refund' AND t.reference_id = p.id
+    )
+`);
+if (refundMissing.rows[0].n === 0) pass("every refunded position has a refund tx");
+else fail(`${refundMissing.rows[0].n} refunded positions missing refund tx`);
 
 // 7) Settlements vs positions
 sec("Position status vs settlement coverage");

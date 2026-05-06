@@ -17,7 +17,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
 type Range = "today" | "7d" | "30d" | "all";
 // Admin keeps historical durations (15m/24h) as filter options so old data
-// is queryable. New markets are 5m + 1h only (mig 369).
+// is queryable. New markets are 5m + 1h only (mig 0028+).
 type DurationFilter = "all" | "5m" | "1h" | "15m" | "24h";
 type UserSort = "winners" | "losers" | "volume";
 

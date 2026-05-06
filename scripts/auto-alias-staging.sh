@@ -20,9 +20,13 @@
 set -u
 
 LOG="$HOME/.claude/vercel-alias-staging.log"
+SENTINEL="$HOME/.claude/vercel-alias-staging.RECOVERY-NEEDED"
 PROJECT="sooq"
 ALIAS="staging.sooq.exchange"
-TIMEOUT_S=360
+# T4.3: bumped 360s → 600s. Observed ~7min build time on T0/T1 deploys
+# (CI + Vercel + Next.js compile). 360s gave up before the new deploy
+# was READY, leaving the alias stuck on the old build until manual fix.
+TIMEOUT_S=600
 POLL_S=20
 
 log() {
@@ -61,14 +65,24 @@ done
 
 if [ -z "$NEW_URL" ]; then
   log "FAILED: no new READY deployment within ${TIMEOUT_S}s — alias unchanged"
+  # T4.4: drop a sentinel file the next session start can check. It carries
+  # the pre-push URL so a recovery script knows what state we were in. If a
+  # newer READY deployment shows up after we gave up, the next session can
+  # rotate without needing the user to re-trigger a push.
+  printf 'pre_push_url=%s\ngave_up_at=%s\n' \
+    "${PRE_PUSH_URL:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$SENTINEL"
   exit 1
 fi
 
 log "new READY url=$NEW_URL — running alias set"
 if vercel alias set "$NEW_URL" "$ALIAS" >> "$LOG" 2>&1; then
   log "OK: $ALIAS now points at $NEW_URL"
+  # Clear any prior recovery sentinel — we're good now.
+  rm -f "$SENTINEL"
   exit 0
 else
   log "FAILED: vercel alias set returned non-zero — manual fix required"
+  printf 'pre_push_url=%s\nfailed_url=%s\nfailed_at=%s\n' \
+    "${PRE_PUSH_URL:-}" "$NEW_URL" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$SENTINEL"
   exit 1
 fi

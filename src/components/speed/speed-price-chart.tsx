@@ -119,7 +119,7 @@ export function SpeedPriceChart({
   // aggregation hides those gaps, so the two views looked like different
   // charts on the same market. Aligning bucket sizes makes both views
   // honest about the actual data density.
-  // Mig 369: durations are 5m + 1h. 5m uses 15s buckets, 1h uses 60s buckets.
+  // Mig 0028+: durations are 5m + 1h. 5m uses 15s buckets, 1h uses 60s buckets.
   // Older 15m/24h enum values can still appear in historical markets but new
   // markets are limited to 5m + 1h.
   const resolvedBucket =

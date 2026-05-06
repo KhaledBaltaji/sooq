@@ -1,8 +1,11 @@
-// scripts/check-audit-health.mjs — exits non-zero if any of the three
+// scripts/check-audit-health.mjs — exits non-zero if any of the four
 // platform invariants fail:
 //   1. Stuck markets (status='open' AND closes_at < NOW() - 30s)
 //   2. Cron freshness (last successful speed-roll/speed-resolve > 30s ago)
 //   3. Ledger drift (users.balance_usd vs SUM(transactions) > $0.01)
+//   4. T4.1 (mig 0033): cashout speed_trades rows with no paired tx row.
+//      $0 cashouts pre-mig-0033 silently skipped the tx INSERT — orphan
+//      trade rows. Mig 0033 fixed it; this check guards against regression.
 //
 // Used by .github/workflows/audit-monitor.yml every 5 minutes. Catches
 // the class of silent failures that hid the mig 0016 settlement bug
@@ -92,6 +95,23 @@ try {
   const driftN = Number(drift.rows[0]?.n ?? 0);
   if (driftN > 0) failures.push(fail(`${driftN} users with balance/ledger drift > $${LEDGER_TOLERANCE_USD}`));
 
+  // 4. T4.1 (mig 0033): orphan cashout trades — speed_trades rows of kind
+  // 'cashout' that have no paired transactions row. Pre-mig-0033 these
+  // happened on $0 cashouts; mig 0033 dropped the IF guard so all cashouts
+  // now write a tx row. Catches regression OR pre-mig-0033 stragglers.
+  const orphanCashout = await client.query(`
+    SELECT COUNT(*)::int AS n FROM speed_trades st
+    WHERE st.kind = 'cashout'
+      AND NOT EXISTS (
+        SELECT 1 FROM transactions t
+        WHERE t.reference_id = st.id AND t.type = 'speed_cashout'
+      )
+  `);
+  const orphanCashoutN = Number(orphanCashout.rows[0]?.n ?? 0);
+  if (orphanCashoutN > 0) {
+    failures.push(fail(`${orphanCashoutN} orphan cashout trades (no paired tx row — mig 0033 regression?)`));
+  }
+
   const ok = failures.length === 0;
 
   if (JSON_MODE) {
@@ -100,10 +120,11 @@ try {
       stuck_markets: stuckN,
       cron_jobs: cron.rows.map((r) => ({ jobname: r.jobname, last_ok_age_s: r.last_ok_age_s == null ? null : Number(r.last_ok_age_s) })),
       ledger_drift_users: driftN,
+      orphan_cashout_trades: orphanCashoutN,
       failures,
     }));
   } else if (ok) {
-    console.log(`OK: 0 stuck markets, cron fresh, 0 ledger drift`);
+    console.log(`OK: 0 stuck markets, cron fresh, 0 ledger drift, 0 orphan cashouts`);
   }
 
   process.exit(ok ? 0 : 1);

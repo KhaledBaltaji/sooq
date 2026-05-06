@@ -4,7 +4,7 @@
 // version dropped Markets/Help columns + had a broken t("rights") call
 // (the actual i18n key is "copyright" with a {year} placeholder).
 // Sooq is speed-only-on-BTC for v1; the Markets column lists the active
-// durations (mig 369: 15m and 24h removed; only 5m + 1h create new rounds).
+// durations (mig 0028+: 15m and 24h removed; only 5m + 1h create new rounds).
 
 import Link from "next/link";
 import { useTranslations } from "next-intl";

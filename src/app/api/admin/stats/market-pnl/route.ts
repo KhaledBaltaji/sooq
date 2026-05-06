@@ -6,7 +6,7 @@ import { runAs } from "@/lib/db/run-as";
 import { authErrorToResponse, requireAdminApi } from "@/lib/auth/api-guards";
 
 // Admin allows historical durations (15m/24h) as filter values so old data is
-// still queryable; new markets are 5m+1h only (mig 369).
+// still queryable; new markets are 5m+1h only (mig 0028+).
 const ALLOWED_DURATIONS = ["5m", "15m", "1h", "24h"] as const;
 
 interface MarketPnlRow {

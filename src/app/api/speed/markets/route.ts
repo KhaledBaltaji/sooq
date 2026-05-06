@@ -7,7 +7,7 @@
 //   limit       — max rows (default 50, cap 200)
 // Public endpoint. Polled by use-speed-markets, speed-window-pills.
 //
-// Mig 369: durations are 5m + 1h only. 15m and 24h were removed in mig 361 +
+// Mig 0028+: durations are 5m + 1h only. 15m and 24h were removed in mig 361 +
 // mig 363; the trade RPC explicitly rejects them. Historical markets keep
 // their enum value but new ones aren't created.
 
@@ -51,7 +51,7 @@ export async function GET(req: Request) {
   const conditions: SQL[] = [];
   if (asset) conditions.push(eq(speedMarkets.asset, asset));
   if (status) conditions.push(eq(speedMarkets.status, status));
-  // Mig 369: hide stale 15m / 24h rows from the public feed. The enum on
+  // Mig 0028+: hide stale 15m / 24h rows from the public feed. The enum on
   // staging RDS still has those values (never removed because Postgres
   // doesn't support enum value removal without a full rewrite, and
   // historical positions FK-reference them) but they're no longer valid
