@@ -381,8 +381,25 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
     );
   }
 
+  // Desktop path. Keyed by market.id so that when Effect B's
+  // `router.replace(/speed/${next.id})` swaps the route on expiry, the
+  // entire subtree unmounts and remounts cleanly. Without the key, React
+  // re-uses this component instance across the id change and stale state
+  // survives — `expiryDetected` (line 163) stays true and traps the
+  // SECOND auto-advance, the lightweight-charts canvas keeps the old
+  // opens_at/closes_at window, and trade-panel form state persists. Users
+  // had to refresh to recover. The mobile path at line 358-381 already
+  // does the same trick via AnimatePresence; this is desktop parity.
   return (
-    <div className="pb-36 lg:pb-4">
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={market.id}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        className="pb-36 lg:pb-4"
+      >
       <SpeedAssetHeader
         ref={titleRef}
         asset={market.asset}
@@ -551,7 +568,8 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
         isStale={isStale}
         onBetPlaced={() => setBumpKey((k) => k + 1)}
       />
-    </div>
+      </motion.div>
+    </AnimatePresence>
   );
 }
 
