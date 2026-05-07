@@ -75,6 +75,27 @@ const FEE_LABELS: Record<string, { label: string; hint: string }> = {
   speed_per_user_velocity_max:   { label: "Velocity Cap (bets/min)",    hint: "Hard reject when user exceeds this many bets per rolling minute." },
   speed_per_user_open_exposure_pct: { label: "Open Exposure Cap (% of pool)", hint: "Hard reject when user's total open liability exceeds this fraction of pool." },
   speed_per_user_daily_handle_alert: { label: "Daily Handle Alert ($)", hint: "Telemetry-only. Logs to speed_user_alerts when daily handle crosses this. No enforcement." },
+  // ── Mig 0034: matrix pricing flags ──
+  speed_pricing_matrix_enabled:        { label: "Matrix Pricing — Master",     hint: "DANGER ZONE: enable matrix-based pricing for entry AND cashout TOGETHER. Default 0 (BSM only)." },
+  speed_pricing_asym_pushup_enabled:   { label: "Asymmetric Push-Up Rule",     hint: "When matrix enabled, max(matrix, BSM) is used so pricing only ever raises (codex required)." },
+  speed_pricing_matrix_version:        { label: "Active Matrix Version",       hint: "Auto-set by recalibration cron. Read-only in practice." },
+  speed_pricing_matrix_min_n_eff:      { label: "Matrix Min N (markets)",      hint: "Cells with fewer than this many independent markets fall back to BSM." },
+  speed_pricing_matrix_ci_max_width:   { label: "Matrix Max CI Width",         hint: "Cells with CI width above this shrink hard toward BSM prior." },
+  speed_pricing_matrix_prior_n:        { label: "Matrix Prior Weight",         hint: "Bayesian shrinkage weight (toward 0.5 neutral)." },
+  // ── Mig 0034: soft-block ──
+  speed_entry_soft_block_enabled:           { label: "Entry Soft-Block Enabled",      hint: "DANGER ZONE: when 1, RPC raises SOFT_BLOCK and UI greys button when offered_prob >= threshold." },
+  speed_entry_soft_block_threshold:         { label: "Entry Soft-Block Threshold",    hint: "Lock at offered_prob >= this. Default 0.95." },
+  speed_entry_soft_block_unlock_threshold:  { label: "Entry Soft-Block Unlock",       hint: "Hysteresis unlock — must drop below this to release. Default 0.94." },
+  // ── Mig 0034: per-ticket payout caps ──
+  speed_entry_max_payout_usd_5m: { label: "Per-Ticket Payout Cap — 5m",  hint: "Reject any single 5m ticket where stake / offered_prob exceeds this." },
+  speed_entry_max_payout_usd_1h: { label: "Per-Ticket Payout Cap — 1h",  hint: "Reject any single 1h ticket where payout exceeds this." },
+  // ── Mig 0034: cashout cap-edge ──
+  speed_cashout_cap_edge_threshold: { label: "Cashout Cap-Edge Threshold", hint: "When entry AND mark prob both >= this, cashout disabled with 'Hold for settlement'." },
+  // ── Mig 0034: three-tier NGR breaker ──
+  speed_daily_ngr_alert_usd:     { label: "NGR Tier 1 — Alert",      hint: "Slack notification, no enforcement. Default -$500." },
+  speed_daily_ngr_soft_block_usd:{ label: "NGR Tier 2 — Soft Block", hint: "Per-trade max temporarily reduced. Default -$2,500." },
+  speed_daily_ngr_hard_stop_usd: { label: "NGR Tier 3 — Hard Stop",  hint: "Trading paused entirely until manual review. Default -$5,000." },
+  speed_ngr_soft_block_stake_max_usd: { label: "NGR Soft-Block Stake Max", hint: "Per-trade stake cap when NGR soft-block tier is active. Default $100." },
 };
 
 // Keys whose `rate` column stores a USD amount (not a 0–1 fraction). Format
@@ -88,6 +109,13 @@ const CURRENCY_KEYS = new Set<string>([
   "speed_pool_collateral_usd",
   "speed_daily_ngr_floor_usd",
   "speed_per_user_daily_handle_alert",
+  // Mig 0034
+  "speed_entry_max_payout_usd_5m",
+  "speed_entry_max_payout_usd_1h",
+  "speed_daily_ngr_alert_usd",
+  "speed_daily_ngr_soft_block_usd",
+  "speed_daily_ngr_hard_stop_usd",
+  "speed_ngr_soft_block_stake_max_usd",
 ]);
 
 // Keys whose `rate` is a raw count or seconds, formatted plainly (no % / $).
@@ -96,6 +124,10 @@ const PLAIN_NUMBER_KEYS = new Set<string>([
   "speed_cashout_late_reject_s",
   "speed_per_user_velocity_max",
   "speed_extreme_spread_coeff",
+  // Mig 0034
+  "speed_pricing_matrix_version",
+  "speed_pricing_matrix_min_n_eff",
+  "speed_pricing_matrix_prior_n",
 ]);
 
 // Keys whose `rate` is a multiplier (e.g. 1.4 for 1.4×).
@@ -121,7 +153,10 @@ function formatRate(fee: FeeRow): string {
     return `${Number(fee.rate)}`;
   }
   if (fee.fee_type === "speed_markets_enabled" || fee.fee_type === "speed_cashout_enabled" ||
-      fee.fee_type === "speed_use_realized_vol" || fee.fee_type === "speed_iv_fail_closed") {
+      fee.fee_type === "speed_use_realized_vol" || fee.fee_type === "speed_iv_fail_closed" ||
+      fee.fee_type === "speed_pricing_matrix_enabled" ||
+      fee.fee_type === "speed_pricing_asym_pushup_enabled" ||
+      fee.fee_type === "speed_entry_soft_block_enabled") {
     return Number(fee.rate) === 0 ? "OFF" : "ON";
   }
   return `${(fee.rate * 100).toFixed(2)}%`;
@@ -246,6 +281,47 @@ const FEE_GROUPS: FeeGroup[] = [
       "speed_per_user_velocity_max",
       "speed_per_user_open_exposure_pct",
       "speed_per_user_daily_handle_alert",
+    ],
+  },
+  // ── Mig 0034: pricing engine v3 ──
+  {
+    key: "speed_matrix_pricing",
+    title: "Speed Matrix Pricing (mig 0034)",
+    subtitle: "Empirical-matrix pricing + asymmetric push-up + soft-block. DANGER ZONE.",
+    icon: "matrix",
+    types: [
+      "speed_pricing_matrix_enabled",
+      "speed_pricing_asym_pushup_enabled",
+      "speed_pricing_matrix_version",
+      "speed_pricing_matrix_min_n_eff",
+      "speed_pricing_matrix_ci_max_width",
+      "speed_pricing_matrix_prior_n",
+      "speed_entry_soft_block_enabled",
+      "speed_entry_soft_block_threshold",
+      "speed_entry_soft_block_unlock_threshold",
+      "speed_cashout_cap_edge_threshold",
+    ],
+  },
+  {
+    key: "speed_payout_caps",
+    title: "Speed Per-Ticket Payout Caps (mig 0034)",
+    subtitle: "Maximum gross payout per single ticket — blast-radius cap",
+    icon: "shield",
+    types: [
+      "speed_entry_max_payout_usd_5m",
+      "speed_entry_max_payout_usd_1h",
+    ],
+  },
+  {
+    key: "speed_ngr_breaker",
+    title: "Speed Three-Tier NGR Breaker (mig 0034)",
+    subtitle: "Alert / soft-block / hard-stop tiers when daily NGR drops",
+    icon: "warning",
+    types: [
+      "speed_daily_ngr_alert_usd",
+      "speed_daily_ngr_soft_block_usd",
+      "speed_daily_ngr_hard_stop_usd",
+      "speed_ngr_soft_block_stake_max_usd",
     ],
   },
 ];

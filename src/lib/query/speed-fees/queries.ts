@@ -38,14 +38,14 @@ export interface SpeedCashoutMargins {
 }
 
 /**
- * Mig 0028 + 0031: pricing knobs that gate trade entry / cashout / spread.
+ * Mig 0028 + 0031 + 0034: pricing knobs that gate trade entry / cashout / spread.
  */
 export interface SpeedPricingConfig {
   /** Base spread (mig 0028: default 0.05 = 5%). */
   spreadPct: number;
-  /** Spread multiplier when secondsLeft ∈ [30, 60). */
+  /** Spread multiplier when secondsLeft ∈ [30, 60). Mig 0034: reduced 1.4 → 1.2. */
   late60sSpreadMult: number;
-  /** Spread multiplier when secondsLeft < 30. */
+  /** Spread multiplier when secondsLeft < 30. Mig 0034: reduced 1.8 → 1.4. */
   late30sSpreadMult: number;
   /** Reject entry when fair_prob_side > this. Mig 0028 replaces 0.99 clamp. */
   fairProbRejectHigh: number;
@@ -63,10 +63,22 @@ export interface SpeedPricingConfig {
   oracleStaleSeconds: number;
   /** Quadratic widening coefficient on offered-prob spread (Seam 3). */
   extremeSpreadCoeff: number;
+  /** Mig 0034: matrix-based pricing master switch (server-enforced). */
+  matrixEnabled: boolean;
+  /** Mig 0034: asymmetric only-push-up rule. */
+  asymPushupEnabled: boolean;
+  /** Mig 0034: soft-block enabled flag. */
+  entrySoftBlockEnabled: boolean;
+  /** Mig 0034: soft-block threshold — UI greys trade button when offered_prob >= this. */
+  entrySoftBlockThreshold: number;
+  /** Mig 0034: hysteresis unlock threshold. */
+  entrySoftBlockUnlockThreshold: number;
+  /** Mig 0034: cashout cap-edge threshold. UI shows "Hold for settlement" when both entry and mark >= this. */
+  cashoutCapEdgeThreshold: number;
 }
 
 /**
- * Mig 0028 + 0031: per-pool and per-user risk caps.
+ * Mig 0028 + 0031 + 0034: per-pool and per-user risk caps.
  */
 export interface SpeedRiskCaps {
   /** Pool collateral in USD (cap baseline). */
@@ -79,6 +91,18 @@ export interface SpeedRiskCaps {
   sameStrikeClusterCapPct: number;
   /** Daily NGR floor — circuit breaker halts new entries when crossed. */
   dailyNgrFloorUsd: number;
+  /** Mig 0034: per-ticket gross payout cap for 5m markets. */
+  entryMaxPayoutUsd5m: number;
+  /** Mig 0034: per-ticket gross payout cap for 1h markets. */
+  entryMaxPayoutUsd1h: number;
+  /** Mig 0034: NGR alert threshold (telemetry). */
+  dailyNgrAlertUsd: number;
+  /** Mig 0034: NGR soft-block threshold (reduces per-trade max). */
+  dailyNgrSoftBlockUsd: number;
+  /** Mig 0034: NGR hard-stop threshold (pauses trading). */
+  dailyNgrHardStopUsd: number;
+  /** Mig 0034: per-trade stake max during NGR soft-block tier. */
+  ngrSoftBlockStakeMaxUsd: number;
 }
 
 /**
@@ -125,8 +149,9 @@ export const DEFAULT_SPEED_FEE_CONFIG: SpeedFeeConfig = {
   useRealizedVol: true,
   pricing: {
     spreadPct: 0.05,
-    late60sSpreadMult: 1.4,
-    late30sSpreadMult: 1.8,
+    // Mig 0034: reduced from 1.4/1.8 — matrix encodes directional kill-zone
+    late60sSpreadMult: 1.2,
+    late30sSpreadMult: 1.4,
     fairProbRejectHigh: 0.97,
     fairProbRejectLow: 0.03,
     late30sImbalanceReject: 0.3,
@@ -135,6 +160,13 @@ export const DEFAULT_SPEED_FEE_CONFIG: SpeedFeeConfig = {
     ivDriftTolerancePct: 0.1,
     oracleStaleSeconds: 2,
     extremeSpreadCoeff: 8,
+    // Mig 0034 defaults — flags OFF until admin enables
+    matrixEnabled: false,
+    asymPushupEnabled: true,
+    entrySoftBlockEnabled: false,
+    entrySoftBlockThreshold: 0.95,
+    entrySoftBlockUnlockThreshold: 0.94,
+    cashoutCapEdgeThreshold: 0.985,
   },
   cashoutMargins: {
     winningBase5m: 0.025,
@@ -152,6 +184,13 @@ export const DEFAULT_SPEED_FEE_CONFIG: SpeedFeeConfig = {
     perUserPerMarketCapUsd: 200,
     sameStrikeClusterCapPct: 0.3,
     dailyNgrFloorUsd: -500,
+    // Mig 0034 defaults
+    entryMaxPayoutUsd5m: 2500,
+    entryMaxPayoutUsd1h: 5000,
+    dailyNgrAlertUsd: -500,
+    dailyNgrSoftBlockUsd: -2500,
+    dailyNgrHardStopUsd: -5000,
+    ngrSoftBlockStakeMaxUsd: 100,
   },
   softGuards: {
     velocityMax: 30,
@@ -241,6 +280,25 @@ export async function fetchSpeedFeeConfig(): Promise<SpeedFeeConfig> {
       case "speed_oracle_stale_seconds":
         config.pricing.oracleStaleSeconds = rate;
         continue;
+      // Mig 0034: matrix + soft-block + cap-edge
+      case "speed_pricing_matrix_enabled":
+        config.pricing.matrixEnabled = rate !== 0;
+        continue;
+      case "speed_pricing_asym_pushup_enabled":
+        config.pricing.asymPushupEnabled = rate !== 0;
+        continue;
+      case "speed_entry_soft_block_enabled":
+        config.pricing.entrySoftBlockEnabled = rate !== 0;
+        continue;
+      case "speed_entry_soft_block_threshold":
+        config.pricing.entrySoftBlockThreshold = rate;
+        continue;
+      case "speed_entry_soft_block_unlock_threshold":
+        config.pricing.entrySoftBlockUnlockThreshold = rate;
+        continue;
+      case "speed_cashout_cap_edge_threshold":
+        config.pricing.cashoutCapEdgeThreshold = rate;
+        continue;
     }
 
     // Cashout margins (mig 0028)
@@ -293,6 +351,25 @@ export async function fetchSpeedFeeConfig(): Promise<SpeedFeeConfig> {
         continue;
       case "speed_daily_ngr_floor_usd":
         config.riskCaps.dailyNgrFloorUsd = rate;
+        continue;
+      // Mig 0034: per-ticket payout caps + three-tier NGR breaker
+      case "speed_entry_max_payout_usd_5m":
+        config.riskCaps.entryMaxPayoutUsd5m = rate;
+        continue;
+      case "speed_entry_max_payout_usd_1h":
+        config.riskCaps.entryMaxPayoutUsd1h = rate;
+        continue;
+      case "speed_daily_ngr_alert_usd":
+        config.riskCaps.dailyNgrAlertUsd = rate;
+        continue;
+      case "speed_daily_ngr_soft_block_usd":
+        config.riskCaps.dailyNgrSoftBlockUsd = rate;
+        continue;
+      case "speed_daily_ngr_hard_stop_usd":
+        config.riskCaps.dailyNgrHardStopUsd = rate;
+        continue;
+      case "speed_ngr_soft_block_stake_max_usd":
+        config.riskCaps.ngrSoftBlockStakeMaxUsd = rate;
         continue;
     }
 

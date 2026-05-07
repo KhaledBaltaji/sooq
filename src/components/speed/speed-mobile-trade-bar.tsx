@@ -8,8 +8,10 @@ import {
   CASHOUT_REJECT_WINDOW_SECONDS,
   computeCashoutAmount,
   ENTRY_LATE_WINDOW_REJECT_S,
+  isCashoutAtCapEdge,
   isCashoutRejectedNearDecided,
   isEntryRejectedNearDecided,
+  isEntrySoftBlocked,
   speedCashoutMargin,
   speedFairProbOver,
   speedOfferedProb,
@@ -113,12 +115,17 @@ export function SpeedMobileTradeBar({
       fairOver !== null
         ? isEntryRejectedNearDecided(1 - fairOver, secondsLeft, feeConfig)
         : false;
+    // Mig 0034: soft-block — same predicate desktop uses
+    const overSoftBlocked =
+      offeredOver !== null && isEntrySoftBlocked(offeredOver, feeConfig);
+    const underSoftBlocked =
+      offeredUnder !== null && isEntrySoftBlocked(offeredUnder, feeConfig);
     const canBetOver =
       !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
-      !lateRejected && !fairOverGate && rvLoaded;
+      !lateRejected && !fairOverGate && !overSoftBlocked && rvLoaded;
     const canBetUnder =
       !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
-      !lateRejected && !fairUnderGate && rvLoaded;
+      !lateRejected && !fairUnderGate && !underSoftBlocked && rvLoaded;
 
     const handleBet = async (side: SpeedSide) => {
       const allowed = side === "over" ? canBetOver : canBetUnder;
@@ -273,7 +280,13 @@ export function SpeedMobileTradeBar({
   const cashoutLockedNearDecided =
     markProb !== null &&
     isCashoutRejectedNearDecided(markProb, secondsLeft, feeConfig);
-  const cashoutLocked = cashoutLockedLate || cashoutLockedNearDecided;
+  // Mig 0034: cap-edge — when both entry and current mark are at the price cap
+  const cashoutAtCap =
+    markProb !== null &&
+    isCashoutAtCapEdge(entryProb, markProb, feeConfig);
+  const cashoutLocked = cashoutLockedLate || cashoutLockedNearDecided || cashoutAtCap;
+  // Expected settlement payout shown in the cap-edge tooltip / message
+  const expectedSettlementPayout = entryProb > 0 ? stakeAmt / entryProb : 0;
 
   const handleCashout = async () => {
     if (cashLoading || expired || cashoutLocked) return;
@@ -296,6 +309,8 @@ export function SpeedMobileTradeBar({
     cashoutLabel = t("cashoutLockedLate");
   } else if (cashoutLockedNearDecided) {
     cashoutLabel = t("cashoutLockedNearDecided");
+  } else if (cashoutAtCap) {
+    cashoutLabel = `Hold for settlement · ${formatCurrency(expectedSettlementPayout)}`;
   } else if (estCashout !== null) {
     cashoutLabel = `${t("cashOut")} · ${formatCurrency(estCashout)}`;
   } else {

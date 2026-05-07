@@ -9,7 +9,9 @@ import { cn, formatCurrency, formatNumber, triggerHapticConfirm } from "@/lib/ut
 import {
   ENTRY_LATE_WINDOW_REJECT_S,
   isEntryRejectedNearDecided,
+  isEntrySoftBlocked,
   speedFairProbOver,
+  speedMaxStakeForOffered,
   speedOfferedProb,
   speedSecondsLeftBucket,
 } from "@/lib/speed/pricing";
@@ -116,26 +118,43 @@ export function SpeedTradePanel({
     fairForSide !== null &&
     isEntryRejectedNearDecided(fairForSide, secondsLeft, feeConfig);
 
+  // Mig 0034: soft-block — UI greys button before quote endpoint confirms.
+  // Server enforces authoritatively; this is fallback display only.
+  const softBlocked =
+    offeredForSide !== null && isEntrySoftBlocked(offeredForSide, feeConfig);
+
   // Per-duration stake max from fee_config (admin-tunable per duration),
   // falling back to the generic UI ceiling.
   const stakeMaxForDuration =
     feeConfig.stakeMaxByDuration[market.duration] ?? SPEED_STAKE_MAX;
+
+  // Mig 0034: dynamic max-stake formula — caps stake by per-trade limit,
+  // per-ticket payout cap, and per-side liability cap. Tightens for deep
+  // underdog odds. Server enforces; client mirrors for inline hint.
+  const dynamicStakeMax =
+    offeredForSide !== null
+      ? speedMaxStakeForOffered(market.duration, offeredForSide, feeConfig)
+      : stakeMaxForDuration;
 
   // Auth-gate cascade mirroring prediction-market trade-panel.
   const isZeroBalance = !user || balance <= 0;
   const hasBalance = !!user && balance >= amount && amount > 0;
   const aboveMin = amount >= SPEED_STAKE_MIN;
   const aboveMax = amount > stakeMaxForDuration;
+  // Mig 0034: dynamic stake limit (tighter than configured trade max for low-prob bets)
+  const aboveDynamicMax = amount > dynamicStakeMax;
   const canTrade =
     !expired &&
     !isStale &&
     fairOver !== null &&
     aboveMin &&
     !aboveMax &&
+    !aboveDynamicMax &&
     hasBalance &&
     !loading &&
     !lateRejected &&
     !nearDecidedReject &&
+    !softBlocked &&
     rvLoaded;
 
   const handleAmountInput = useCallback((val: string) => {
@@ -219,8 +238,39 @@ export function SpeedTradePanel({
         type: "warning" as const,
       };
     }
+    // Mig 0034: soft-block — friendly "market closing" message
+    if (softBlocked) {
+      return {
+        text: "Market closing — try next round in a moment",
+        type: "warning" as const,
+      };
+    }
+    // Mig 0034: dynamic stake max (tighter than configured trade max for low-prob bets)
+    if (
+      aboveDynamicMax &&
+      !aboveMax &&
+      amount >= SPEED_STAKE_MIN
+    ) {
+      return {
+        text: `Limit reached — your max trade size is ${formatCurrency(dynamicStakeMax)}`,
+        type: "warning" as const,
+      };
+    }
     return null;
-  }, [amount, aboveMax, balance, user, tTrade, t, stakeMaxForDuration, lateRejected, nearDecidedReject]);
+  }, [
+    amount,
+    aboveMax,
+    aboveDynamicMax,
+    dynamicStakeMax,
+    balance,
+    user,
+    tTrade,
+    t,
+    stakeMaxForDuration,
+    lateRejected,
+    nearDecidedReject,
+    softBlocked,
+  ]);
 
   const getButtonLabel = () => {
     if (loading) return tTrade("processing");
@@ -228,6 +278,7 @@ export function SpeedTradePanel({
     if (!hasBalance && amount > 0) return tTrade("insufficientBalance");
     if (lateRejected) return t("entryLockedLate");
     if (nearDecidedReject) return t("entryLockedNearDecided");
+    if (softBlocked) return "Market closing";
     return `${t("placeBet")} · ${side === "over" ? t("up") : t("down")} · ${formatCurrency(amount)}`;
   };
 

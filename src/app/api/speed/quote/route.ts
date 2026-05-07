@@ -14,16 +14,10 @@
 //     the position's stored entry_offered_prob to compute the same
 //     option-C profit-based margin the cashout RPC will apply.
 //
-// All math runs server-side via PG helpers (_speed_get_iv,
-// speed_fair_prob_over, _speed_seconds_left_bucket, _speed_cashout_margin).
-// No JS duplication of pricing logic — the quote and execute paths see the
-// SAME numbers because they call the SAME functions.
-//
-// Codex review fix: quote endpoint applies the same oracle freshness gate
-// (speed_oracle_stale_seconds) as the execute RPCs. Without this, users
-// could see a quote that the subsequent execute call rejects, generating
-// CS disputes about "the price changed". The freshness check makes both
-// paths reject for the same reason at the same time.
+// 0034: pricing engine v3 — calls _speed_pricing_apply() for both modes so
+// quote and execute see the SAME matrix-corrected number. Returns matrix_used,
+// matrix_version, and soft_blocked so the client can render correctly without
+// recomputing math locally.
 
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
@@ -36,6 +30,7 @@ interface QuoteBody {
   // trade mode
   market_id?: string;
   side?: "over" | "under";
+  stake?: number;
   // cashout mode
   position_id?: string;
 }
@@ -50,11 +45,17 @@ interface TradeQuote {
   seconds_left_bucket: number;
   iv_used: number;
   fair_prob_side: number;
+  mark_prob: number;
   offered_prob: number;
   payout_if_won: number;   // assumes stake=1 — client multiplies
   spread_mult: number;
+  matrix_used: boolean;
+  matrix_version: number | null;
+  soft_blocked: boolean;
+  max_stake_allowed: number;
   rejected: boolean;
   reject_reason: string | null;
+  reject_code: string | null;
 }
 
 interface CashoutQuote {
@@ -70,12 +71,17 @@ interface CashoutQuote {
   seconds_left_bucket: number;
   iv_used: number;
   mark_prob: number;
+  matrix_used: boolean;
+  matrix_version: number | null;
   is_winning: boolean;
   fair_profit: number;
   margin_applied: number;
   cashout_amount: number;
+  cap_edge: boolean;
+  expected_settlement_payout: number;
   rejected: boolean;
   reject_reason: string | null;
+  reject_code: string | null;
 }
 
 export async function POST(req: Request) {
@@ -113,6 +119,7 @@ export async function POST(req: Request) {
             base AS (
               SELECT
                 m.id AS market_id,
+                m.asset,
                 m.strike_price,
                 m.duration,
                 m.closes_at,
@@ -120,7 +127,9 @@ export async function POST(req: Request) {
                 o.price AS spot_price,
                 o.received_at,
                 EXTRACT(EPOCH FROM (m.closes_at - NOW()))::DOUBLE PRECISION AS seconds_left,
-                _speed_get_iv(m.asset, m.duration) AS iv_used
+                _speed_get_iv(m.asset, m.duration) AS iv_used,
+                (o.price::DOUBLE PRECISION - m.strike_price::DOUBLE PRECISION)
+                  / NULLIF(m.strike_price::DOUBLE PRECISION, 0) AS dist_pct
               FROM mkt m, ora o
             ),
             fair AS (
@@ -143,8 +152,8 @@ export async function POST(req: Request) {
               SELECT
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_spread_pct'), 0.05) AS spread_pct,
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_extreme_spread_coeff'), 8) AS extreme_coeff,
-                COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_late_60s_spread_mult'), 1.40) AS late_60s_mult,
-                COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_late_30s_spread_mult'), 1.80) AS late_30s_mult,
+                COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_late_60s_spread_mult'), 1.20) AS late_60s_mult,
+                COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_late_30s_spread_mult'), 1.40) AS late_30s_mult,
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_fair_prob_reject_high'), 0.97) AS reject_high,
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_fair_prob_reject_low'), 0.03) AS reject_low,
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_late_30s_imbalance_reject'), 0.30) AS late_30s_imb,
@@ -174,25 +183,51 @@ export async function POST(req: Request) {
                 (p.spread_pct::DOUBLE PRECISION + p.overage * p.overage * p.extreme_coeff::DOUBLE PRECISION) * p.spread_mult AS widened_spread
               FROM spread p
             ),
-            offered AS (
+            applied AS (
+              -- 0034: shared helper for matrix correction + asym push-up + soft-block
               SELECT
                 pr.*,
-                LEAST(0.99, GREATEST(0.01,
-                  (pr.fair_prob_side::DOUBLE PRECISION + pr.widened_spread / 2.0)
-                ))::DECIMAL AS offered_prob,
-                CASE
-                  WHEN pr.status <> 'open' THEN 'Market is not open'
-                  WHEN NOW() >= pr.closes_at THEN 'Market has closed'
-                  WHEN EXTRACT(EPOCH FROM (NOW() - pr.received_at))
-                       > COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_oracle_stale_seconds'), 2)
-                    THEN 'Oracle price stale — try again'
-                  WHEN pr.seconds_left < pr.late_reject_s THEN 'Market closing — no new bets'
-                  WHEN pr.fair_prob_side > pr.reject_high THEN 'Outcome too close to certain'
-                  WHEN pr.fair_prob_side < pr.reject_low THEN 'Side too unlikely'
-                  WHEN pr.seconds_left < 30 AND ABS(pr.fair_prob_side::DOUBLE PRECISION - 0.5) > pr.late_30s_imb::DOUBLE PRECISION THEN 'Too late and too one-sided'
-                  ELSE NULL
-                END AS reject_reason
+                a.mark_prob,
+                a.offered_prob,
+                a.matrix_used,
+                a.matrix_version,
+                a.soft_blocked
               FROM priced pr
+              CROSS JOIN LATERAL _speed_pricing_apply(
+                pr.asset,
+                pr.duration,
+                ${body.side}::text,
+                pr.dist_pct,
+                pr.seconds_left,
+                pr.fair_prob_side::DOUBLE PRECISION,
+                pr.widened_spread,
+                'entry'::text
+              ) a
+            ),
+            stake_max AS (
+              SELECT
+                ap.*,
+                _speed_max_stake_for_offered(ap.duration, ap.offered_prob) AS max_stake_allowed
+              FROM applied ap
+            ),
+            final AS (
+              SELECT
+                sm.*,
+                CASE
+                  WHEN sm.status <> 'open' THEN ('Market is not open'::text, 'MARKET_CLOSED'::text)
+                  WHEN NOW() >= sm.closes_at THEN ('Market has closed', 'MARKET_CLOSED')
+                  WHEN EXTRACT(EPOCH FROM (NOW() - sm.received_at))
+                       > COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_oracle_stale_seconds'), 2)
+                    THEN ('Oracle price stale — try again', 'ORACLE_STALE')
+                  WHEN sm.seconds_left < sm.late_reject_s THEN ('Market closing — no new bets', 'LATE_WINDOW')
+                  WHEN sm.fair_prob_side > sm.reject_high THEN ('Outcome too close to certain', 'FAIR_PROB_TOO_HIGH')
+                  WHEN sm.fair_prob_side < sm.reject_low THEN ('Side too unlikely', 'FAIR_PROB_TOO_LOW')
+                  WHEN sm.seconds_left < 30 AND ABS(sm.fair_prob_side::DOUBLE PRECISION - 0.5) > sm.late_30s_imb::DOUBLE PRECISION
+                    THEN ('Too late and too one-sided', 'LATE_30S_IMBALANCE')
+                  WHEN sm.soft_blocked THEN ('Market closing — try next round', 'SOFT_BLOCK')
+                  ELSE (NULL, NULL)
+                END AS reject_tuple
+              FROM stake_max sm
             )
           SELECT jsonb_build_object(
             'mode', 'trade',
@@ -204,13 +239,19 @@ export async function POST(req: Request) {
             'seconds_left_bucket', seconds_left_bucket,
             'iv_used', ROUND(iv_used, 6),
             'fair_prob_side', ROUND(fair_prob_side, 6),
-            'offered_prob', ROUND(offered_prob, 6),
-            'payout_if_won', ROUND(1.0 / offered_prob, 6),
+            'mark_prob', ROUND(mark_prob::NUMERIC, 6),
+            'offered_prob', ROUND(offered_prob::NUMERIC, 6),
+            'payout_if_won', ROUND((1.0 / offered_prob)::NUMERIC, 6),
             'spread_mult', ROUND(spread_mult::NUMERIC, 4),
-            'rejected', reject_reason IS NOT NULL,
-            'reject_reason', reject_reason
+            'matrix_used', matrix_used,
+            'matrix_version', matrix_version,
+            'soft_blocked', soft_blocked,
+            'max_stake_allowed', ROUND(max_stake_allowed::NUMERIC, 2),
+            'rejected', (reject_tuple).f1 IS NOT NULL,
+            'reject_reason', (reject_tuple).f1,
+            'reject_code', (reject_tuple).f2
           )::jsonb AS result
-          FROM offered
+          FROM final
         `);
         return (r.rows[0] as { result: TradeQuote } | undefined)?.result ?? null;
       });
@@ -251,13 +292,16 @@ export async function POST(req: Request) {
                 pos.entry_offered_prob,
                 pos.status AS position_status,
                 pos.market_status,
+                pos.market_asset,
                 pos.strike_price,
                 pos.market_duration,
                 pos.closes_at,
                 ora.price AS spot_price,
                 ora.received_at,
                 EXTRACT(EPOCH FROM (pos.closes_at - NOW()))::DOUBLE PRECISION AS seconds_left,
-                _speed_get_iv(pos.market_asset, pos.market_duration) AS iv_used
+                _speed_get_iv(pos.market_asset, pos.market_duration) AS iv_used,
+                (ora.price::DOUBLE PRECISION - pos.strike_price::DOUBLE PRECISION)
+                  / NULLIF(pos.strike_price::DOUBLE PRECISION, 0) AS dist_pct
               FROM pos, ora
             ),
             fair AS (
@@ -267,30 +311,52 @@ export async function POST(req: Request) {
                 speed_fair_prob_over(b.spot_price, b.strike_price, b.seconds_left, b.iv_used) AS fair_prob_over
               FROM base b
             ),
-            mark AS (
+            sides AS (
               SELECT
                 f.*,
                 CASE WHEN f.side::text = 'over'
                      THEN f.fair_prob_over
                      ELSE 1.0 - f.fair_prob_over
-                END AS mark_prob
+                END AS bsm_mark_side
               FROM fair f
+            ),
+            applied AS (
+              -- 0034: shared helper for matrix-corrected mark (cashout mode, no spread)
+              SELECT
+                s.*,
+                a.mark_prob,
+                a.matrix_used,
+                a.matrix_version
+              FROM sides s
+              CROSS JOIN LATERAL _speed_pricing_apply(
+                s.market_asset,
+                s.market_duration,
+                s.side::text,
+                s.dist_pct,
+                s.seconds_left,
+                s.bsm_mark_side,
+                0::DOUBLE PRECISION,
+                'cashout'::text
+              ) a
             ),
             cfg AS (
               SELECT
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_cashout_late_reject_s'), 10) AS late_reject_s,
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_cashout_late_30s_imbalance_reject'), 0.30) AS late_30s_imb,
-                COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_cashout_enabled'), 1) AS kill_switch
+                COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_cashout_enabled'), 1) AS kill_switch,
+                COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_cashout_cap_edge_threshold'), 0.985) AS cap_edge_thresh
             ),
             priced AS (
               SELECT
-                m.*,
+                a.*,
                 c.kill_switch,
                 c.late_reject_s,
                 c.late_30s_imb,
-                (m.mark_prob > m.entry_offered_prob) AS is_winning,
-                m.stake * (m.mark_prob / m.entry_offered_prob - 1.0) AS fair_profit
-              FROM mark m, cfg c
+                c.cap_edge_thresh,
+                (a.mark_prob > a.entry_offered_prob) AS is_winning,
+                a.stake * (a.mark_prob / a.entry_offered_prob - 1.0) AS fair_profit,
+                (a.entry_offered_prob >= c.cap_edge_thresh AND a.mark_prob >= c.cap_edge_thresh) AS cap_edge
+              FROM applied a, cfg c
             ),
             margins AS (
               SELECT
@@ -309,7 +375,8 @@ export async function POST(req: Request) {
                 CASE
                   WHEN m.is_winning THEN m.stake + m.fair_profit * (1.0 - m.margin)
                   ELSE m.stake + m.fair_profit * (1.0 + m.margin)
-                END AS cashout_raw
+                END AS cashout_raw,
+                m.stake / m.entry_offered_prob AS expected_settlement_payout
               FROM margins m
             ),
             final AS (
@@ -317,17 +384,19 @@ export async function POST(req: Request) {
                 c.*,
                 ROUND(GREATEST(0, c.cashout_raw)::NUMERIC, 2) AS cashout_amount,
                 CASE
-                  WHEN c.kill_switch <= 0 THEN 'Cashout temporarily disabled'
-                  WHEN c.position_status <> 'open' THEN 'Position is not open'
-                  WHEN c.market_status <> 'open' THEN 'Market is not open'
-                  WHEN NOW() >= c.closes_at THEN 'Market has closed'
+                  WHEN c.kill_switch <= 0 THEN ('Cashout temporarily disabled'::text, 'CASHOUT_DISABLED'::text)
+                  WHEN c.position_status <> 'open' THEN ('Position is not open', 'POSITION_CLOSED')
+                  WHEN c.market_status <> 'open' THEN ('Market is not open', 'MARKET_CLOSED')
+                  WHEN NOW() >= c.closes_at THEN ('Market has closed', 'MARKET_CLOSED')
                   WHEN EXTRACT(EPOCH FROM (NOW() - c.received_at))
                        > COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_oracle_stale_seconds'), 2)
-                    THEN 'Oracle price stale — try again'
-                  WHEN c.seconds_left < c.late_reject_s THEN 'Market closing — no cashouts'
-                  WHEN c.seconds_left < 30 AND ABS(c.mark_prob::DOUBLE PRECISION - 0.5) > c.late_30s_imb::DOUBLE PRECISION THEN 'Too late and too one-sided'
-                  ELSE NULL
-                END AS reject_reason
+                    THEN ('Oracle price stale — try again', 'ORACLE_STALE')
+                  WHEN c.cap_edge THEN ('Hold to settlement', 'CASHOUT_AT_CAP')
+                  WHEN c.seconds_left < c.late_reject_s THEN ('Market closing — no cashouts', 'LATE_WINDOW')
+                  WHEN c.seconds_left < 30 AND ABS(c.mark_prob::DOUBLE PRECISION - 0.5) > c.late_30s_imb::DOUBLE PRECISION
+                    THEN ('Too late and too one-sided', 'LATE_30S_IMBALANCE')
+                  ELSE (NULL, NULL)
+                END AS reject_tuple
               FROM cashout c
             )
           SELECT jsonb_build_object(
@@ -342,13 +411,18 @@ export async function POST(req: Request) {
             'seconds_left', ROUND(seconds_left::NUMERIC, 2),
             'seconds_left_bucket', seconds_left_bucket,
             'iv_used', ROUND(iv_used, 6),
-            'mark_prob', ROUND(mark_prob, 6),
+            'mark_prob', ROUND(mark_prob::NUMERIC, 6),
+            'matrix_used', matrix_used,
+            'matrix_version', matrix_version,
             'is_winning', is_winning,
-            'fair_profit', ROUND(fair_profit, 4),
+            'fair_profit', ROUND(fair_profit::NUMERIC, 4),
             'margin_applied', ROUND(margin::NUMERIC, 6),
             'cashout_amount', cashout_amount,
-            'rejected', reject_reason IS NOT NULL,
-            'reject_reason', reject_reason
+            'cap_edge', cap_edge,
+            'expected_settlement_payout', ROUND(expected_settlement_payout::NUMERIC, 2),
+            'rejected', (reject_tuple).f1 IS NOT NULL,
+            'reject_reason', (reject_tuple).f1,
+            'reject_code', (reject_tuple).f2
           )::jsonb AS result
           FROM final
         `);

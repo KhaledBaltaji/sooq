@@ -30,6 +30,13 @@ export type SpeedErrorKind =
   // Mig 0031 soft guards
   | "velocity"
   | "open_exposure"
+  // Mig 0034 pricing engine v3
+  | "soft_block"
+  | "max_payout_cap"
+  | "cashout_at_cap"
+  | "limit_reached"
+  | "ngr_soft_block"
+  | "ngr_hard_stop"
   // Pre-existing
   | "balance"
   | "stake_range"
@@ -75,6 +82,43 @@ export function mapSpeedRpcError(raw: string | null | undefined): SpeedErrorMapp
   const msg = (raw ?? "").trim();
   if (!msg) {
     return { kind: "unknown", userMessage: "Something went wrong.", retryable: false };
+  }
+
+  // ---- Mig 0034 pricing engine v3 errors ----
+  if (msg.startsWith("SOFT_BLOCK") || msg.includes("market closing — try next round")) {
+    return {
+      kind: "soft_block",
+      userMessage: "Market closing — try next round.",
+      retryable: false,
+    };
+  }
+  if (msg.startsWith("MAX_PAYOUT_CAP")) {
+    return {
+      kind: "max_payout_cap",
+      userMessage: "Stake too large for these odds — try smaller.",
+      retryable: false,
+    };
+  }
+  if (msg.startsWith("CASHOUT_AT_CAP")) {
+    return {
+      kind: "cashout_at_cap",
+      userMessage: "Hold for settlement to receive full payout.",
+      retryable: false,
+    };
+  }
+  if (msg.includes("Limit reached — your max trade size")) {
+    return {
+      kind: "limit_reached",
+      userMessage: "Limit reached — try a smaller stake or another market.",
+      retryable: false,
+    };
+  }
+  if (msg.includes("NGR hard stop") || msg.includes("Trading temporarily paused for system maintenance")) {
+    return {
+      kind: "ngr_hard_stop",
+      userMessage: "Trading temporarily paused for system maintenance — please check back shortly.",
+      retryable: true,
+    };
   }
 
   // ---- Mig 0030 quote/execute parity drift ----

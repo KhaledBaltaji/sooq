@@ -243,6 +243,67 @@ export function isCashoutRejectedNearDecided(
 }
 
 /**
+ * Mig 0034: predicate for entry soft-block.
+ * Returns true when the trade button should be greyed out client-side.
+ * The DB RPC enforces authoritatively; this is for UX only (button state).
+ *
+ * When the quote endpoint returns soft_blocked=true, prefer that. This local
+ * predicate is a fallback for pre-quote display estimation.
+ */
+export function isEntrySoftBlocked(
+  offeredProb: number,
+  fc: SpeedFeeConfig,
+): boolean {
+  if (!fc.pricing.entrySoftBlockEnabled) return false;
+  return offeredProb >= fc.pricing.entrySoftBlockThreshold;
+}
+
+/**
+ * Mig 0034: cashout cap-edge predicate.
+ * Returns true when both entry and current mark are at the price cap;
+ * UI shows "Hold for settlement" instead of a near-zero cashout figure.
+ */
+export function isCashoutAtCapEdge(
+  entryOfferedProb: number,
+  markProb: number,
+  fc: SpeedFeeConfig,
+): boolean {
+  const t = fc.pricing.cashoutCapEdgeThreshold;
+  return entryOfferedProb >= t && markProb >= t;
+}
+
+/**
+ * Mig 0034: dynamic max-stake formula (mirrors `_speed_max_stake_for_offered`).
+ * Returns the largest stake the server will accept for a given (duration, offered_prob).
+ *
+ *   max_stake = min(
+ *     configured_trade_max,
+ *     payout_cap × p,
+ *     liability_cap × p / (1 − p)
+ *   )
+ */
+export function speedMaxStakeForOffered(
+  duration: SpeedDuration,
+  offeredProb: number,
+  fc: SpeedFeeConfig,
+): number {
+  const tradeMax = fc.stakeMaxByDuration[duration] ?? 25;
+  const payoutCap =
+    duration === "5m"
+      ? fc.riskCaps.entryMaxPayoutUsd5m
+      : fc.riskCaps.entryMaxPayoutUsd1h;
+  const liabilityCap =
+    fc.riskCaps.poolCollateralUsd * fc.riskCaps.perSideCapPct;
+
+  const byPayout = payoutCap * offeredProb;
+  const byLiability =
+    offeredProb >= 1
+      ? tradeMax
+      : (liabilityCap * offeredProb) / (1 - offeredProb);
+  return Math.max(1, Math.min(tradeMax, byPayout, byLiability));
+}
+
+/**
  * Offered probability — fair probability adjusted by a spread that widens
  * quadratically as fair approaches 0 or 1, then SCALED by the multiplicative
  * late-window factor (mig 0028).
