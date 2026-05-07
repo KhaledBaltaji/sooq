@@ -52,6 +52,10 @@ interface TradeQuote {
   matrix_used: boolean;
   matrix_version: number | null;
   soft_blocked: boolean;
+  /** Mig 0035: true when offered would trip the late-30s near-decided rejector. Hint for UI to show "trade closing soon" before the actual block fires. */
+  near_decided_block: boolean;
+  /** Mig 0035: true when entry is fully blocked because seconds_left < late_window_reject_s. */
+  late_window_block: boolean;
   max_stake_allowed: number;
   rejected: boolean;
   reject_reason: string | null;
@@ -79,6 +83,10 @@ interface CashoutQuote {
   cashout_amount: number;
   cap_edge: boolean;
   expected_settlement_payout: number;
+  /** Mig 0035: true when mark would trip the late-30s near-decided cashout block. */
+  near_decided_block: boolean;
+  /** Mig 0035: true when cashout is fully blocked because seconds_left < cashout_late_reject_s. */
+  late_window_block: boolean;
   rejected: boolean;
   reject_reason: string | null;
   reject_code: string | null;
@@ -213,6 +221,10 @@ export async function POST(req: Request) {
             final AS (
               SELECT
                 sm.*,
+                -- Mig 0035: separately exposed boolean blocks for UI hint logic
+                (sm.seconds_left < sm.late_reject_s) AS late_window_block,
+                (sm.seconds_left < 30
+                  AND ABS(sm.fair_prob_side::DOUBLE PRECISION - 0.5) > sm.late_30s_imb::DOUBLE PRECISION) AS near_decided_block,
                 CASE
                   WHEN sm.status <> 'open' THEN ('Market is not open'::text, 'MARKET_CLOSED'::text)
                   WHEN NOW() >= sm.closes_at THEN ('Market has closed', 'MARKET_CLOSED')
@@ -246,6 +258,8 @@ export async function POST(req: Request) {
             'matrix_used', matrix_used,
             'matrix_version', matrix_version,
             'soft_blocked', soft_blocked,
+            'near_decided_block', near_decided_block,
+            'late_window_block', late_window_block,
             'max_stake_allowed', ROUND(max_stake_allowed::NUMERIC, 2),
             'rejected', (reject_tuple).f1 IS NOT NULL,
             'reject_reason', (reject_tuple).f1,
@@ -383,6 +397,10 @@ export async function POST(req: Request) {
               SELECT
                 c.*,
                 ROUND(GREATEST(0, c.cashout_raw)::NUMERIC, 2) AS cashout_amount,
+                -- Mig 0035: separately exposed boolean blocks for UI hint logic
+                (c.seconds_left < c.late_reject_s) AS late_window_block,
+                (c.seconds_left < 30
+                  AND ABS(c.mark_prob::DOUBLE PRECISION - 0.5) > c.late_30s_imb::DOUBLE PRECISION) AS near_decided_block,
                 CASE
                   WHEN c.kill_switch <= 0 THEN ('Cashout temporarily disabled'::text, 'CASHOUT_DISABLED'::text)
                   WHEN c.position_status <> 'open' THEN ('Position is not open', 'POSITION_CLOSED')
@@ -420,6 +438,8 @@ export async function POST(req: Request) {
             'cashout_amount', cashout_amount,
             'cap_edge', cap_edge,
             'expected_settlement_payout', ROUND(expected_settlement_payout::NUMERIC, 2),
+            'near_decided_block', near_decided_block,
+            'late_window_block', late_window_block,
             'rejected', (reject_tuple).f1 IS NOT NULL,
             'reject_reason', (reject_tuple).f1,
             'reject_code', (reject_tuple).f2
