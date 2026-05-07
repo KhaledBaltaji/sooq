@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0034_pricing_engine_v3.sql:1012
--- Last extracted: 2026-05-07T10:49:58.904Z
+-- Last extracted: 2026-05-07T11:37:15.156Z
 CREATE OR REPLACE FUNCTION public.speed_execute_cashout(p_position_id uuid, p_idempotency_key text DEFAULT NULL::text, p_expected_iv numeric DEFAULT NULL::numeric, p_expected_spot numeric DEFAULT NULL::numeric, p_expected_seconds_left_bucket integer DEFAULT NULL::integer, p_expected_mark_prob numeric DEFAULT NULL::numeric, p_expected_cashout_amount numeric DEFAULT NULL::numeric)
  RETURNS jsonb
  LANGUAGE plpgsql

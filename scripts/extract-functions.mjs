@@ -34,8 +34,15 @@ const args = process.argv.slice(2);
 const VERIFY = args.includes("--verify");
 const ONLY = args.find((a, i) => args[i - 1] === "--only");
 
-// 17 canonical speed_* functions from the /investigate audit.
+// 17 canonical LIVE speed_* functions from the /investigate audit.
 // Source-migration mapping for human reference; pg_proc is authoritative.
+//
+// NOT included (dead code from pre-mig-0028, kept in pg_proc but never called by
+// any current RPC; consider dropping in a future cleanup migration):
+//   - speed_cashout_multiplier         (replaced by _speed_cashout_margin in mig 0028)
+//   - speed_late_window_surcharge_pct  (replaced by multiplicative spread in mig 0028)
+//   - speed_liq_discount               (deleted by mig 0028 — old liquidation cashout shape)
+//   - speed_time_bucket                (used by pre-mig-0028 RPCs only)
 const FUNCTIONS = [
   { name: "speed_execute_trade",          source_mig: "0034_pricing_engine_v3.sql:532" },
   { name: "speed_execute_cashout",        source_mig: "0034_pricing_engine_v3.sql:1012" },

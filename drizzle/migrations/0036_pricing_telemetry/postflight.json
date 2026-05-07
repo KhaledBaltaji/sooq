@@ -1,0 +1,9 @@
+{
+  "tables": ["speed_pricing_events"],
+  "functions": ["_speed_pricing_apply"],
+  "exact_args": {
+    "_speed_pricing_apply": 9,
+    "speed_execute_trade": 9,
+    "speed_execute_cashout": 7
+  }
+}

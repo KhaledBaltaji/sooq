@@ -1,0 +1,5 @@
+{
+  "functions": ["_speed_pricing_apply", "_speed_matrix_lookup", "speed_execute_trade", "speed_execute_cashout"],
+  "tables": ["speed_pricing_matrix", "speed_pricing_matrix_versions"],
+  "fee_config_keys": ["speed_pricing_matrix_enabled"]
+}

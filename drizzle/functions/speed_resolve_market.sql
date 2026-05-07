@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0021_resolve_type_cast_fix.sql:25
--- Last extracted: 2026-05-07T10:49:59.089Z
+-- Last extracted: 2026-05-07T11:37:15.341Z
 CREATE OR REPLACE FUNCTION public.speed_resolve_market(p_market_id uuid)
  RETURNS jsonb
  LANGUAGE plpgsql
