@@ -75,7 +75,9 @@ Re-add in a later phase if growth needs it. Plan via a separate spec, not by un-
 
 ## Migrations
 
-32 Drizzle migrations under `drizzle/migrations/` (0000–0031). Run via `scripts/apply-*.mjs` against RDS. The Drizzle journal (`__drizzle_migrations` table) is the source of truth; `_journal.json` was last backfilled at 0021 and is intentionally not updated for newer migrations (apply scripts handle that).
+36 Drizzle migrations under `drizzle/migrations/` (0000–0035). Run via `scripts/apply-mig.mjs --name <folder>` (the new generic apply script as of mig 0035) or `scripts/apply-mig-XXXX.mjs` (per-migration scripts for 0034 and earlier). The Drizzle journal (`__drizzle_migrations` table) is the source of truth; `_journal.json` was last backfilled at 0021 and is intentionally not updated for newer migrations (apply scripts handle that).
+
+Starting with mig 0035, migrations follow a folder layout: `0035_my_change/{schema.sql, functions/*.sql, preflight.json, postflight.json}`. Function definitions also live in canonical `drizzle/functions/<name>.sql` files (auto-extracted from pg_proc on every apply). The CI gate `scripts/sync-functions.mjs --dry-run` fails the build if any canonical file drifts from the live database.
 
 | File | What |
 |---|---|
@@ -111,6 +113,10 @@ Re-add in a later phase if growth needs it. Plan via a separate spec, not by un-
 | `0029_iv_cache_and_helper.sql` | CREATE `speed_volatility_cache` table + `_speed_get_iv()` helper. Multi-horizon RV cache (5m, 15m, 1h, 24h, ewma). Fail-closed mode toggleable via `speed_iv_fail_closed`. RPCs refactored to call helper. |
 | `0030_quote_execute_parity.sql` | Full quote/execute parity. New params: `expected_spot`, `expected_seconds_left_bucket`, `expected_fair_prob`, `expected_offered_prob` (and `expected_mark_prob` + `expected_cashout_amount` for cashout). Drift tolerances tunable. |
 | `0031_schema_sync_caps_softguards.sql` | Drops daily wager cap (founder choice). Adds soft guards: per-user velocity limiter (30/min), per-user open-exposure (15% pool), daily-handle telemetry alert ($5K). Creates `speed_user_alerts` table. |
+| `0032_drop_legacy_speed_overloads.sql` | Drops pre-0028 5-arg `speed_execute_trade` and 3-arg `speed_execute_cashout` overloads. Sanity assertion ensures only 9-arg / 7-arg signatures remain. |
+| `0033_money_safety_v1.sql` | Money flow safety improvements (held in this slot). |
+| `0034_pricing_engine_v3.sql` | **Pricing engine v3.** Matrix-based pricing via `_speed_pricing_apply()` shared helper. Asymmetric only-push-up rule (matrix can only RAISE the price, never lower). 0.95 soft-block on entries (never on cashouts). Cashout uses same helper for direction-matching consistency. Reduced late-window multipliers (1.4/1.8 → 1.2/1.4). Per-ticket payout caps. Dynamic stake formula. Three-tier daily NGR breaker. **Includes neighbor-aware fallback for non-qualifying matrix cells** (added post-codex review). All flags ship OFF; admin enables via `/admin/fees`. |
+| `0035_sprint_b_polish/` | First migration in the new folder layout. NGR table + column comments (today's `net`/`ngr` typo prevention). Drops legacy `speed_per_user_per_market_cap_usd` fee_config alias. No function changes. |
 
 ## Environments
 

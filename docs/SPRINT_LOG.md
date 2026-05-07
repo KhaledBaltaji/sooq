@@ -1215,3 +1215,90 @@ $2–3 BTC ticks into chart-spanning swings.
 
 
 
+
+---
+
+## W12 — Pricing Engine v3 + Backend Cleanup (Sprint A & B)
+
+### Context
+
+After W11's chart smoothness fixes, found that user `ramiighorayeb@gmail.com` (Rami) was extracting ~$99/day (17/17 trades) at $25 stakes by exploiting BSM mispricing in lopsided / late-window markets. Empirical backtest on 1.7M oracle ticks across 966 resolved 5m markets confirmed structural pricing gap: realized win rates in the kill zone are 93–100%, while BSM offers 75–90%. At $200/side cap, projected leak: ~$1,920/day per shark, ~$57K/month with five sharks.
+
+Plan:
+`~/.claude/plans/check-our-staging-ramiighorayeb-gmail-co-refactored-storm.md`
+
+### Pricing engine v3 — what shipped (mig 0034)
+
+- **New table `speed_pricing_matrix`** keyed by `(asset, duration, dist_bucket, time_bucket)` storing empirical P(over wins) per cell, populated by `scripts/recalibrate-pricing-matrix.mjs` from a rolling 14-day window. Bayesian shrinkage toward BSM prior, isotonic regression per time bucket (monotone in distance), Jeffreys binomial CI per cell.
+- **New shared helper `_speed_pricing_apply()`** consumed by both `speed_execute_trade` and `speed_execute_cashout`. Implements: matrix lookup, asymmetric only-push-up (`max(matrix, BSM)` — codex required, never gives users better odds than today), 0.95 soft-block check on entries, neighbor-aware fallback when current cell doesn't qualify.
+- **Matrix flag controls entry + cashout TOGETHER** — codex hard rule. Splitting them recreates the dangerous mismatch this migration exists to prevent.
+- **Reduced late-window multipliers** (1.4/1.8 → 1.2/1.4) — matrix already encodes directional kill-zone mispricing; old multipliers double-charged.
+- **Per-ticket payout caps** ($2,500 5m / $5,000 1h) and **dynamic stake formula** (`min(trade_max, payout_cap × p, liability_cap × p/(1-p))`).
+- **Three-tier daily NGR breaker** (-$500 alert / -$2,500 soft block / -$5,000 hard stop).
+- **All flags ship OFF** — applying mig 0034 doesn't change live behavior until admin enables.
+
+### Codex consults
+
+- 4 rounds total. Caught: underdog-discount fatal flaw, quote-noise repeated-sampling exploit, sample-size inflation (per-tick vs per-market effective N), monotonicity violations across qualifying/non-qualifying boundaries, win-rate-vs-CLV throttle correctness, hidden `fee_config.value` column reference.
+- The `net`/`ngr` typo in `speed_execute_trade`'s NGR breaker check was inserted post-codex review (during the codex-review-fix iteration). Codex's prior reviews wouldn't have caught it because the buggy block was not in their review window.
+
+### Property test suite
+
+- `scripts/test-pricing-engine-v3.mjs` runs 7 tests: monotonicity per time bucket, asymmetric push-up, direction-matching invariant under favorable spot moves, cap behavior, soft-block consistency, dynamic stake formula bounds, cap-edge cashout safety.
+- After the neighbor-aware fix (commit 38922ce), full suite at 10K iterations: 68,253 tests, 0 failures.
+
+### The `net`/`ngr` typo outage
+
+- After mig 0034 applied + flags flipped (matrix on, soft-block on), every trade attempt failed with `column "net" does not exist`. Symptom: zero successful trades for ~30 minutes after activation.
+- Root cause: the new three-tier NGR breaker check selected `net` from `speed_daily_ngr` but the column is named `ngr`. Was inside a 1,231-line migration file; not caught by tsc (raw SQL strings) or the property test suite (helpers tested in isolation, not full RPC paths).
+- Fix: one-character SQL change (`net` → `ngr`). Applied to RDS staging via `CREATE OR REPLACE FUNCTION` (atomic swap, zero downtime). Trades resumed immediately.
+- Commit: `43cb1d7`. Documented in mig 0034 inline + this log.
+- **Lesson:** end-to-end integration tests would have caught it. Founder explicitly deferred those; manual `BEGIN; SELECT speed_execute_trade(...); ROLLBACK;` simulation added permanently as part of every sprint gate procedure.
+
+### Sprint A — backend cleanup (commits 0e0118f, 38922ce, f62ef45, d1d05de)
+
+Three of eight planned cleanup items shipped together:
+
+- **Item 1 — Migration file pattern + canonical `drizzle/functions/`**
+  - `scripts/extract-functions.mjs` pulls each speed_* function from `pg_proc` via `pg_get_functiondef(oid)`, writes one .sql per function. Verified byte-for-byte via SAVEPOINT round-trip.
+  - 17 functions extracted: `speed_execute_trade`, `speed_execute_cashout`, `speed_resolve_market`, `speed_roll_markets`, `speed_resolve_expired_markets`, `speed_fair_prob_over`, `_speed_pricing_apply`, `_speed_matrix_lookup`, `_speed_max_stake_for_offered`, `_speed_cashout_margin`, `_speed_seconds_left_bucket`, `_speed_assert_parity`, `_speed_get_iv`, `_speed_update_daily_ngr`, `_speed_get_stake_max`, `_speed_utc_today`, `_speed_utc_midnight`.
+  - `scripts/sync-functions.mjs` is the CI drift checker. `--dry-run` fails the build on any drift between canonical files and `pg_proc`. `--apply` overwrites live with canonical files.
+
+- **Item 2 — Extended `/api/speed/quote` response**
+  - Added `near_decided_block` and `late_window_block` booleans to both trade and cashout responses. Pure additive — existing consumers ignore them. Future UI redesign will consume these to remove client-side `isEntryRejectedNearDecided` / `isCashoutRejectedNearDecided` mirrors from `pricing.ts`.
+
+- **Item 8 — Generic `apply-mig.mjs`**
+  - Replaces per-migration apply scripts. Supports new folder layout (`migrations/0035_name/{schema.sql, functions/*.sql, preflight.json, postflight.json}`). Single-transaction, automatic post-apply refresh of `drizzle/functions/`.
+
+### Sprint B — polish (commit pending)
+
+- **Item 4 — NGR table + column comments** (mig 0035). Documents that the column is `ngr`, not `net`, so future engineers don't repeat today's typo.
+- **Item 5 — Drop legacy `speed_per_user_per_market_cap_usd` fee_config alias.** Was already missing from staging DB; cleanup was code-only (parser case in `queries.ts`, admin UI labels, edit dialog config). RPCs have always read the canonical `speed_cap_per_side_usd` only.
+- **Item 6 — Documentation refresh.** Updated `CLAUDE.md` migrations table (added 0032-0035), this `SPRINT_LOG.md` W12 entry, and inline comments in mig 0035.
+
+### Sprint C — deferred
+
+- Item 3 (PL/pgSQL recalibration cron port) and Item 7 (pricing telemetry table + per-trade events) deferred to a separate sprint per audit findings. Item 3's PL/pgSQL port of Pool-Adjacent-Violators isotonic regression is more complex than initially estimated.
+
+### Verification
+
+All Sprint A and Sprint B gates passed:
+- `npx tsc --noEmit` clean
+- `node scripts/sync-functions.mjs --dry-run` reports zero drift (17/17 functions)
+- `node scripts/test-pricing-engine-v3.mjs --quick` returns 0 failures
+- Manual end-to-end RPC simulation (`BEGIN; SELECT speed_execute_trade(...); ROLLBACK;`) returns success with `matrix_used: true` and correct offered_prob
+- Mig 0035 applied via the new generic `apply-mig.mjs` end-to-end (preflight ✅, schema applied, postflight ✅, auto-refresh of `drizzle/functions/` ✅)
+
+### Frontend impact across the entire phase
+
+For traders on the live site: **zero visible changes.** Trade panel, mobile bar, cashout flow look and behave exactly as before.
+
+For admins on `/admin/fees`: the duplicate `speed_per_user_per_market_cap_usd` row (which never had a real value in staging anyway) no longer appears in the labels/groups.
+
+The `/api/speed/quote` endpoint returns four new boolean fields that nothing currently reads. They're seeded for the future UX redesign to consume.
+
+Net visible change: **one duplicate admin row goes away.**
+
+### Pending — Phase 3: UX redesign
+
+Founder requested deferral of all UI/UX-touching work until a separate redesign phase. Backend is now clean enough to start that work whenever the team is ready.

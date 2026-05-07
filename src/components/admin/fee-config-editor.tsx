@@ -100,10 +100,6 @@ const FEE_LABELS: Record<string, { label: string; hint: string }> = {
     label: "Per-Market Cap (one user, one side)",
     hint: "How much one user can stake on one side (over OR under) of a single market, across multiple bets. Stops a single user from cornering one side.",
   },
-  speed_per_user_per_market_cap_usd: {
-    label: "Per-Market Cap (canonical)",
-    hint: "Same as the cap above; this is the newer name in the database. Both keys map to the same limit.",
-  },
 
   // ── Pool-wide risk caps (mig 0028) ────────────────────────────
   speed_pool_collateral_usd: {
@@ -309,7 +305,6 @@ const CURRENCY_KEYS = new Set<string>([
   "speed_stake_max_5m_usd",
   "speed_stake_max_1h_usd",
   "speed_cap_per_side_usd",
-  "speed_per_user_per_market_cap_usd",
   "speed_pool_collateral_usd",
   "speed_daily_ngr_floor_usd",
   "speed_per_user_daily_handle_alert",
@@ -414,7 +409,6 @@ const FEE_GROUPS: FeeGroup[] = [
     types: [
       "speed_stake_max_5m_usd",
       "speed_stake_max_1h_usd",
-      "speed_per_user_per_market_cap_usd",
       "speed_cap_per_side_usd",
       "speed_stake_max_usd",
     ],

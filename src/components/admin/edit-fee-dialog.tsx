@@ -53,7 +53,6 @@ const FEE_CONSTRAINTS: Record<string, FeeConstraints> = {
   speed_stake_max_1h_usd:        { min: 1, max: 10000000, step: 1, label: "Per-Bet Max — 1h markets (USD)", format: "currency", warning: "Single-bet ceiling for 1h duration." },
   speed_stake_max_usd:           { min: 1, max: 10000000, step: 1, label: "Per-Bet Max (legacy, USD)", format: "currency", warning: "Pre-mig-0027 single-bet cap. Use the per-duration keys instead." },
   speed_cap_per_side_usd:        { min: 1, max: 10000000, step: 10, label: "Per-Side Cap (USD)", format: "currency", warning: "Per-user, per-market, per-side stake cap. Resets every market cycle." },
-  speed_per_user_per_market_cap_usd: { min: 1, max: 10000000, step: 10, label: "Per-User Per-Market Cap (USD)", format: "currency", warning: "Mig 0028 canonical name for the per-side cap." },
 
   // ── Pool-wide caps (mig 0028) ──
   speed_pool_collateral_usd:     { min: 1000, max: 10000000, step: 1000, label: "Pool Collateral (USD)", format: "currency", warning: "Notional pool size. Per-side cap and cluster cap are percentages of this." },

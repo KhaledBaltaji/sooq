@@ -337,12 +337,10 @@ export async function fetchSpeedFeeConfig(): Promise<SpeedFeeConfig> {
       case "speed_per_side_cap_pct":
         config.riskCaps.perSideCapPct = rate;
         continue;
-      case "speed_per_user_per_market_cap_usd":
-        config.riskCaps.perUserPerMarketCapUsd = rate;
-        config.capPerSideUsd = rate;
-        continue;
       case "speed_cap_per_side_usd":
-        // legacy / alternate key name from mig 0027 — same semantic
+        // Mig 0035: this is now the canonical key. Legacy alias
+        // `speed_per_user_per_market_cap_usd` was dropped from fee_config seeds
+        // and is no longer parsed (DELETEd by mig 0035 if it ever re-appeared).
         config.capPerSideUsd = rate;
         config.riskCaps.perUserPerMarketCapUsd = rate;
         continue;

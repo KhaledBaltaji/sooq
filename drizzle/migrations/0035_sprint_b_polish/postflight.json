@@ -1,0 +1,8 @@
+{
+  "tables": ["speed_daily_ngr"],
+  "fee_config_keys": ["speed_cap_per_side_usd"],
+  "exact_args": {
+    "speed_execute_trade": 9,
+    "speed_execute_cashout": 7
+  }
+}

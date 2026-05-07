@@ -1,0 +1,4 @@
+{
+  "tables": ["speed_daily_ngr"],
+  "fee_config_keys": ["speed_cap_per_side_usd"]
+}

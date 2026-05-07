@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0028_pricing_engine_v2.sql:256
--- Last extracted: 2026-05-07T10:39:44.301Z
+-- Last extracted: 2026-05-07T10:50:01.321Z
 CREATE OR REPLACE FUNCTION public._speed_get_stake_max(p_duration speed_duration)
  RETURNS numeric
  LANGUAGE plpgsql
