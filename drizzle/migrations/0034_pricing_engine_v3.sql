@@ -293,6 +293,11 @@ DECLARE
   v_used_matrix       BOOLEAN := FALSE;
   v_version           INTEGER := NULL;
   v_blocked           BOOLEAN := FALSE;
+  v_d_idx             SMALLINT;
+  v_t_idx             SMALLINT;
+  v_active_version    INTEGER;
+  v_neighbor_p_over   DOUBLE PRECISION;
+  v_neighbor_p_side   DOUBLE PRECISION;
 BEGIN
   SELECT rate INTO v_matrix_enabled FROM fee_config WHERE fee_type = 'speed_pricing_matrix_enabled' LIMIT 1;
   SELECT rate INTO v_asym_enabled   FROM fee_config WHERE fee_type = 'speed_pricing_asym_pushup_enabled' LIMIT 1;
@@ -303,13 +308,47 @@ BEGIN
   v_final_mark_prob := p_bsm_prob_side;
 
   IF v_matrix_enabled = 1 THEN
+    -- Resolve the active version once so neighbor queries below work even
+    -- when the current cell has no row in the matrix table.
+    SELECT id INTO v_active_version
+    FROM speed_pricing_matrix_versions
+    WHERE asset = p_asset AND duration = p_duration AND status = 'active'
+    ORDER BY computed_at DESC LIMIT 1;
+
+    -- Bucketize current state (mirrors _speed_matrix_lookup).
+    -- Inlined here (not via _speed_matrix_lookup) so we have v_d_idx/v_t_idx
+    -- for the neighbor query below.
+    v_d_idx := CASE
+      WHEN p_dist_pct <= -0.005 THEN 0
+      WHEN p_dist_pct <= -0.003 THEN 1
+      WHEN p_dist_pct <= -0.002 THEN 2
+      WHEN p_dist_pct <= -0.001 THEN 3
+      WHEN p_dist_pct <= -0.0005 THEN 4
+      WHEN p_dist_pct <  0       THEN 5
+      WHEN p_dist_pct <  0.0005  THEN 6
+      WHEN p_dist_pct <  0.001   THEN 7
+      WHEN p_dist_pct <  0.002   THEN 8
+      WHEN p_dist_pct <  0.003   THEN 9
+      WHEN p_dist_pct <  0.005   THEN 10
+      ELSE 11
+    END;
+    v_t_idx := CASE
+      WHEN p_secs_left <= 15  THEN 0
+      WHEN p_secs_left <= 30  THEN 1
+      WHEN p_secs_left <= 60  THEN 2
+      WHEN p_secs_left <= 120 THEN 3
+      WHEN p_secs_left <= 180 THEN 4
+      WHEN p_secs_left <= 240 THEN 5
+      ELSE 6
+    END;
+
     SELECT * INTO v_lookup
     FROM _speed_matrix_lookup(p_asset, p_duration, p_dist_pct, p_secs_left)
     LIMIT 1;
 
     IF v_lookup.qualifies THEN
       v_used_matrix := TRUE;
-      v_version := v_lookup.version_id;
+      v_version := v_active_version;
 
       -- Matrix stores P(over wins). Convert to side-relevant.
       v_matrix_p_over := v_lookup.p_over;
@@ -325,6 +364,57 @@ BEGIN
       ELSE
         -- Symmetric matrix (full replacement of BSM)
         v_final_mark_prob := v_matrix_p_side;
+      END IF;
+    ELSE
+      -- 0034 [post-codex direction-matching fix]: current cell doesn't qualify,
+      -- but a neighboring qualifying cell in the FAVORABLE direction may
+      -- already have pushed the price up. Without this lookup, mark could
+      -- regress (cell A qualified at low d with matrix=0.73, cell B at higher
+      -- d falls back to BSM=0.65; favorable spot move appears to LOWER mark).
+      --
+      -- Neighbor logic by side:
+      --   over  side: favorable = higher d. If a qualifying cell exists at
+      --     LOWER d (closer to strike) with matrix p_over, that floor must
+      --     propagate to current cell (P(over) is monotone non-decreasing in d).
+      --   under side: favorable = lower d. Symmetric — propagate from cells
+      --     at HIGHER d. (P(under) = 1 - P(over); for under to be more favorable
+      --     at lower d, p_over at higher d acts as a ceiling on current p_over.)
+      IF p_side = 'over' THEN
+        SELECT MAX(p_over_final) INTO v_neighbor_p_over
+        FROM speed_pricing_matrix
+        WHERE version_id = v_active_version
+          AND asset = p_asset AND duration = p_duration
+          AND time_bucket = v_t_idx
+          AND dist_bucket <= v_d_idx
+          AND qualifies = TRUE;
+        IF v_neighbor_p_over IS NOT NULL THEN
+          v_neighbor_p_side := v_neighbor_p_over;
+          v_used_matrix := TRUE;
+          v_version := v_active_version;
+          IF v_asym_enabled = 1 THEN
+            v_final_mark_prob := GREATEST(p_bsm_prob_side, v_neighbor_p_side);
+          ELSE
+            v_final_mark_prob := v_neighbor_p_side;
+          END IF;
+        END IF;
+      ELSE
+        SELECT MIN(p_over_final) INTO v_neighbor_p_over
+        FROM speed_pricing_matrix
+        WHERE version_id = v_active_version
+          AND asset = p_asset AND duration = p_duration
+          AND time_bucket = v_t_idx
+          AND dist_bucket >= v_d_idx
+          AND qualifies = TRUE;
+        IF v_neighbor_p_over IS NOT NULL THEN
+          v_neighbor_p_side := 1.0 - v_neighbor_p_over;
+          v_used_matrix := TRUE;
+          v_version := v_active_version;
+          IF v_asym_enabled = 1 THEN
+            v_final_mark_prob := GREATEST(p_bsm_prob_side, v_neighbor_p_side);
+          ELSE
+            v_final_mark_prob := v_neighbor_p_side;
+          END IF;
+        END IF;
       END IF;
     END IF;
   END IF;
