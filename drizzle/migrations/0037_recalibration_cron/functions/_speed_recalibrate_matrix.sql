@@ -1,0 +1,308 @@
+-- ============================================================================
+-- _speed_recalibrate_matrix — PL/pgSQL port of the JS recalibration script
+-- ============================================================================
+--
+-- Mig 0037: full PL/pgSQL implementation of the matrix recalibration
+-- pipeline. Mirrors scripts/recalibrate-pricing-matrix.mjs cell-for-cell.
+--
+-- Pipeline:
+--   1. Pull tick + market features for the rolling window
+--   2. Bucket by (dist_pct, secs_left)
+--   3. Aggregate per cell: n_obs (ticks), n_eff (distinct markets), p_over_raw (mean)
+--   4. Bayesian shrinkage toward neutral 0.5 prior with weight = speed_pricing_matrix_prior_n
+--   5. Jeffreys CI per cell
+--   6. Isotonic regression per time bucket (PAV) over qualifying cells
+--   7. Property tests: monotonicity, [0,1] range, no NaN
+--   8. Insert version row + cells (status='shadow' by default; admin promotes manually)
+--
+-- Returns the new version_id (or 0 if recalibration was skipped — too few markets).
+--
+-- Default status='shadow' is the safety gate: shadow versions are written
+-- but NEVER queried by pricing helpers (the helper looks up status='active').
+-- An admin reviews shadow-vs-active diff for ≥7 nights, then runs
+-- _speed_promote_matrix_version(version_id) to switch authority.
+
+CREATE OR REPLACE FUNCTION public._speed_recalibrate_matrix(
+  p_asset       text          DEFAULT 'BTC',
+  p_duration    speed_duration DEFAULT '5m',
+  p_window_days integer       DEFAULT 14,
+  p_status      text          DEFAULT 'shadow'    -- 'shadow' | 'active' | 'rejected'
+) RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+DECLARE
+  v_n_markets       integer;
+  v_n_obs_total     bigint;
+  v_prior_n         double precision;
+  v_prior_p         double precision := 0.5;
+  v_min_n_eff       integer;
+  v_ci_max_width    double precision;
+
+  v_version_id      integer;
+
+  -- For PAV per time bucket
+  v_t              integer;
+  v_d              integer;
+  v_values         double precision[];
+  v_weights        double precision[];
+  v_isotonic       double precision[];
+
+  -- Property test counters
+  v_failures       integer := 0;
+  v_qualifying     integer := 0;
+
+  -- For monotonicity check
+  v_prev_p         double precision;
+  v_curr_p         double precision;
+BEGIN
+  -- ── 1. Validate inputs and load knobs ────────────────────────────────
+  IF p_status NOT IN ('shadow', 'active', 'rejected') THEN
+    RAISE EXCEPTION 'invalid p_status: %. Must be shadow, active, or rejected.', p_status;
+  END IF;
+
+  SELECT rate INTO v_prior_n
+    FROM fee_config WHERE fee_type = 'speed_pricing_matrix_prior_n' LIMIT 1;
+  v_prior_n := COALESCE(v_prior_n, 50);
+
+  SELECT rate INTO v_min_n_eff
+    FROM fee_config WHERE fee_type = 'speed_pricing_matrix_min_n_eff' LIMIT 1;
+  v_min_n_eff := COALESCE(v_min_n_eff, 100);
+
+  SELECT rate INTO v_ci_max_width
+    FROM fee_config WHERE fee_type = 'speed_pricing_matrix_ci_max_width' LIMIT 1;
+  v_ci_max_width := COALESCE(v_ci_max_width, 0.12);
+
+  -- Count resolved markets in the window for the version metadata.
+  SELECT COUNT(*)::int INTO v_n_markets
+    FROM speed_markets m
+   WHERE m.asset = p_asset
+     AND m.duration = p_duration
+     AND m.status = 'resolved'
+     AND m.outcome IN ('over','under')
+     AND m.closes_at >= NOW() - (p_window_days || ' days')::interval;
+
+  IF v_n_markets < 200 THEN
+    RAISE NOTICE 'recalibrate skipped: only % resolved markets in % day window for %/% (need >= 200)',
+      v_n_markets, p_window_days, p_asset, p_duration;
+    RETURN 0;
+  END IF;
+
+  -- ── 2-4. Pull ticks, bucket, aggregate, shrink (single CTE chain) ────
+  -- Drop and rebuild the temp table on every invocation.
+  DROP TABLE IF EXISTS pg_temp.recalibrate_cells;
+  CREATE TEMP TABLE pg_temp.recalibrate_cells ON COMMIT DROP AS
+  WITH window_markets AS (
+    SELECT id, opens_at, closes_at, strike_price::double precision AS strike, outcome
+      FROM speed_markets
+     WHERE asset = p_asset
+       AND duration = p_duration
+       AND status = 'resolved'
+       AND outcome IN ('over','under')
+       AND closes_at >= NOW() - (p_window_days || ' days')::interval
+  ),
+  tick_features AS (
+    SELECT
+      m.id AS market_id,
+      m.outcome,
+      EXTRACT(EPOCH FROM (m.closes_at - t.ts))::int AS secs_left,
+      (t.price::double precision - m.strike) / NULLIF(m.strike, 0) AS dist_pct
+    FROM window_markets m
+    JOIN speed_oracle_ticks t
+      ON t.asset = p_asset
+     AND t.ts >= m.opens_at
+     AND t.ts <  m.closes_at
+    -- 1 tick per second to dedupe sub-second ticks (mirrors JS sampling)
+    WHERE t.ts = date_trunc('second', t.ts)
+  ),
+  bucketed AS (
+    SELECT
+      CASE
+        WHEN dist_pct <= -0.005   THEN 0
+        WHEN dist_pct <= -0.003   THEN 1
+        WHEN dist_pct <= -0.002   THEN 2
+        WHEN dist_pct <= -0.001   THEN 3
+        WHEN dist_pct <= -0.0005  THEN 4
+        WHEN dist_pct <  0        THEN 5
+        WHEN dist_pct <  0.0005   THEN 6
+        WHEN dist_pct <  0.001    THEN 7
+        WHEN dist_pct <  0.002    THEN 8
+        WHEN dist_pct <  0.003    THEN 9
+        WHEN dist_pct <  0.005    THEN 10
+        ELSE 11
+      END AS d_idx,
+      CASE
+        WHEN secs_left <= 15  THEN 0
+        WHEN secs_left <= 30  THEN 1
+        WHEN secs_left <= 60  THEN 2
+        WHEN secs_left <= 120 THEN 3
+        WHEN secs_left <= 180 THEN 4
+        WHEN secs_left <= 240 THEN 5
+        ELSE 6
+      END AS t_idx,
+      market_id,
+      outcome
+    FROM tick_features
+  ),
+  per_cell AS (
+    SELECT
+      d_idx,
+      t_idx,
+      COUNT(*)::int                                              AS n_obs,
+      COUNT(DISTINCT market_id)::int                             AS n_eff,
+      SUM(CASE WHEN outcome = 'over' THEN 1 ELSE 0 END)::int     AS over_count
+    FROM bucketed
+    GROUP BY d_idx, t_idx
+  )
+  SELECT
+    d_idx,
+    t_idx,
+    n_obs,
+    n_eff,
+    over_count,
+    (over_count::double precision / NULLIF(n_obs, 0))            AS p_over_raw,
+    -- Bayesian shrinkage with weight = n_eff (per-market, per codex's audit)
+    ((n_eff * (over_count::double precision / NULLIF(n_obs, 0))) + (v_prior_n * v_prior_p))
+      / NULLIF(n_eff + v_prior_n, 0)                             AS p_over_shrunk,
+    NULL::double precision                                       AS p_over_final,
+    _speed_jeffreys_ci_width(over_count, n_obs)                  AS ci_width,
+    FALSE                                                        AS qualifies
+  FROM per_cell;
+
+  -- Total observations across all cells
+  SELECT SUM(n_obs)::bigint INTO v_n_obs_total FROM pg_temp.recalibrate_cells;
+
+  -- Mark cells qualifying based on n_eff and CI width
+  UPDATE pg_temp.recalibrate_cells
+     SET qualifies = (n_eff >= v_min_n_eff AND ci_width <= v_ci_max_width);
+
+  -- ── 5. Isotonic regression per time bucket (PAV) ─────────────────────
+  -- Walk every (asset, duration, t_bucket) combo. Pull the per-cell shrunk
+  -- values in d_idx order, run PAV, write the isotonic value back.
+  -- Cells with NULL p_over_shrunk (no data in that bucket) flow through.
+  FOR v_t IN 0..6 LOOP
+    SELECT array_agg(p_over_shrunk ORDER BY d_idx) INTO v_values
+      FROM (SELECT d_idx, p_over_shrunk FROM pg_temp.recalibrate_cells WHERE t_idx = v_t ORDER BY d_idx) s;
+    SELECT array_agg(GREATEST(n_eff::double precision, 1.0) ORDER BY d_idx) INTO v_weights
+      FROM (SELECT d_idx, n_eff FROM pg_temp.recalibrate_cells WHERE t_idx = v_t ORDER BY d_idx) s;
+
+    IF v_values IS NULL OR array_length(v_values, 1) = 0 THEN
+      CONTINUE;
+    END IF;
+
+    v_isotonic := _speed_isotonic_pav(v_values, v_weights);
+
+    -- Write the isotonic value back into the temp table.
+    -- Note: array indexing here is 1-based but d_idx in the table is 0-based,
+    -- and we only have rows for d_idx values that actually had data.
+    -- Loop through d_idx values that exist for this t, in ascending order,
+    -- and assign positionally.
+    DECLARE
+      v_pos integer := 1;
+      v_d_iter integer;
+    BEGIN
+      FOR v_d_iter IN
+        SELECT d_idx FROM pg_temp.recalibrate_cells WHERE t_idx = v_t ORDER BY d_idx
+      LOOP
+        UPDATE pg_temp.recalibrate_cells
+           SET p_over_final = v_isotonic[v_pos]
+         WHERE d_idx = v_d_iter AND t_idx = v_t;
+        v_pos := v_pos + 1;
+      END LOOP;
+    END;
+  END LOOP;
+
+  -- ── 6. Property tests: monotonicity per time bucket, [0,1] range ─────
+  -- Monotonicity check
+  FOR v_t IN 0..6 LOOP
+    v_prev_p := NULL;
+    FOR v_d IN 0..11 LOOP
+      SELECT p_over_final INTO v_curr_p
+        FROM pg_temp.recalibrate_cells
+       WHERE d_idx = v_d AND t_idx = v_t;
+      IF v_curr_p IS NULL THEN
+        CONTINUE;
+      END IF;
+      IF v_prev_p IS NOT NULL AND v_curr_p < v_prev_p - 1e-9 THEN
+        v_failures := v_failures + 1;
+        RAISE NOTICE 'monotone fail: d=% t=% prev=% curr=%', v_d, v_t, v_prev_p, v_curr_p;
+      END IF;
+      v_prev_p := v_curr_p;
+    END LOOP;
+  END LOOP;
+
+  -- Range check
+  SELECT v_failures + COUNT(*)::int INTO v_failures
+    FROM pg_temp.recalibrate_cells
+   WHERE p_over_final IS NOT NULL
+     AND (p_over_final < 0 OR p_over_final > 1 OR p_over_final IS NULL);
+
+  -- Qualifying count
+  SELECT COUNT(*)::int INTO v_qualifying
+    FROM pg_temp.recalibrate_cells WHERE qualifies = TRUE;
+
+  IF v_qualifying = 0 THEN
+    v_failures := v_failures + 1;
+    RAISE NOTICE 'coverage fail: zero qualifying cells (need n_eff >= % and ci_width <= %)',
+      v_min_n_eff, v_ci_max_width;
+  END IF;
+
+  -- If property tests failed, force status='rejected' regardless of caller intent.
+  -- This is the safety gate — bad matrices never become active.
+  IF v_failures > 0 AND p_status <> 'rejected' THEN
+    RAISE NOTICE '% property test failures; downgrading status from % to rejected', v_failures, p_status;
+    p_status := 'rejected';
+  END IF;
+
+  -- ── 7. Write version + cells in one transaction ──────────────────────
+  INSERT INTO speed_pricing_matrix_versions
+    (asset, duration, n_markets, n_obs_total, status, computed_at, notes)
+  VALUES
+    (p_asset, p_duration, v_n_markets, v_n_obs_total, p_status, NOW(),
+     format('PL/pgSQL recalibration; window=%sd; failures=%s', p_window_days, v_failures))
+  RETURNING id INTO v_version_id;
+
+  INSERT INTO speed_pricing_matrix
+    (version_id, asset, duration, dist_bucket, time_bucket, n_obs, n_eff,
+     p_over_raw, p_over_shrunk, p_over_final, ci_lo, ci_hi, ci_width, qualifies)
+  SELECT
+    v_version_id, p_asset, p_duration, d_idx, t_idx, n_obs, n_eff,
+    p_over_raw, p_over_shrunk, p_over_final,
+    GREATEST(0.0, p_over_shrunk - ci_width / 2.0),
+    LEAST(1.0,  p_over_shrunk + ci_width / 2.0),
+    ci_width, qualifies
+  FROM pg_temp.recalibrate_cells;
+
+  -- Mark older 'shadow' versions as superseded (ignore 'active' — admin promotes manually).
+  -- This keeps only the most recent shadow per (asset, duration).
+  IF p_status = 'shadow' THEN
+    UPDATE speed_pricing_matrix_versions
+       SET status = 'superseded'
+     WHERE asset = p_asset AND duration = p_duration
+       AND status = 'shadow' AND id <> v_version_id;
+  END IF;
+
+  -- If admin/script explicitly chose 'active', mark previously active versions as superseded.
+  IF p_status = 'active' THEN
+    UPDATE speed_pricing_matrix_versions
+       SET status = 'superseded'
+     WHERE asset = p_asset AND duration = p_duration
+       AND status = 'active' AND id <> v_version_id;
+    -- Also update fee_config so _speed_matrix_lookup picks up the new version.
+    INSERT INTO fee_config (fee_type, rate, description, updated_at)
+    VALUES ('speed_pricing_matrix_version', v_version_id, '0034: active pricing matrix version (auto-set by recalibration cron)', NOW())
+    ON CONFLICT (fee_type) DO UPDATE SET rate = v_version_id, updated_at = NOW();
+  END IF;
+
+  RAISE NOTICE 'recalibration complete: version=% status=% qualifying=% failures=%',
+    v_version_id, p_status, v_qualifying, v_failures;
+
+  RETURN v_version_id;
+END;
+$$;
+
+COMMENT ON FUNCTION public._speed_recalibrate_matrix(text, speed_duration, integer, text) IS
+  '0037: PL/pgSQL port of scripts/recalibrate-pricing-matrix.mjs. Pulls ticks from rolling window, buckets, applies Bayesian shrinkage and PAV isotonic regression, writes a new matrix version. Default status=shadow — admin must call _speed_promote_matrix_version(id) to make active. Property test failures force status=rejected as a safety gate.';
+
+GRANT EXECUTE ON FUNCTION public._speed_recalibrate_matrix(text, speed_duration, integer, text) TO PUBLIC;

@@ -61,6 +61,11 @@ const FUNCTIONS = [
   { name: "_speed_get_stake_max",         source_mig: "0028_pricing_engine_v2.sql:256" },
   { name: "_speed_utc_today",             source_mig: "0028_pricing_engine_v2.sql:176" },
   { name: "_speed_utc_midnight",          source_mig: "0028_pricing_engine_v2.sql:181" },
+  // Mig 0037: recalibration cron + dual-run helpers
+  { name: "_speed_isotonic_pav",          source_mig: "0037_recalibration_cron/functions/_speed_isotonic_pav.sql" },
+  { name: "_speed_jeffreys_ci_width",     source_mig: "0037_recalibration_cron/functions/_speed_jeffreys_ci_width.sql" },
+  { name: "_speed_recalibrate_matrix",    source_mig: "0037_recalibration_cron/functions/_speed_recalibrate_matrix.sql" },
+  { name: "_speed_promote_matrix_version",source_mig: "0037_recalibration_cron/functions/_speed_promote_matrix_version.sql" },
 ];
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));

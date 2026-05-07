@@ -1,0 +1,3 @@
+{
+  "functions": ["_speed_isotonic_pav", "_speed_jeffreys_ci_width", "_speed_recalibrate_matrix", "_speed_promote_matrix_version"]
+}

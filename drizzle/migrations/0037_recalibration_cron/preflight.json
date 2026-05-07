@@ -1,0 +1,4 @@
+{
+  "tables": ["speed_pricing_matrix", "speed_pricing_matrix_versions", "speed_oracle_ticks", "speed_markets"],
+  "fee_config_keys": ["speed_pricing_matrix_prior_n", "speed_pricing_matrix_min_n_eff", "speed_pricing_matrix_ci_max_width"]
+}
