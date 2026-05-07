@@ -20,82 +20,286 @@ interface FeeConfigEditorProps {
 }
 
 // ── Human-readable labels ──────────────────────────────────────
+//
+// Every fee_config key gets a plain-English title and a description an
+// admin without engineering background can act on. The pattern: title is
+// what this control IS; description is WHEN it fires and WHAT happens
+// when you change it.
 
 const FEE_LABELS: Record<string, { label: string; hint: string }> = {
-  explicit_fee:              { label: "Trading Fee",            hint: "Applied on every buy and sell" },
-  cash_out_premium:          { label: "Sell / Cash-Out Fee",    hint: "Extra cost when selling shares" },
-  resolution_fee:            { label: "Winning Payout Fee",     hint: "Deducted from winning payouts" },
-  deposit_fee:               { label: "Deposit Fee",            hint: "On incoming deposits" },
-  withdrawal_fee:            { label: "Withdrawal Fee",         hint: "On outgoing withdrawals" },
-  amm_default_b:             { label: "Liquidity Parameter (b)", hint: "Controls price sensitivity for new markets" },
-  max_trade_pct:             { label: "Max Trade Size",         hint: "Maximum trade as % of liquidity" },
-  dynamic_spread_threshold:  { label: "Spread Widening Trigger", hint: "Price level where spread widens" },
-  dynamic_spread_multiplier: { label: "Spread Multiplier",      hint: "How aggressively spread widens" },
-  min_trade_amount:          { label: "Minimum Trade",          hint: "Smallest allowed buy amount" },
-  // ── Speed master switches (mig 0028+) ──
-  speed_markets_enabled:         { label: "Master Kill Switch",         hint: "When 0, trade RPC rejects all new bets. Cashouts + resolution stay live." },
-  speed_oracle_stale_seconds:    { label: "Oracle Freshness Gate",      hint: "Reject trades when oracle tick older than N seconds." },
-  speed_cashout_enabled:         { label: "Cashout Kill Switch",        hint: "When 0, cashout RPC rejects all attempts." },
-  // ── Per-user / per-market caps (mig 0027+) ──
-  speed_stake_max_5m_usd:        { label: "Per-Bet Max — 5m markets",   hint: "Single-bet ceiling for 5m duration. Server enforces." },
-  speed_stake_max_1h_usd:        { label: "Per-Bet Max — 1h markets",   hint: "Single-bet ceiling for 1h duration." },
-  speed_stake_max_usd:           { label: "Per-Bet Max (legacy)",       hint: "Pre-mig-0027 single-bet cap. Use per-duration keys instead." },
-  speed_cap_per_side_usd:        { label: "Per-Side Cap (per market)",  hint: "Per-user, per-market, per-side cap. Resets every market cycle." },
-  speed_per_user_per_market_cap_usd: { label: "Per-User Per-Market Cap", hint: "Per-user, per-market, per-side cap (mig 0028 canonical name)." },
-  // ── Pool-wide risk caps (mig 0028) ──
-  speed_pool_collateral_usd:     { label: "Pool Collateral",            hint: "Notional pool backing speed markets. Used for percentage caps below." },
-  speed_per_side_cap_pct:        { label: "Per-Side Cap (% of pool)",   hint: "When stake on one side hits this fraction of pool, no more bets." },
-  speed_same_strike_cluster_cap_pct: { label: "Same-Strike Cluster Cap (% of pool)", hint: "Max exposure across markets sharing one strike." },
-  speed_daily_ngr_floor_usd:     { label: "Daily NGR Floor",            hint: "Circuit breaker. When daily NGR crosses (negative), new entries blocked. Auto-resets UTC midnight." },
-  // ── Pricing engine v2 (mig 0028) ──
-  speed_spread_pct:              { label: "Base Spread",                hint: "Half-spread baked into offered_prob each side. Default 0.05 = 5%." },
-  speed_extreme_spread_coeff:    { label: "Extreme Spread Coeff",       hint: "Quadratic widening beyond ±0.45 from 0.5 fair_prob." },
-  speed_late_60s_spread_mult:    { label: "Late 60s Spread Mult",       hint: "Spread × this in last 60s of round. Default 1.4." },
-  speed_late_30s_spread_mult:    { label: "Late 30s Spread Mult",       hint: "Spread × this in last 30s of round. Default 1.8." },
-  speed_fair_prob_reject_high:   { label: "Fair Prob Reject — High",    hint: "Reject entry when fair_prob_side > this. Replaces the 0.99 saturation clamp." },
-  speed_fair_prob_reject_low:    { label: "Fair Prob Reject — Low",     hint: "Reject entry when fair_prob_side < this. Mirror of high threshold." },
-  speed_late_30s_imbalance_reject: { label: "Late 30s Imbalance Reject", hint: "In last 30s, reject entry when |fair − 0.5| exceeds this. Closes deep-tail exploit." },
-  speed_cashout_late_30s_imbalance_reject: { label: "Late 30s Cashout Imbalance Reject", hint: "In last 30s, reject cashout when |mark − 0.5| exceeds this." },
-  speed_cashout_late_reject_s:   { label: "Cashout Late Reject (sec)",  hint: "Reject cashouts when seconds remaining is below this. Default 10." },
-  // ── Cashout option-C margins (mig 0028) ──
-  speed_cashout_winning_base_5m: { label: "Cashout Winning Base — 5m",  hint: "Margin extracted from winning side cashout, 5m duration. Default 2.5%." },
-  speed_cashout_winning_base_1h: { label: "Cashout Winning Base — 1h",  hint: "Margin extracted from winning side cashout, 1h duration. Default 3.0%." },
-  speed_cashout_losing_base_5m:  { label: "Cashout Losing Base — 5m",   hint: "Margin amplifying losing side cashout, 5m duration. Default 8.0%." },
-  speed_cashout_losing_base_1h:  { label: "Cashout Losing Base — 1h",   hint: "Margin amplifying losing side cashout, 1h duration. Default 9.0%." },
-  speed_cashout_saturation_coef: { label: "Saturation Coef (winning)",  hint: "Premium added when |mark − 0.5| > 0.35 on winning side." },
-  speed_cashout_desperation_coef: { label: "Desperation Coef (losing)", hint: "Premium added when mark < 0.5 on losing side." },
-  speed_cashout_late_window_winning_coef: { label: "Late Window Coef — Winning", hint: "Margin ramp on winning side as time runs out (× (60-s)/60)." },
-  speed_cashout_late_window_losing_coef:  { label: "Late Window Coef — Losing",  hint: "Margin ramp on losing side as time runs out." },
-  // ── IV / parity (mig 0029, 0030) ──
-  speed_iv_btc:                  { label: "IV Fallback (BTC)",          hint: "Constant IV used when realized-vol cache is stale or empty." },
-  speed_iv_drift_tolerance_pct:  { label: "IV Drift Tolerance",         hint: "Stale-quote check. If client_iv drifts beyond this, reject with IV_DRIFT." },
-  speed_iv_fail_closed:          { label: "IV Fail-Closed Mode",        hint: "When 1, reject trades if RV cache is stale (no fallback). Operational gate." },
-  speed_use_realized_vol:        { label: "Use Realized Vol",           hint: "Master switch. When 0, server bypasses RV cache and uses speed_iv_btc directly." },
-  // ── Soft guards (mig 0031) ──
-  speed_per_user_velocity_max:   { label: "Velocity Cap (bets/min)",    hint: "Hard reject when user exceeds this many bets per rolling minute." },
-  speed_per_user_open_exposure_pct: { label: "Open Exposure Cap (% of pool)", hint: "Hard reject when user's total open liability exceeds this fraction of pool." },
-  speed_per_user_daily_handle_alert: { label: "Daily Handle Alert ($)", hint: "Telemetry-only. Logs to speed_user_alerts when daily handle crosses this. No enforcement." },
-  // ── Mig 0034: matrix pricing flags ──
-  speed_pricing_matrix_enabled:        { label: "Matrix Pricing — Master",     hint: "DANGER ZONE: enable matrix-based pricing for entry AND cashout TOGETHER. Default 0 (BSM only)." },
-  speed_pricing_asym_pushup_enabled:   { label: "Asymmetric Push-Up Rule",     hint: "When matrix enabled, max(matrix, BSM) is used so pricing only ever raises (codex required)." },
-  speed_pricing_matrix_version:        { label: "Active Matrix Version",       hint: "Auto-set by recalibration cron. Read-only in practice." },
-  speed_pricing_matrix_min_n_eff:      { label: "Matrix Min N (markets)",      hint: "Cells with fewer than this many independent markets fall back to BSM." },
-  speed_pricing_matrix_ci_max_width:   { label: "Matrix Max CI Width",         hint: "Cells with CI width above this shrink hard toward BSM prior." },
-  speed_pricing_matrix_prior_n:        { label: "Matrix Prior Weight",         hint: "Bayesian shrinkage weight (toward 0.5 neutral)." },
-  // ── Mig 0034: soft-block ──
-  speed_entry_soft_block_enabled:           { label: "Entry Soft-Block Enabled",      hint: "DANGER ZONE: when 1, RPC raises SOFT_BLOCK and UI greys button when offered_prob >= threshold." },
-  speed_entry_soft_block_threshold:         { label: "Entry Soft-Block Threshold",    hint: "Lock at offered_prob >= this. Default 0.95." },
-  speed_entry_soft_block_unlock_threshold:  { label: "Entry Soft-Block Unlock",       hint: "Hysteresis unlock — must drop below this to release. Default 0.94." },
-  // ── Mig 0034: per-ticket payout caps ──
-  speed_entry_max_payout_usd_5m: { label: "Per-Ticket Payout Cap — 5m",  hint: "Reject any single 5m ticket where stake / offered_prob exceeds this." },
-  speed_entry_max_payout_usd_1h: { label: "Per-Ticket Payout Cap — 1h",  hint: "Reject any single 1h ticket where payout exceeds this." },
-  // ── Mig 0034: cashout cap-edge ──
-  speed_cashout_cap_edge_threshold: { label: "Cashout Cap-Edge Threshold", hint: "When entry AND mark prob both >= this, cashout disabled with 'Hold for settlement'." },
-  // ── Mig 0034: three-tier NGR breaker ──
-  speed_daily_ngr_alert_usd:     { label: "NGR Tier 1 — Alert",      hint: "Slack notification, no enforcement. Default -$500." },
-  speed_daily_ngr_soft_block_usd:{ label: "NGR Tier 2 — Soft Block", hint: "Per-trade max temporarily reduced. Default -$2,500." },
-  speed_daily_ngr_hard_stop_usd: { label: "NGR Tier 3 — Hard Stop",  hint: "Trading paused entirely until manual review. Default -$5,000." },
-  speed_ngr_soft_block_stake_max_usd: { label: "NGR Soft-Block Stake Max", hint: "Per-trade stake cap when NGR soft-block tier is active. Default $100." },
+  // ── Generic platform fees ─────────────────────────────────────
+  explicit_fee: {
+    label: "Trading Fee",
+    hint: "Charged on every buy and sell. Higher value = more revenue per trade but discourages high-volume traders.",
+  },
+  cash_out_premium: {
+    label: "Cash-Out Surcharge",
+    hint: "Extra fee added when a user sells shares early. Higher value = more friction on early exits.",
+  },
+  resolution_fee: {
+    label: "Winning Payout Fee",
+    hint: "Cut taken from winning payouts at market resolution. Charges only the winners; losers pay nothing extra.",
+  },
+  deposit_fee: {
+    label: "Deposit Fee",
+    hint: "Fee taken on every incoming deposit. Usually 0% — set higher only if a payment provider charges us per deposit.",
+  },
+  withdrawal_fee: {
+    label: "Withdrawal Fee",
+    hint: "Fee taken on every outgoing withdrawal. Covers blockchain gas / transfer costs we incur.",
+  },
+  amm_default_b: {
+    label: "Market Liquidity Setting",
+    hint: "Controls how much prices move when someone buys or sells. Lower = sharper price moves; higher = smoother prices.",
+  },
+  max_trade_pct: {
+    label: "Maximum Trade Size",
+    hint: "Largest single trade allowed, shown as a percent of total market liquidity. Protects markets from one whale draining a side.",
+  },
+  dynamic_spread_threshold: {
+    label: "Spread Widening Trigger",
+    hint: "Price level where the spread starts widening. Once a market gets close to 0% or 100%, the gap between buy and sell price grows.",
+  },
+  dynamic_spread_multiplier: {
+    label: "Spread Widening Strength",
+    hint: "How aggressively the spread widens once the threshold is hit. Higher = more protective of the platform; sharper prices for users.",
+  },
+  min_trade_amount: {
+    label: "Minimum Trade Size",
+    hint: "Smallest amount a user can stake on a single trade. Stops dust trades that clog the database.",
+  },
+
+  // ── Speed master switches (mig 0028+) ─────────────────────────
+  speed_markets_enabled: {
+    label: "Speed Markets — Master On/Off",
+    hint: "When OFF, no new Speed bets can be placed at all. Existing positions still resolve and cash out normally. Use as the nuclear option if something is wrong with trading.",
+  },
+  speed_oracle_stale_seconds: {
+    label: "Live Price Freshness (seconds)",
+    hint: "If our BTC price feed is older than this many seconds, new trades are rejected to protect against stale-price arbitrage. Default 2 seconds.",
+  },
+  speed_cashout_enabled: {
+    label: "Cashout — On/Off",
+    hint: "When OFF, no user can cash out a position early — they must hold to settlement. Use this if cashout pricing looks wrong; entries keep working.",
+  },
+
+  // ── Per-user / per-market caps (mig 0027+) ────────────────────
+  speed_stake_max_5m_usd: {
+    label: "Maximum Bet — 5-Minute Markets",
+    hint: "Largest amount a user can stake on a single 5-minute trade. Raise to allow bigger trades; lower to limit individual exposure.",
+  },
+  speed_stake_max_1h_usd: {
+    label: "Maximum Bet — 1-Hour Markets",
+    hint: "Largest amount a user can stake on a single 1-hour trade.",
+  },
+  speed_stake_max_usd: {
+    label: "Maximum Bet — Legacy Default",
+    hint: "Old single-bet cap, used as a fallback. Prefer the per-duration keys above; this only applies if no per-duration value is set.",
+  },
+  speed_cap_per_side_usd: {
+    label: "Per-Market Cap (one user, one side)",
+    hint: "How much one user can stake on one side (over OR under) of a single market, across multiple bets. Stops a single user from cornering one side.",
+  },
+  speed_per_user_per_market_cap_usd: {
+    label: "Per-Market Cap (canonical)",
+    hint: "Same as the cap above; this is the newer name in the database. Both keys map to the same limit.",
+  },
+
+  // ── Pool-wide risk caps (mig 0028) ────────────────────────────
+  speed_pool_collateral_usd: {
+    label: "Pool Size (USD)",
+    hint: "Total notional pool backing all Speed markets. Several caps below are calculated as a percentage of this number. Raising it allows bigger total exposure.",
+  },
+  speed_per_side_cap_pct: {
+    label: "Per-Market Side Exposure Cap",
+    hint: "Maximum total liability the platform will accept on one side of a single market, as a fraction of the pool. Default 25% — once payouts on one side reach this, no more bets accepted on that side.",
+  },
+  speed_same_strike_cluster_cap_pct: {
+    label: "Same-Strike Cluster Cap",
+    hint: "When several markets share roughly the same strike price, this caps total exposure across them combined. Stops a coordinated bet across many same-strike markets.",
+  },
+  speed_daily_ngr_floor_usd: {
+    label: "Daily Loss Limit (Circuit Breaker)",
+    hint: "If our daily net revenue drops below this (negative number, like -$5,000), trading pauses until UTC midnight. Auto-resets each day.",
+  },
+
+  // ── Pricing engine v2 (mig 0028) ──────────────────────────────
+  speed_spread_pct: {
+    label: "Base Spread",
+    hint: "The platform's edge baked into every quote. Default 5%. Higher = more profit per trade but visibly worse user prices.",
+  },
+  speed_extreme_spread_coeff: {
+    label: "Lopsided-Market Spread Boost",
+    hint: "How much we widen the spread when a market is heavily on one side. Higher value = even fairer protection at extremes; users see worse prices on near-certain markets.",
+  },
+  speed_late_60s_spread_mult: {
+    label: "Last 60 Seconds Spread Multiplier",
+    hint: "Multiplies the base spread when a market has under 60 seconds left. Currently 1.2× (was 1.4× pre-Mig 0034 — reduced because the matrix already handles late-window directional pricing).",
+  },
+  speed_late_30s_spread_mult: {
+    label: "Last 30 Seconds Spread Multiplier",
+    hint: "Multiplies the base spread in the final 30 seconds of a round. Currently 1.4× (was 1.8× pre-Mig 0034). Together with the 60s multiplier, makes late trades less profitable.",
+  },
+  speed_fair_prob_reject_high: {
+    label: "Reject Bets Above (Probability)",
+    hint: "If our internal probability for a side exceeds this, we refuse the trade with 'outcome too close to certain'. Default 0.97 = 97%.",
+  },
+  speed_fair_prob_reject_low: {
+    label: "Reject Bets Below (Probability)",
+    hint: "If our internal probability for a side falls below this, we refuse the trade with 'side too unlikely'. Mirror of the high threshold. Default 0.03 = 3%.",
+  },
+  speed_late_30s_imbalance_reject: {
+    label: "Last 30s — Reject Lopsided Trades",
+    hint: "In the final 30 seconds, reject any trade where the implied probability is more than this far from 50/50. Closes the 'pattern-match the obvious side at expiry' exploit.",
+  },
+  speed_cashout_late_30s_imbalance_reject: {
+    label: "Last 30s — Reject Lopsided Cashouts",
+    hint: "Mirror of the entry rule but for cashouts. In the final 30 seconds, lopsided positions can't be cashed out — they must run to settlement.",
+  },
+  speed_cashout_late_reject_s: {
+    label: "Last N Seconds — Block All Cashouts",
+    hint: "Cashouts are completely disabled in the last N seconds before a market closes. Default 10 seconds.",
+  },
+
+  // ── Cashout margins (mig 0028) ────────────────────────────────
+  speed_cashout_winning_base_5m: {
+    label: "Winning Cashout Margin — 5m Markets",
+    hint: "Cut we take when a user cashes out a winning 5-minute position. Default 2.5%. Hidden from users; baked into the cashout amount.",
+  },
+  speed_cashout_winning_base_1h: {
+    label: "Winning Cashout Margin — 1h Markets",
+    hint: "Same as above but for 1-hour markets. Slightly higher (3%) because 1h positions have wider price swings.",
+  },
+  speed_cashout_losing_base_5m: {
+    label: "Losing Cashout Margin — 5m Markets",
+    hint: "Slippage applied when a user cuts a losing 5-minute position. Default 8%. Higher than winning side because losing users want to exit fast.",
+  },
+  speed_cashout_losing_base_1h: {
+    label: "Losing Cashout Margin — 1h Markets",
+    hint: "Slippage on losing cashouts for 1-hour markets. Default 9%.",
+  },
+  speed_cashout_saturation_coef: {
+    label: "Winning Cashout — Lopsided Premium",
+    hint: "Adds extra margin when a winning user cashes out from a heavily one-sided market (very high probability of winning). Larger value = more aggressive house edge near the rails.",
+  },
+  speed_cashout_desperation_coef: {
+    label: "Losing Cashout — Desperation Premium",
+    hint: "Adds extra slippage when a losing user is panicking out of a position that's looking very bad. Larger value = users pay more to escape losing trades.",
+  },
+  speed_cashout_late_window_winning_coef: {
+    label: "Winning Cashout — Late Window Premium",
+    hint: "Adds extra margin to winning cashouts as the market gets close to expiry. Encourages users to ride to settlement instead of cashing out at the last moment.",
+  },
+  speed_cashout_late_window_losing_coef: {
+    label: "Losing Cashout — Late Window Premium",
+    hint: "Adds extra slippage to losing cashouts near expiry. Discourages last-second loss-cutting.",
+  },
+
+  // ── IV / volatility (mig 0029) ────────────────────────────────
+  speed_iv_btc: {
+    label: "BTC Volatility — Fallback Value",
+    hint: "Constant volatility number used when our live volatility cache is stale or empty. 0.6 = 60% annualized, a reasonable BTC default. Only matters during outages of the volatility worker.",
+  },
+  speed_iv_drift_tolerance_pct: {
+    label: "Volatility Drift Tolerance",
+    hint: "If a user's quoted volatility drifts more than this from our current value, the trade is rejected as a stale quote. Default 10%.",
+  },
+  speed_iv_fail_closed: {
+    label: "Volatility Cache — Strict Mode",
+    hint: "When ON, trades are rejected if the live volatility cache is stale (no fallback to the BTC default). When OFF, falls back to the BTC default value above. OFF is more user-friendly; ON is safer for the platform.",
+  },
+  speed_use_realized_vol: {
+    label: "Use Live Volatility (vs Fixed)",
+    hint: "Master switch for live volatility. When ON, prices update with real-time BTC volatility from the cache. When OFF, prices use the fixed BTC fallback value. Always leave ON in production.",
+  },
+
+  // ── Soft guards (mig 0031) ────────────────────────────────────
+  speed_per_user_velocity_max: {
+    label: "Maximum Bets Per Minute (per user)",
+    hint: "Hard limit on how fast one user can place bets. Default 30 per minute. Catches automated bots and rapid-fire stake increases.",
+  },
+  speed_per_user_open_exposure_pct: {
+    label: "Per-User Open Position Cap",
+    hint: "Maximum total liability one user can have across all open positions, as a fraction of the pool. Default 15%. Prevents a single user from being able to bankrupt the platform.",
+  },
+  speed_per_user_daily_handle_alert: {
+    label: "Daily Volume Alert (per user)",
+    hint: "When a single user trades more than this much in a day, we log a telemetry alert for review. No enforcement — just a tripwire. Default $5,000.",
+  },
+
+  // ── Mig 0034: matrix pricing flags ────────────────────────────
+  speed_pricing_matrix_enabled: {
+    label: "⚠️ Matrix Pricing — Master Switch",
+    hint: "DANGER ZONE. Turns on data-driven pricing using historical outcomes. Affects BOTH entry pricing AND cashout pricing together (they cannot be split). When ON, prices in qualifying cells push toward realized historical win rates rather than pure Black-Scholes. When OFF, falls back to the textbook formula.",
+  },
+  speed_pricing_asym_pushup_enabled: {
+    label: "Matrix — Only Push Prices Up",
+    hint: "When ON, the matrix only ever RAISES the price (never gives users better odds than the textbook). This is the safer, house-protective mode. Should always be ON when the matrix is enabled. Required for legal/regulatory framing.",
+  },
+  speed_pricing_matrix_version: {
+    label: "Active Matrix Version (auto)",
+    hint: "Which matrix snapshot is currently being used by the pricing engine. Set automatically by the nightly recalibration cron. Don't edit manually unless rolling back to an older matrix version.",
+  },
+  speed_pricing_matrix_min_n_eff: {
+    label: "Matrix Cell — Minimum Markets Required",
+    hint: "How many independent markets must contribute data to a matrix cell before that cell is trusted. Default 100. Cells below this fall back to the textbook formula. Lower = use matrix sooner with less data; higher = more conservative.",
+  },
+  speed_pricing_matrix_ci_max_width: {
+    label: "Matrix Cell — Maximum Uncertainty",
+    hint: "Cells whose statistical confidence interval is wider than this (default 12%) get shrunk hard toward the textbook prior. Lower = stricter; higher = trusts noisier estimates more.",
+  },
+  speed_pricing_matrix_prior_n: {
+    label: "Matrix — Prior Strength",
+    hint: "How strongly the Bayesian average pulls toward 50/50 when we have little data. Default 50 (treats the prior as equivalent to 50 markets of evidence at 50/50). Higher = more skepticism of new data; lower = trusts new data sooner.",
+  },
+
+  // ── Mig 0034: soft-block ──────────────────────────────────────
+  speed_entry_soft_block_enabled: {
+    label: "⚠️ Soft-Block — On/Off",
+    hint: "DANGER ZONE. When ON, the trade button greys out with 'Market closing — try next round' once the offered probability gets very high. Friendly UX; not an error. Closes the late-window pattern-match exploit. Should only be turned on when the matrix is also on.",
+  },
+  speed_entry_soft_block_threshold: {
+    label: "Soft-Block — Trigger Probability",
+    hint: "When the offered probability hits this number or higher, the trade button locks. Default 0.95 = 95%. Lower this if you want to block more aggressively; raise to allow more high-confidence trades.",
+  },
+  speed_entry_soft_block_unlock_threshold: {
+    label: "Soft-Block — Unlock Probability",
+    hint: "Once locked, the button stays greyed out until the offered probability drops below this number. Default 0.94 = 94%. Prevents the button from flickering on and off as the price wobbles around the trigger.",
+  },
+
+  // ── Mig 0034: per-ticket payout caps ──────────────────────────
+  speed_entry_max_payout_usd_5m: {
+    label: "Maximum Single-Ticket Payout — 5m",
+    hint: "Hard cap on how much any single 5-minute ticket can pay out at settlement. Even if the stake × odds would produce more, the trade is rejected with 'stake too large for these odds'. Default $2,500. Caps the worst-case loss on a single trade.",
+  },
+  speed_entry_max_payout_usd_1h: {
+    label: "Maximum Single-Ticket Payout — 1h",
+    hint: "Same as above but for 1-hour markets. Default $5,000.",
+  },
+
+  // ── Mig 0034: cashout cap-edge ────────────────────────────────
+  speed_cashout_cap_edge_threshold: {
+    label: "Cashout — Hold-To-Settlement Threshold",
+    hint: "When both the user's entry probability and the current mark probability are above this number (default 0.985), cashout is disabled and the UI shows 'Hold for settlement — pays $X'. Prevents the awkward 'cashout = stake' scenario when the position is already at the price ceiling.",
+  },
+
+  // ── Mig 0034: three-tier daily loss breaker ───────────────────
+  speed_daily_ngr_alert_usd: {
+    label: "Daily Loss — Tier 1: Alert",
+    hint: "When daily losses cross this threshold (negative number, e.g. -$500), a Slack notification fires. No effect on trading — just an early-warning signal that the day is going badly.",
+  },
+  speed_daily_ngr_soft_block_usd: {
+    label: "Daily Loss — Tier 2: Reduce Stake Limits",
+    hint: "When daily losses cross this (e.g. -$2,500), per-trade maximum stakes are temporarily reduced to the 'soft-block stake max' value below. Caps the bleed without fully halting trading.",
+  },
+  speed_daily_ngr_hard_stop_usd: {
+    label: "Daily Loss — Tier 3: Stop Trading",
+    hint: "When daily losses cross this (e.g. -$5,000), all trading is paused until manual review. The ultimate emergency brake. Auto-resets at UTC midnight along with the other tiers.",
+  },
+  speed_ngr_soft_block_stake_max_usd: {
+    label: "Tier 2 — Reduced Per-Trade Maximum",
+    hint: "When the Tier 2 soft-block is active, this becomes the per-trade stake cap regardless of the regular per-duration maximums. Default $100. Sets the throttled stake size during a bad day.",
+  },
 };
 
 // Keys whose `rate` column stores a USD amount (not a 0–1 fraction). Format
