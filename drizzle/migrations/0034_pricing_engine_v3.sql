@@ -738,7 +738,7 @@ BEGIN
     RAISE EXCEPTION 'Daily limit reached, try again tomorrow';
   END IF;
 
-  SELECT net INTO v_ngr_today FROM speed_daily_ngr WHERE ngr_date = _speed_utc_today();
+  SELECT ngr INTO v_ngr_today FROM speed_daily_ngr WHERE ngr_date = _speed_utc_today();
   v_ngr_today := COALESCE(v_ngr_today, 0);
 
   SELECT rate INTO v_ngr_hard_stop FROM fee_config WHERE fee_type = 'speed_daily_ngr_hard_stop_usd' LIMIT 1;
