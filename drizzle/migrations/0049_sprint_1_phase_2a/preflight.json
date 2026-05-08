@@ -1,0 +1,4 @@
+{
+  "tables": ["speed_market_config", "fee_config"],
+  "functions": ["_speed_pricing_apply", "speed_execute_trade"]
+}
