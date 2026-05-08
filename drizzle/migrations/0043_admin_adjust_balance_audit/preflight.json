@@ -1,0 +1,4 @@
+{
+  "tables": ["admin_action_log", "users", "admin_config", "transactions"],
+  "functions": ["admin_adjust_balance"]
+}
