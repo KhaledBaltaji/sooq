@@ -1,0 +1,32 @@
+{
+  "tables": ["speed_assets", "fee_config"],
+  "fee_config_keys": [
+    "speed_stake_max_5m_usd",
+    "speed_entry_max_payout_usd_5m",
+    "speed_cap_per_side_usd",
+    "speed_max_market_exposure_pct",
+    "speed_per_user_open_exposure_pct",
+    "speed_per_user_velocity_max",
+    "speed_per_user_daily_handle_alert",
+    "speed_spread_pct",
+    "speed_entry_soft_block_threshold",
+    "speed_entry_soft_block_unlock_threshold",
+    "speed_late_60s_spread_mult",
+    "speed_late_30s_spread_mult",
+    "speed_late_window_reject_s",
+    "speed_late_30s_imbalance_reject",
+    "speed_cashout_winning_base_5m",
+    "speed_cashout_losing_base_5m",
+    "speed_cashout_saturation_coef",
+    "speed_cashout_desperation_coef",
+    "speed_cashout_late_window_winning_coef",
+    "speed_cashout_late_window_losing_coef",
+    "speed_cashout_late_reject_s",
+    "speed_cashout_late_30s_imbalance_reject",
+    "speed_cashout_cap_edge_threshold",
+    "speed_pricing_matrix_min_n_eff",
+    "speed_pricing_matrix_ci_max_width",
+    "speed_pricing_matrix_prior_n",
+    "speed_wick_threshold_pct"
+  ]
+}
