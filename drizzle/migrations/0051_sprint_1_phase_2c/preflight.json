@@ -1,0 +1,4 @@
+{
+  "tables": ["speed_market_config", "fee_config"],
+  "functions": ["speed_execute_trade", "speed_execute_cashout", "_speed_cashout_margin", "_speed_max_stake_for_offered", "_speed_get_stake_max"]
+}

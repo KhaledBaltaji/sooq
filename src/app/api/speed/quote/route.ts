@@ -215,7 +215,8 @@ export async function POST(req: Request) {
             stake_max AS (
               SELECT
                 ap.*,
-                _speed_max_stake_for_offered(ap.duration, ap.offered_prob) AS max_stake_allowed
+                -- mig 0051 Phase 2C: helper takes (asset, duration, offered_prob)
+                _speed_max_stake_for_offered(ap.asset, ap.duration, ap.offered_prob) AS max_stake_allowed
               FROM applied ap
             ),
             final AS (
@@ -375,7 +376,9 @@ export async function POST(req: Request) {
             margins AS (
               SELECT
                 p.*,
+                -- mig 0051 Phase 2C: helper takes (asset, duration, ...)
                 _speed_cashout_margin(
+                  p.market_asset,
                   p.market_duration,
                   p.is_winning,
                   p.mark_prob,
