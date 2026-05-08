@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0034_pricing_engine_v3.sql:532
--- Last extracted: 2026-05-07T11:59:41.191Z
+-- Last extracted: 2026-05-08T14:58:53.624Z
 CREATE OR REPLACE FUNCTION public.speed_execute_trade(p_market_id uuid, p_side text, p_stake numeric, p_idempotency_key text DEFAULT NULL::text, p_expected_iv numeric DEFAULT NULL::numeric, p_expected_spot numeric DEFAULT NULL::numeric, p_expected_seconds_left_bucket integer DEFAULT NULL::integer, p_expected_fair_prob numeric DEFAULT NULL::numeric, p_expected_offered_prob numeric DEFAULT NULL::numeric)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -170,7 +170,6 @@ BEGIN
       USING HINT = 'Market regime changed between quote and execute — refresh quote';
   END IF;
 
-  -- Per-user-per-market-per-side cap (validated before pricing math; cheaper to fail fast)
   SELECT rate INTO v_cap_per_side FROM fee_config WHERE fee_type = 'speed_cap_per_side_usd' LIMIT 1;
   v_cap_per_side := COALESCE(v_cap_per_side, 200);
   SELECT COALESCE(SUM(stake), 0) INTO v_user_market_sum
@@ -197,10 +196,6 @@ BEGIN
     END IF;
   END IF;
 
-  -- 0034: three-tier NGR breaker (replaces 0028's single-tier).
-  -- - hard_stop: pause trading entirely
-  -- - soft_block: reduce per-trade stake max
-  -- - alert: telemetry only (no enforcement here)
   SELECT circuit_tripped_at INTO v_circuit_tripped
   FROM speed_daily_ngr WHERE ngr_date = _speed_utc_today();
   IF v_circuit_tripped IS NOT NULL THEN
@@ -226,7 +221,6 @@ BEGIN
     RAISE EXCEPTION 'Insufficient balance';
   END IF;
 
-  -- ── PRICING ─────────────────────────────────────────────────────────
   SELECT rate INTO v_spread_pct    FROM fee_config WHERE fee_type = 'speed_spread_pct';
   SELECT rate INTO v_extreme_coeff FROM fee_config WHERE fee_type = 'speed_extreme_spread_coeff';
   v_spread_pct    := COALESCE(v_spread_pct, 0.05);
@@ -251,12 +245,10 @@ BEGIN
     v_fair_prob_side := 1.0 - v_fair_prob_over;
   END IF;
 
-  -- 0030: fair_prob parity check
   SELECT rate INTO v_parity_prob_tol FROM fee_config WHERE fee_type = 'speed_parity_prob_drift_pct';
   v_parity_prob_tol := COALESCE(v_parity_prob_tol, 0.02);
   PERFORM _speed_assert_parity('fair_prob', p_expected_fair_prob, v_fair_prob_side, v_parity_prob_tol);
 
-  -- BSM hard rejects (stay at this layer; matrix runs after these gates)
   SELECT rate INTO v_fair_reject_high FROM fee_config WHERE fee_type = 'speed_fair_prob_reject_high';
   SELECT rate INTO v_fair_reject_low  FROM fee_config WHERE fee_type = 'speed_fair_prob_reject_low';
   v_fair_reject_high := COALESCE(v_fair_reject_high, 0.97);
@@ -280,7 +272,6 @@ BEGIN
     END IF;
   END IF;
 
-  -- Spread layering (base + extreme overage + reduced multiplicative late-window per mig 0034)
   v_distance := ABS(v_fair_prob_side::DOUBLE PRECISION - 0.5);
   v_overage  := GREATEST(0.0, v_distance - 0.45);
   v_widened_spread := v_spread_pct::DOUBLE PRECISION
@@ -288,16 +279,15 @@ BEGIN
 
   IF v_seconds_left < 30 THEN
     SELECT rate INTO v_late_30s_mult FROM fee_config WHERE fee_type = 'speed_late_30s_spread_mult';
-    v_spread_mult := COALESCE(v_late_30s_mult, 1.40);  -- 0034: was 1.80
+    v_spread_mult := COALESCE(v_late_30s_mult, 1.40);
   ELSIF v_seconds_left < 60 THEN
     SELECT rate INTO v_late_60s_mult FROM fee_config WHERE fee_type = 'speed_late_60s_spread_mult';
-    v_spread_mult := COALESCE(v_late_60s_mult, 1.20);  -- 0034: was 1.40
+    v_spread_mult := COALESCE(v_late_60s_mult, 1.20);
   ELSE
     v_spread_mult := 1.0;
   END IF;
   v_widened_spread := v_widened_spread * v_spread_mult;
 
-  -- 0034: matrix correction via shared helper
   v_dist_pct := (v_oracle.price::DOUBLE PRECISION - v_market.strike_price::DOUBLE PRECISION)
               / NULLIF(v_market.strike_price::DOUBLE PRECISION, 0);
 
@@ -315,31 +305,21 @@ BEGIN
 
   v_offered_prob := v_pricing.offered_prob::DECIMAL;
 
-  -- 0034: soft-block check
   IF v_pricing.soft_blocked THEN
     RAISE EXCEPTION 'SOFT_BLOCK: market closing — try next round in a moment'
       USING HINT = format('offered_prob=%s exceeds soft_block_threshold', ROUND(v_offered_prob, 4));
   END IF;
 
-  -- Hard cap (kept as last-line safety; matrix should never push above 0.99 due to floor in helper)
   IF v_offered_prob < 0.01 THEN v_offered_prob := 0.01; END IF;
   IF v_offered_prob > 0.99 THEN
     RAISE EXCEPTION 'Trade rejected: pricing saturated (offered_prob=% would exceed 0.99 cap)', ROUND(v_offered_prob, 4)
       USING HINT = 'Wait for the market to move or try the other side';
   END IF;
 
-  -- 0030 + 0034 [P1 codex fix]: offered_prob parity check.
-  -- Skip when matrix is active and pushed the price up — clients compute
-  -- expected_offered_prob from BSM locally and CANNOT know matrix output
-  -- without calling /api/speed/quote. Asymmetric only-push-up means matrix
-  -- can only RAISE the price; if mark > BSM, we know matrix engaged.
-  -- The fair_prob parity check (above) still validates BSM-vs-BSM and
-  -- catches stale spot quotes — that's the actual stale-quote defense.
   IF NOT (v_pricing.matrix_used AND v_pricing.mark_prob > v_fair_prob_side::DOUBLE PRECISION) THEN
     PERFORM _speed_assert_parity('offered_prob', p_expected_offered_prob, v_offered_prob, v_parity_prob_tol);
   END IF;
 
-  -- 0034: dynamic stake limit (per-trade max + payout cap + liability cap + NGR-soft-block tier)
   v_stake_max_dyn := _speed_max_stake_for_offered(v_market.duration, v_offered_prob::DOUBLE PRECISION);
   IF v_ngr_today <= v_ngr_soft_block THEN
     v_stake_max_dyn := LEAST(v_stake_max_dyn, v_ngr_soft_stake_max);
@@ -353,7 +333,6 @@ BEGIN
       USING HINT = 'Try a smaller stake or another market';
   END IF;
 
-  -- 0034: per-ticket payout cap (NEW safety layer)
   v_payout_if_won := p_stake / v_offered_prob;
   IF v_market.duration::TEXT = '5m' THEN
     SELECT rate INTO v_payout_cap FROM fee_config WHERE fee_type = 'speed_entry_max_payout_usd_5m' LIMIT 1;
@@ -368,17 +347,22 @@ BEGIN
       USING HINT = 'Try a smaller stake';
   END IF;
 
-  -- Per-side market exposure cap
   SELECT rate INTO v_pool_collateral FROM fee_config WHERE fee_type = 'speed_pool_collateral_usd';
   v_pool_collateral := COALESCE(v_pool_collateral, 10000);
   SELECT rate INTO v_max_side_pct  FROM fee_config WHERE fee_type = 'speed_max_market_exposure_pct';
   v_max_side_pct := COALESCE(v_max_side_pct, 0.25);
 
+  -- S0.2: NULL guard. Skip rows with missing or zero entry_offered_prob to
+  -- avoid division-by-zero / NULL crashes that would abort all trades on this
+  -- market. Such rows shouldn't exist on current schema but historical drift
+  -- (partial migrations, manual fixes) could create them.
   SELECT COALESCE(SUM(stake / entry_offered_prob), 0) INTO v_side_payout_sum
   FROM speed_positions
   WHERE market_id = p_market_id
     AND side = p_side::speed_side
-    AND status = 'open';
+    AND status = 'open'
+    AND entry_offered_prob IS NOT NULL
+    AND entry_offered_prob > 0;
 
   IF v_side_payout_sum + v_payout_if_won > v_max_side_pct * v_pool_collateral THEN
     RAISE EXCEPTION 'Market exposure cap reached on % side', p_side
@@ -394,6 +378,7 @@ BEGIN
   v_strike_lo := v_market.strike_price * 0.995;
   v_strike_hi := v_market.strike_price * 1.005;
 
+  -- S0.2: same NULL guard on cluster aggregation.
   SELECT COALESCE(SUM(p.stake / p.entry_offered_prob), 0) INTO v_cluster_payout_sum
   FROM speed_positions p
   JOIN speed_markets m ON m.id = p.market_id
@@ -401,7 +386,9 @@ BEGIN
     AND p.side = p_side::speed_side
     AND m.status = 'open'
     AND m.asset = v_market.asset
-    AND m.strike_price BETWEEN v_strike_lo AND v_strike_hi;
+    AND m.strike_price BETWEEN v_strike_lo AND v_strike_hi
+    AND p.entry_offered_prob IS NOT NULL
+    AND p.entry_offered_prob > 0;
 
   IF v_cluster_payout_sum + v_payout_if_won > v_max_cluster_pct * v_pool_collateral THEN
     RAISE EXCEPTION 'Strike cluster exposure cap reached on % side', p_side
@@ -409,7 +396,6 @@ BEGIN
         v_cluster_payout_sum + v_payout_if_won, v_max_cluster_pct * v_pool_collateral);
   END IF;
 
-  -- ── ATOMIC WRITES ────────────────────────────────────────────────────
   INSERT INTO speed_positions (
     user_id, market_id, side, stake,
     entry_price, entry_fair_prob, entry_offered_prob, status
@@ -461,6 +447,6 @@ BEGIN
 END;
 $function$;
 COMMENT ON FUNCTION public.speed_execute_trade(p_market_id uuid, p_side text, p_stake numeric, p_idempotency_key text, p_expected_iv numeric, p_expected_spot numeric, p_expected_seconds_left_bucket integer, p_expected_fair_prob numeric, p_expected_offered_prob numeric) IS
-  $$0034: pricing engine v3. Adds matrix-based pricing via shared _speed_pricing_apply() helper, asymmetric only-push-up rule, soft-block, per-ticket payout cap, dynamic stake formula, three-tier NGR breaker. All flag-gated; default behavior identical to 0030.$$;
+  $$0038 (S0.2): adds NULL/zero guards on per-side and strike-cluster aggregate cap SUMs to prevent crashes on historical rows with missing entry_offered_prob. Body otherwise byte-equal to 0034 canonical.$$;
 GRANT EXECUTE ON FUNCTION public.speed_execute_trade(p_market_id uuid, p_side text, p_stake numeric, p_idempotency_key text, p_expected_iv numeric, p_expected_spot numeric, p_expected_seconds_left_bucket integer, p_expected_fair_prob numeric, p_expected_offered_prob numeric) TO PUBLIC;
 GRANT EXECUTE ON FUNCTION public.speed_execute_trade(p_market_id uuid, p_side text, p_stake numeric, p_idempotency_key text, p_expected_iv numeric, p_expected_spot numeric, p_expected_seconds_left_bucket integer, p_expected_fair_prob numeric, p_expected_offered_prob numeric) TO sooqadmin;

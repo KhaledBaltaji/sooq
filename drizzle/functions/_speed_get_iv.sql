@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0029_iv_cache_and_helper.sql:129
--- Last extracted: 2026-05-07T11:59:48.031Z
+-- Last extracted: 2026-05-08T14:58:57.189Z
 CREATE OR REPLACE FUNCTION public._speed_get_iv(p_asset text, p_duration speed_duration)
  RETURNS numeric
  LANGUAGE plpgsql
@@ -20,9 +20,8 @@ DECLARE
   v_freshness_secs  DECIMAL;
   v_fail_closed     DECIMAL;
   v_fallback        DECIMAL;
+  v_fallback_key    TEXT;
 BEGIN
-  -- Map duration to cache horizon. 5m and 1h map directly. Future
-  -- durations (e.g., 15m if reactivated) need to be added here.
   v_horizon := p_duration::TEXT;
   IF v_horizon NOT IN ('5m','1h','15m','24h') THEN
     RAISE EXCEPTION 'No volatility horizon mapping for duration %', p_duration;
@@ -32,7 +31,6 @@ BEGIN
   FROM speed_volatility_cache
   WHERE asset = p_asset AND horizon = v_horizon;
 
-  -- Read fail-closed flag once.
   SELECT rate INTO v_fail_closed
   FROM fee_config WHERE fee_type = 'speed_iv_fail_closed';
   v_fail_closed := COALESCE(v_fail_closed, 0);
@@ -46,38 +44,49 @@ BEGIN
     v_freshness_secs := COALESCE(v_freshness_secs, 60);
 
     IF v_cache_age_secs <= v_freshness_secs THEN
-      -- Fresh cache hit — primary path.
       RETURN v_cache_row.sigma_annualized;
     END IF;
 
-    -- Stale cache.
     IF v_fail_closed > 0 THEN
-      RAISE EXCEPTION 'IV cache stale for % %: % seconds old (max %s)',
+      RAISE EXCEPTION 'IV_MISSING: cache stale for % %: % seconds old (max %s)',
         p_asset, v_horizon, ROUND(v_cache_age_secs::NUMERIC, 1), v_freshness_secs
         USING HINT = 'Oracle worker may be down. Check /api/health/oracle.';
     END IF;
-    -- Fall through to fallback below.
   ELSIF v_fail_closed > 0 THEN
-    RAISE EXCEPTION 'IV cache empty for % % and fail-closed mode is on',
+    RAISE EXCEPTION 'IV_MISSING: cache empty for % % and fail-closed mode is on',
       p_asset, v_horizon
-      USING HINT = 'Oracle worker has not yet populated cache. Check services/speed-oracle/.';
+      USING HINT = 'Oracle worker has not yet populated cache.';
   END IF;
 
-  -- Fallback path. Used when cache is empty/stale AND fail-closed is OFF.
-  -- This is the same behavior as pre-0029. After mig 0029 ships and the
-  -- oracle worker is updated, the cache populates and this fallback only
-  -- fires on misconfiguration or oracle outage.
+  -- S0.12: asset-aware fallback. Try speed_iv_<asset> first.
+  v_fallback_key := 'speed_iv_' || lower(p_asset);
   SELECT rate INTO v_fallback
-  FROM fee_config WHERE fee_type = 'speed_iv_btc';
+  FROM fee_config WHERE fee_type = v_fallback_key;
 
+  -- Fall through to speed_iv_btc only if asset-specific not configured AND
+  -- asset is BTC (preserves backward compat; never silently uses BTC's IV
+  -- for a non-BTC asset).
+  IF v_fallback IS NULL AND lower(p_asset) = 'btc' THEN
+    SELECT rate INTO v_fallback FROM fee_config WHERE fee_type = 'speed_iv_btc';
+  END IF;
+
+  -- S0.12: refuse to return NULL or non-positive IV. BSM math relies on
+  -- positive sigma; 0 produces division by zero, NULL silently propagates.
   IF v_fallback IS NULL THEN
-    RAISE EXCEPTION 'IV fallback unavailable: speed_iv_btc not in fee_config';
+    RAISE EXCEPTION 'IV_MISSING: no fallback IV configured for asset % (key %)',
+      p_asset, v_fallback_key
+      USING HINT = format('Set fee_config.%s to a positive annualized vol (e.g. 0.6)', v_fallback_key);
+  END IF;
+  IF v_fallback <= 0 THEN
+    RAISE EXCEPTION 'IV_MISSING: configured fallback for % is non-positive (% in fee_config.%s)',
+      p_asset, v_fallback, v_fallback_key
+      USING HINT = 'Annualized vol must be > 0';
   END IF;
 
   RETURN v_fallback;
 END;
 $function$;
 COMMENT ON FUNCTION public._speed_get_iv(p_asset text, p_duration speed_duration) IS
-  $$0029: returns annualized realized volatility from speed_volatility_cache. Fail-closed mode controlled by fee_config.speed_iv_fail_closed (0=fallback to speed_iv_btc, 1=raise on stale/empty).$$;
+  $$0039 (S0.12): asset-aware fallback (speed_iv_<asset>); raises IV_MISSING if NULL or non-positive. Backward compat: BTC still falls through to speed_iv_btc.$$;
 GRANT EXECUTE ON FUNCTION public._speed_get_iv(p_asset text, p_duration speed_duration) TO PUBLIC;
 GRANT EXECUTE ON FUNCTION public._speed_get_iv(p_asset text, p_duration speed_duration) TO sooqadmin;

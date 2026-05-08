@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0034_pricing_engine_v3.sql:461
--- Last extracted: 2026-05-07T11:59:45.819Z
+-- Last extracted: 2026-05-08T14:58:56.047Z
 CREATE OR REPLACE FUNCTION public._speed_max_stake_for_offered(p_duration speed_duration, p_offered_prob double precision)
  RETURNS numeric
  LANGUAGE plpgsql
@@ -44,8 +44,13 @@ BEGIN
 
   -- max_stake_by_liability: liability_per_ticket = stake × (1-p)/p; constrain to <= liability_cap
   -- → stake <= liability_cap × p / (1-p)
-  IF p_offered_prob >= 1.0 THEN
-    v_by_liability := v_trade_max; -- p=1 means no real risk to platform
+  --
+  -- S0.1 fix: at offered_prob >= 0.98 the (1-p) divisor explodes the formula
+  -- (e.g. p=0.99 → 99×liability_cap → completely defeats stake_max). Clamp
+  -- the by_liability bound to v_trade_max in that regime; LEAST() below
+  -- still applies all caps. Below 0.98 the formula remains as-is.
+  IF p_offered_prob >= 0.98 THEN
+    v_by_liability := v_trade_max;
   ELSE
     v_by_liability := v_liability_cap * p_offered_prob / (1.0 - p_offered_prob);
   END IF;
@@ -56,6 +61,6 @@ BEGIN
 END;
 $function$;
 COMMENT ON FUNCTION public._speed_max_stake_for_offered(p_duration speed_duration, p_offered_prob double precision) IS
-  $$0034: dynamic stake limit formula. Returns max allowed stake given duration + offered_prob, considering trade max, per-ticket payout cap, and per-side liability cap.$$;
+  $$0038 (S0.1): liability cap clamp at offered_prob >= 0.98 to prevent 99x stake_max bypass at near-saturated outcomes. Original formula intact below 0.98.$$;
 GRANT EXECUTE ON FUNCTION public._speed_max_stake_for_offered(p_duration speed_duration, p_offered_prob double precision) TO PUBLIC;
 GRANT EXECUTE ON FUNCTION public._speed_max_stake_for_offered(p_duration speed_duration, p_offered_prob double precision) TO sooqadmin;

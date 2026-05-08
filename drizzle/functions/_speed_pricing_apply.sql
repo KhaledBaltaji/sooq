@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0034_pricing_engine_v3.sql:262 + commit 38922ce
--- Last extracted: 2026-05-07T11:59:44.689Z
+-- Last extracted: 2026-05-08T14:58:55.476Z
 CREATE OR REPLACE FUNCTION public._speed_pricing_apply(p_asset text, p_duration speed_duration, p_side text, p_dist_pct double precision, p_secs_left double precision, p_bsm_prob_side double precision, p_widened_spread double precision, p_mode text, p_market_id uuid DEFAULT NULL::uuid)
  RETURNS TABLE(mark_prob double precision, offered_prob double precision, matrix_used boolean, matrix_version integer, soft_blocked boolean)
  LANGUAGE plpgsql
@@ -21,11 +21,11 @@ DECLARE
   v_lookup            RECORD;
   v_matrix_p_over     DOUBLE PRECISION;
   v_matrix_p_side     DOUBLE PRECISION;
-  v_matrix_p_raw      DOUBLE PRECISION;  -- 0036: track raw matrix prob (before push-up) for telemetry
+  v_matrix_p_raw      DOUBLE PRECISION;
   v_final_mark_prob   DOUBLE PRECISION;
   v_final_offered     DOUBLE PRECISION;
   v_used_matrix       BOOLEAN := FALSE;
-  v_neighbor_used     BOOLEAN := FALSE;  -- 0036: track neighbor-aware fallback for telemetry
+  v_neighbor_used     BOOLEAN := FALSE;
   v_version           INTEGER := NULL;
   v_blocked           BOOLEAN := FALSE;
   v_d_idx             SMALLINT;
@@ -39,20 +39,14 @@ BEGIN
   v_matrix_enabled := COALESCE(v_matrix_enabled, 0);
   v_asym_enabled := COALESCE(v_asym_enabled, 1);
 
-  -- Default to BSM
   v_final_mark_prob := p_bsm_prob_side;
 
   IF v_matrix_enabled = 1 THEN
-    -- Resolve the active version once so neighbor queries below work even
-    -- when the current cell has no row in the matrix table.
     SELECT id INTO v_active_version
     FROM speed_pricing_matrix_versions
     WHERE asset = p_asset AND duration = p_duration AND status = 'active'
     ORDER BY computed_at DESC LIMIT 1;
 
-    -- Bucketize current state (mirrors _speed_matrix_lookup).
-    -- Inlined here (not via _speed_matrix_lookup) so we have v_d_idx/v_t_idx
-    -- for the neighbor query below.
     v_d_idx := CASE
       WHEN p_dist_pct <= -0.005 THEN 0
       WHEN p_dist_pct <= -0.003 THEN 1
@@ -85,24 +79,20 @@ BEGIN
       v_used_matrix := TRUE;
       v_version := v_active_version;
 
-      -- Matrix stores P(over wins). Convert to side-relevant.
       v_matrix_p_over := v_lookup.p_over;
       IF p_side = 'over' THEN
         v_matrix_p_side := v_matrix_p_over;
       ELSE
         v_matrix_p_side := 1.0 - v_matrix_p_over;
       END IF;
-      v_matrix_p_raw := v_matrix_p_side;  -- 0036: capture for telemetry
+      v_matrix_p_raw := v_matrix_p_side;
 
       IF v_asym_enabled = 1 THEN
-        -- Asymmetric only-push-up: matrix can only RAISE the price.
         v_final_mark_prob := GREATEST(p_bsm_prob_side, v_matrix_p_side);
       ELSE
-        -- Symmetric matrix (full replacement of BSM)
         v_final_mark_prob := v_matrix_p_side;
       END IF;
     ELSE
-      -- Neighbor-aware fallback (0034 post-codex direction-matching fix).
       IF p_side = 'over' THEN
         SELECT MAX(p_over_final) INTO v_neighbor_p_over
         FROM speed_pricing_matrix
@@ -114,9 +104,9 @@ BEGIN
         IF v_neighbor_p_over IS NOT NULL THEN
           v_neighbor_p_side := v_neighbor_p_over;
           v_used_matrix := TRUE;
-          v_neighbor_used := TRUE;  -- 0036: telemetry hint
+          v_neighbor_used := TRUE;
           v_version := v_active_version;
-          v_matrix_p_raw := v_neighbor_p_side;  -- 0036: neighbor value used as the raw matrix probability for telemetry
+          v_matrix_p_raw := v_neighbor_p_side;
           IF v_asym_enabled = 1 THEN
             v_final_mark_prob := GREATEST(p_bsm_prob_side, v_neighbor_p_side);
           ELSE
@@ -147,34 +137,29 @@ BEGIN
     END IF;
   END IF;
 
-  -- Compute offered_prob (entry mode adds spread; cashout uses mark directly)
   IF p_mode = 'entry' THEN
     v_final_offered := v_final_mark_prob + p_widened_spread / 2.0;
 
-    -- Check soft-block (entry only)
     SELECT rate INTO v_soft_block_on FROM fee_config WHERE fee_type = 'speed_entry_soft_block_enabled' LIMIT 1;
     SELECT rate INTO v_soft_block_thresh FROM fee_config WHERE fee_type = 'speed_entry_soft_block_threshold' LIMIT 1;
     v_soft_block_on := COALESCE(v_soft_block_on, 0);
     v_soft_block_thresh := COALESCE(v_soft_block_thresh, 0.95);
 
-    IF v_soft_block_on = 1 AND v_final_offered >= v_soft_block_thresh THEN
+    -- S0.10: ROUND to 6 decimal places before comparison so float-noise
+    -- (0.9499999 vs 0.9500001) doesn't cause quote/execute disagreement.
+    IF v_soft_block_on = 1
+       AND ROUND(v_final_offered::numeric, 6) >= v_soft_block_thresh THEN
       v_blocked := TRUE;
     END IF;
   ELSE
-    -- Cashout mode: offered_prob = mark_prob (no entry spread)
     v_final_offered := v_final_mark_prob;
   END IF;
 
-  -- Floor / cap
   IF v_final_offered < 0.01 THEN v_final_offered := 0.01; END IF;
   IF v_final_offered > 0.99 THEN v_final_offered := 0.99; END IF;
   IF v_final_mark_prob < 0.01 THEN v_final_mark_prob := 0.01; END IF;
   IF v_final_mark_prob > 0.99 THEN v_final_mark_prob := 0.99; END IF;
 
-  -- 0036: telemetry write. CRITICAL — wrapped in EXCEPTION WHEN OTHERS so a
-  -- failing telemetry insert (table dropped, NOT NULL violation, lock
-  -- contention, anything) NEVER blocks the calling RPC. A trade must always
-  -- succeed even if telemetry can't be written.
   BEGIN
     INSERT INTO speed_pricing_events (
       asset, duration, side, mode, market_id,
@@ -188,7 +173,6 @@ BEGIN
       v_used_matrix, v_version, v_neighbor_used, v_blocked
     );
   EXCEPTION WHEN OTHERS THEN
-    -- Swallow telemetry errors. Trade must not fail because telemetry failed.
     NULL;
   END;
 
@@ -196,6 +180,6 @@ BEGIN
 END;
 $function$;
 COMMENT ON FUNCTION public._speed_pricing_apply(p_asset text, p_duration speed_duration, p_side text, p_dist_pct double precision, p_secs_left double precision, p_bsm_prob_side double precision, p_widened_spread double precision, p_mode text, p_market_id uuid) IS
-  $$0036: shared pricing helper for entry and cashout RPCs. Implements matrix lookup + asymmetric only-push-up rule + soft-block check. Single source of truth — codex hard rule. Volatile (writes to speed_pricing_events for telemetry; insert is wrapped in EXCEPTION WHEN OTHERS so failures cannot block trades).$$;
+  $$0039 (S0.10): float-tolerance compare against soft-block threshold (ROUND to 6 dp). Eliminates quote/execute mismatch at 0.9499999 vs 0.9500001.$$;
 GRANT EXECUTE ON FUNCTION public._speed_pricing_apply(p_asset text, p_duration speed_duration, p_side text, p_dist_pct double precision, p_secs_left double precision, p_bsm_prob_side double precision, p_widened_spread double precision, p_mode text, p_market_id uuid) TO PUBLIC;
 GRANT EXECUTE ON FUNCTION public._speed_pricing_apply(p_asset text, p_duration speed_duration, p_side text, p_dist_pct double precision, p_secs_left double precision, p_bsm_prob_side double precision, p_widened_spread double precision, p_mode text, p_market_id uuid) TO sooqadmin;

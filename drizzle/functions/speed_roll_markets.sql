@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0020_enable_1h_markets.sql:69
--- Last extracted: 2026-05-07T11:59:43.010Z
+-- Last extracted: 2026-05-08T14:58:54.520Z
 CREATE OR REPLACE FUNCTION public.speed_roll_markets()
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -38,8 +38,8 @@ BEGIN
   SELECT rate INTO v_oracle_stale_secs FROM fee_config WHERE fee_type = 'speed_oracle_stale_seconds' LIMIT 1;
   v_oracle_stale_secs := COALESCE(v_oracle_stale_secs, 2);
 
-  -- 0020: only 5m + 1h are active. Mig 0014 used ['5m','15m','24h'].
-  v_durations := ARRAY['5m', '1h']::speed_duration[];
+  -- Sprint 0.6 / mig 0040: 1h removed; 5m only. Existing 1h markets resolve normally.
+  v_durations := ARRAY['5m']::speed_duration[];
 
   FOR v_asset_row IN SELECT id FROM speed_assets WHERE enabled = TRUE LOOP
     SELECT * INTO v_oracle FROM speed_oracle_latest WHERE asset = v_asset_row.id;
@@ -50,7 +50,6 @@ BEGIN
     END IF;
 
     FOREACH v_duration IN ARRAY v_durations LOOP
-      -- Skip if open future market already exists.
       SELECT id INTO v_existing_id FROM speed_markets
       WHERE asset = v_asset_row.id AND duration = v_duration AND status = 'open' AND closes_at > NOW()
       LIMIT 1;
@@ -65,10 +64,6 @@ BEGIN
         WHEN '1h'::speed_duration THEN v_opens_at + INTERVAL '1 hour'
       END;
 
-      -- 0014: strike must reflect the price AT opens_at, not at cron
-      -- firing time. If opens_at is in the future, defer to the next
-      -- cron beat — by then opens_at will have passed and the tick will
-      -- exist.
       IF v_opens_at > NOW() THEN
         v_deferred_count := v_deferred_count + 1;
         CONTINUE;
@@ -80,9 +75,6 @@ BEGIN
       ORDER BY ts DESC
       LIMIT 1;
 
-      -- Defensive: if no tick exists at-or-before opens_at, fall back to
-      -- the live oracle. Better to create the market with a slightly-off
-      -- strike than to skip indefinitely.
       IF v_strike IS NULL THEN
         v_strike := v_oracle.price;
       END IF;
@@ -113,6 +105,6 @@ BEGIN
 END;
 $function$;
 COMMENT ON FUNCTION public.speed_roll_markets() IS
-  $$0020: cron-driven market creator. Generates 5m + 1h rounds at clean boundaries. Strike captured from tick-at-opens_at. Defers (no creation) when opens_at is in the future relative to firing time — picked up on the next cron beat.$$;
+  $$0040 (Sprint 0.6): only opens 5m markets. 1h removed per Phase 4 plan; existing 1h markets resolve normally.$$;
 GRANT EXECUTE ON FUNCTION public.speed_roll_markets() TO PUBLIC;
 GRANT EXECUTE ON FUNCTION public.speed_roll_markets() TO sooqadmin;

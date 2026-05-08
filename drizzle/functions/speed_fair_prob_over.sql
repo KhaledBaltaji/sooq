@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0013_drop_handle_fee_and_polish.sql:56
--- Last extracted: 2026-05-07T11:59:44.127Z
+-- Last extracted: 2026-05-08T14:58:55.120Z
 CREATE OR REPLACE FUNCTION public.speed_fair_prob_over(p_spot numeric, p_strike numeric, p_seconds_left double precision, p_iv numeric)
  RETURNS numeric
  LANGUAGE plpgsql

@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0021_resolve_type_cast_fix.sql:25
--- Last extracted: 2026-05-07T11:59:42.437Z
+-- Last extracted: 2026-05-08T14:58:54.221Z
 CREATE OR REPLACE FUNCTION public.speed_resolve_market(p_market_id uuid)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -55,7 +55,8 @@ BEGIN
   IF v_market.status NOT IN ('open','resolving') THEN
     RETURN jsonb_build_object('skipped', TRUE, 'status', v_market.status, 'reason', 'Market not in resolvable state');
   END IF;
-  IF NOW() < v_market.closes_at THEN
+  -- S0.9: change < to <= (strictly past closes_at required for resolution).
+  IF NOW() <= v_market.closes_at THEN
     RAISE EXCEPTION 'Market has not closed yet';
   END IF;
 
@@ -224,9 +225,6 @@ BEGIN
       v_refunded := v_refunded + 1;
       v_total_refunded := v_total_refunded + v_payout;
 
-    -- 0021: cast both sides to TEXT — speed_side enum has no implicit
-    -- equality with text and the prior `v_pos.side = v_outcome::TEXT`
-    -- raised "operator does not exist: speed_side = text" at runtime.
     ELSIF v_pos.side::TEXT = v_outcome::TEXT THEN
       v_payout := ROUND(v_pos.stake / v_pos.entry_offered_prob, 2);
       v_winners := v_winners + 1;
@@ -272,6 +270,6 @@ BEGIN
 END;
 $function$;
 COMMENT ON FUNCTION public.speed_resolve_market(p_market_id uuid) IS
-  $$0021: hotfix for type-cast bug in mig 0016. Resolves a speed market with exact-tick + wick detector + audit row + NGR cache update. Same behavior as mig 0016 §6, only the v_pos.side comparison is corrected.$$;
+  $$0039 (S0.9): boundary fix — settlement requires NOW() > closes_at strictly. Body otherwise byte-equal to 0021 canonical.$$;
 GRANT EXECUTE ON FUNCTION public.speed_resolve_market(p_market_id uuid) TO PUBLIC;
 GRANT EXECUTE ON FUNCTION public.speed_resolve_market(p_market_id uuid) TO sooqadmin;

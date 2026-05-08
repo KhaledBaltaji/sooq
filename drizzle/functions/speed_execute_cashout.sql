@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0034_pricing_engine_v3.sql:1012
--- Last extracted: 2026-05-07T11:59:41.816Z
+-- Last extracted: 2026-05-08T14:58:53.920Z
 CREATE OR REPLACE FUNCTION public.speed_execute_cashout(p_position_id uuid, p_idempotency_key text DEFAULT NULL::text, p_expected_iv numeric DEFAULT NULL::numeric, p_expected_spot numeric DEFAULT NULL::numeric, p_expected_seconds_left_bucket integer DEFAULT NULL::integer, p_expected_mark_prob numeric DEFAULT NULL::numeric, p_expected_cashout_amount numeric DEFAULT NULL::numeric)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -41,7 +41,8 @@ DECLARE
   v_is_winning         BOOLEAN;
   v_fair_profit        NUMERIC;
   v_margin             DOUBLE PRECISION;
-  v_cashout_amount     NUMERIC;
+  v_cashout_raw        NUMERIC;       -- S0.11: pre-round raw value
+  v_cashout_amount     NUMERIC;       -- rounded for storage / parity
 
   v_parity_prob_tol    DECIMAL;
   v_parity_spot_tol    DECIMAL;
@@ -149,7 +150,6 @@ BEGIN
   v_seconds_total := EXTRACT(EPOCH FROM (v_market.closes_at - v_market.opens_at));
   v_pct := CASE WHEN v_seconds_total > 0 THEN v_seconds_left / v_seconds_total ELSE 0 END;
 
-  -- BSM baseline
   v_fair_prob_over := speed_fair_prob_over(
     v_oracle.price, v_market.strike_price, v_seconds_left, v_iv
   );
@@ -159,7 +159,6 @@ BEGIN
     v_bsm_mark_side := (1.0 - v_fair_prob_over)::DOUBLE PRECISION;
   END IF;
 
-  -- 0034: matrix-corrected mark via shared helper (same logic as entry)
   v_dist_pct := (v_oracle.price::DOUBLE PRECISION - v_market.strike_price::DOUBLE PRECISION)
               / NULLIF(v_market.strike_price::DOUBLE PRECISION, 0);
 
@@ -171,7 +170,7 @@ BEGIN
     v_dist_pct,
     v_seconds_left,
     v_bsm_mark_side,
-    0,                  -- no spread on cashout side
+    0,
     'cashout'
   );
 
@@ -179,16 +178,14 @@ BEGIN
 
   SELECT rate INTO v_parity_prob_tol FROM fee_config WHERE fee_type = 'speed_parity_prob_drift_pct';
   v_parity_prob_tol := COALESCE(v_parity_prob_tol, 0.02);
-  -- 0034 [P1 codex fix]: skip mark_prob parity when matrix pushed it up.
-  -- Same rationale as entry-side parity skip — clients send BSM-derived
-  -- expected_mark_prob; matrix output legitimately exceeds it. The cashout
-  -- parity is still meaningful when matrix is OFF or didn't engage on this
-  -- cell (cashout_amount parity below also acts as final-number guard).
-  IF NOT (v_pricing.matrix_used AND v_pricing.mark_prob > v_bsm_mark_side) THEN
+  -- S0.13: skip parity entirely when matrix engaged. Client sends BSM-derived
+  -- expected_mark_prob; matrix output (qualified or neighbor-fallback) is
+  -- legitimately a different value. Direction-matching invariant assertions
+  -- below catch real cashout bugs (winning < stake, losing > stake).
+  IF NOT v_pricing.matrix_used THEN
     PERFORM _speed_assert_parity('mark_prob', p_expected_mark_prob, v_mark_prob, v_parity_prob_tol);
   END IF;
 
-  -- 0034: cap-edge cashout — disable when both entry and mark are at the cap
   SELECT rate INTO v_cap_edge_thresh FROM fee_config WHERE fee_type = 'speed_cashout_cap_edge_threshold' LIMIT 1;
   v_cap_edge_thresh := COALESCE(v_cap_edge_thresh, 0.985);
   IF v_position.entry_offered_prob >= v_cap_edge_thresh AND v_mark_prob >= v_cap_edge_thresh THEN
@@ -215,45 +212,51 @@ BEGIN
   );
 
   IF v_is_winning THEN
-    v_cashout_amount := v_position.stake + v_fair_profit * (1.0 - v_margin);
+    v_cashout_raw := v_position.stake + v_fair_profit * (1.0 - v_margin);
   ELSE
-    v_cashout_amount := v_position.stake + v_fair_profit * (1.0 + v_margin);
+    v_cashout_raw := v_position.stake + v_fair_profit * (1.0 + v_margin);
   END IF;
 
-  IF v_cashout_amount < 0 THEN v_cashout_amount := 0; END IF;
+  IF v_cashout_raw < 0 THEN v_cashout_raw := 0; END IF;
 
-  IF v_is_winning AND ROUND(v_cashout_amount, 2) <= v_position.stake THEN
+  -- S0.11: sufficiency checks on RAW value, not rounded. Thin winning
+  -- margins (e.g. profit of $0.001 → $0.0001 cashout above stake) shouldn't
+  -- spuriously raise INSUFFICIENT_PROFIT just because cents-rounding floors
+  -- them to stake. We DO still reject if structurally the raw amount didn't
+  -- exceed stake (no actual profit to cash out).
+  IF v_is_winning AND v_cashout_raw <= v_position.stake THEN
     RAISE EXCEPTION 'INSUFFICIENT_PROFIT: profit too small to lock in cleanly (cashout=$% stake=$%)',
-      ROUND(v_cashout_amount, 4), v_position.stake
+      ROUND(v_cashout_raw, 4), v_position.stake
       USING HINT = 'Wait for the chart to move further or hold to expiry';
   END IF;
   IF NOT v_is_winning AND v_mark_prob < v_position.entry_offered_prob
-     AND ROUND(v_cashout_amount, 2) >= v_position.stake THEN
-    RAISE EXCEPTION 'INSUFFICIENT_LOSS: rounded cashout would not register a loss (cashout=$% stake=$%)',
-      ROUND(v_cashout_amount, 4), v_position.stake
+     AND v_cashout_raw >= v_position.stake THEN
+    RAISE EXCEPTION 'INSUFFICIENT_LOSS: cashout would not register a loss (cashout=$% stake=$%)',
+      ROUND(v_cashout_raw, 4), v_position.stake
       USING HINT = 'Hold to expiry — there is no meaningful loss to cut';
   END IF;
 
-  v_cashout_amount := ROUND(v_cashout_amount, 2);
+  v_cashout_amount := ROUND(v_cashout_raw, 2);
 
   SELECT rate INTO v_parity_cashout_tol FROM fee_config WHERE fee_type = 'speed_parity_cashout_drift_pct';
   v_parity_cashout_tol := COALESCE(v_parity_cashout_tol, 0.02);
-  -- 0034 [P1 codex fix]: same skip logic — matrix-pushed mark causes a
-  -- different cashout_amount than client computed; expected_cashout_amount
-  -- is BSM-derived. The direction-matching invariant assertions below
-  -- still defensively guard the math (winning cashout > stake, losing < stake).
-  IF NOT (v_pricing.matrix_used AND v_pricing.mark_prob > v_bsm_mark_side) THEN
+  -- S0.13: same skip-when-matrix-engaged as mark_prob parity above.
+  IF NOT v_pricing.matrix_used THEN
     PERFORM _speed_assert_parity('cashout_amount', p_expected_cashout_amount, v_cashout_amount, v_parity_cashout_tol);
   END IF;
 
-  IF v_is_winning AND v_cashout_amount <= v_position.stake THEN
+  -- Direction-matching invariant assertions on RAW value. These are the real
+  -- structural defenses; rounding can technically cause one of these to fire
+  -- only if the raw amount was already at the edge — and at that point the
+  -- INSUFFICIENT_* checks above should have caught it.
+  IF v_is_winning AND v_cashout_raw <= v_position.stake THEN
     RAISE EXCEPTION 'INVARIANT VIOLATION: winning cashout=$% <= stake=$% (mark=%, entry=%)',
-      v_cashout_amount, v_position.stake, v_mark_prob, v_position.entry_offered_prob;
+      v_cashout_raw, v_position.stake, v_mark_prob, v_position.entry_offered_prob;
   END IF;
   IF NOT v_is_winning AND v_mark_prob < v_position.entry_offered_prob
-     AND v_cashout_amount >= v_position.stake THEN
+     AND v_cashout_raw >= v_position.stake THEN
     RAISE EXCEPTION 'INVARIANT VIOLATION: losing cashout=$% >= stake=$% (mark=%, entry=%)',
-      v_cashout_amount, v_position.stake, v_mark_prob, v_position.entry_offered_prob;
+      v_cashout_raw, v_position.stake, v_mark_prob, v_position.entry_offered_prob;
   END IF;
 
   UPDATE speed_positions SET
@@ -306,6 +309,6 @@ BEGIN
 END;
 $function$;
 COMMENT ON FUNCTION public.speed_execute_cashout(p_position_id uuid, p_idempotency_key text, p_expected_iv numeric, p_expected_spot numeric, p_expected_seconds_left_bucket integer, p_expected_mark_prob numeric, p_expected_cashout_amount numeric) IS
-  $$0034: cashout uses shared _speed_pricing_apply() helper (mode=cashout) so mark_prob comes from the same matrix lookup as entry. Direction-matching invariant preserved with matrix active. Cap-edge case raises CASHOUT_AT_CAP for UI to show hold-for-settlement.$$;
+  $$0039 (S0.11 + S0.13): invariant + sufficiency checks on raw pre-round cashout (S0.11); parity skipped whenever matrix engaged, not just on push-up (S0.13).$$;
 GRANT EXECUTE ON FUNCTION public.speed_execute_cashout(p_position_id uuid, p_idempotency_key text, p_expected_iv numeric, p_expected_spot numeric, p_expected_seconds_left_bucket integer, p_expected_mark_prob numeric, p_expected_cashout_amount numeric) TO PUBLIC;
 GRANT EXECUTE ON FUNCTION public.speed_execute_cashout(p_position_id uuid, p_idempotency_key text, p_expected_iv numeric, p_expected_spot numeric, p_expected_seconds_left_bucket integer, p_expected_mark_prob numeric, p_expected_cashout_amount numeric) TO sooqadmin;
