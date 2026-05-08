@@ -1,0 +1,3 @@
+{
+  "functions": ["speed_execute_trade", "speed_execute_cashout", "speed_roll_markets", "_next_clean_boundary"]
+}
