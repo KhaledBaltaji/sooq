@@ -113,7 +113,9 @@ export async function POST(request: NextRequest) {
           currency || "LBP"
         }, txRef=${tx_ref}, error=${errorMessage}`,
       ]);
-      return NextResponse.json({ error: errorMessage }, { status: 500 });
+      // S0.8: generic message to webhook caller. Full context goes to
+      // server logs + Slack only.
+      return NextResponse.json({ error: "Deposit processing failed" }, { status: 500 });
     }
   } catch (err) {
     logger.error("Whish webhook unhandled error", { source: "webhook/whish" }, err);

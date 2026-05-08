@@ -1,16 +1,24 @@
 // admin_adjust_balance wrapper — manual credit/debit.
+//
+// S0.16 (mig 0039): all inputs validated with zod before hitting the RPC.
+// Untrusted input is the most common silent-break source on admin endpoints
+// (long descriptions tripping RPC constraints, unicode in pins, etc.).
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
+import { z } from "zod";
 import { runAs } from "@/lib/db/run-as";
 import { requireAdminApi, authErrorToResponse } from "@/lib/auth/api-guards";
 import { logger } from "@/lib/logger";
 
-interface AdjustBody {
-  user_id: string;
-  amount: number;
-  description: string;
-  pin: string;
-}
+const adjustSchema = z.object({
+  user_id: z.string().uuid("user_id must be a UUID"),
+  amount: z
+    .number()
+    .refine((n) => n !== 0, { message: "amount cannot be zero" })
+    .refine((n) => Math.abs(n) <= 10000, { message: "|amount| must be <= 10000" }),
+  description: z.string().min(3).max(200),
+  pin: z.string().regex(/^\d{4,6}$/, "pin must be 4-6 digits"),
+});
 
 interface AdjustResult {
   transaction_id: string;
@@ -21,14 +29,15 @@ interface AdjustResult {
 export async function POST(req: Request) {
   try {
     const admin = await requireAdminApi();
-    const { user_id, amount, description, pin } = (await req.json()) as AdjustBody;
-
-    if (!user_id || amount === undefined || !description || !pin) {
+    const raw = await req.json().catch(() => ({}));
+    const parsed = adjustSchema.safeParse(raw);
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: "Missing required fields: user_id, amount, description, pin" },
+        { error: "Invalid input", issues: parsed.error.issues.map((i) => i.message) },
         { status: 400 }
       );
     }
+    const { user_id, amount, description, pin } = parsed.data;
 
     const data = await runAs(admin.id, async (tx) => {
       const r = await tx.execute<{ result: AdjustResult }>(sql`

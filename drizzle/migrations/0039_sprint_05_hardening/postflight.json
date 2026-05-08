@@ -1,0 +1,10 @@
+{
+  "functions": [
+    "admin_credit_deposit",
+    "admin_balance_adjust_v2",
+    "speed_resolve_market",
+    "_speed_pricing_apply",
+    "speed_execute_cashout",
+    "_speed_get_iv"
+  ]
+}

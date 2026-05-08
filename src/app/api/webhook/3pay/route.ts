@@ -145,6 +145,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, data });
     } catch (rpcErr) {
       const errorMessage = rpcErr instanceof Error ? rpcErr.message : String(rpcErr);
+      // S0.8: log full context server-side ONLY. The webhook caller (3pay's
+      // logs) gets a generic message — never user IDs, internal RPC errors,
+      // or details that help craft a valid replay payload.
       logger.error("3pay deposit processing failed", {
         source: "webhook/3pay",
         userId,
@@ -155,7 +158,7 @@ export async function POST(request: NextRequest) {
       await sendSlackAlert([
         `3pay deposit FAILED: user=${userId}, amount=$${payload.amount}, txn=${payload.transactionId}, error=${errorMessage}`,
       ]);
-      return NextResponse.json({ error: errorMessage }, { status: 500 });
+      return NextResponse.json({ error: "Deposit processing failed" }, { status: 500 });
     }
   } catch (err) {
     logger.error("3pay webhook unhandled error", { source: "webhook/3pay" }, err);

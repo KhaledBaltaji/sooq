@@ -1,0 +1,334 @@
+-- S0.11: invariant + sufficiency checks on RAW (pre-round) cashout amount.
+-- S0.13: simplify parity-skip condition to `matrix_used` alone.
+--
+-- BUG (pre-0039) S0.11: order was compute fair_profit → ROUND(cashout, 2)
+--   → check cashout > stake. At thin winning margins (mark=0.501, entry=0.5),
+--   ROUND can flip cashout from stake+0.0001 → stake. Spurious INSUFFICIENT_PROFIT
+--   raised on a structurally-winning cashout. We use the raw value for
+--   sufficiency checks; rounding only happens for storage/parity.
+--
+-- BUG (pre-0039) S0.13: skip condition `NOT (matrix_used AND mark > bsm)`
+--   left a corner case where matrix engaged but neighbor returned mark = bsm
+--   exactly (asym push-up no-op). Server quotes correctly using BSM-derived
+--   path, client sends BSM-derived expected, server recomputes BSM-derived
+--   actual — should match. But if matrix updates between quote and execute
+--   and a different neighbor cell is hit, mark can shift up while bsm hasn't.
+--   The conservative fix per /investigate finding: skip parity entirely when
+--   matrix is engaged. The direction-matching invariant assertions below
+--   still defend against real cashout bugs.
+
+CREATE OR REPLACE FUNCTION public.speed_execute_cashout(
+  p_position_id uuid,
+  p_idempotency_key text DEFAULT NULL::text,
+  p_expected_iv numeric DEFAULT NULL::numeric,
+  p_expected_spot numeric DEFAULT NULL::numeric,
+  p_expected_seconds_left_bucket integer DEFAULT NULL::integer,
+  p_expected_mark_prob numeric DEFAULT NULL::numeric,
+  p_expected_cashout_amount numeric DEFAULT NULL::numeric
+)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+DECLARE
+  v_user_id            UUID;
+  v_position           RECORD;
+  v_market             RECORD;
+  v_market_id          UUID;
+  v_oracle             RECORD;
+
+  v_kill_switch        DECIMAL;
+  v_oracle_stale_secs  DECIMAL;
+  v_iv                 DECIMAL;
+  v_drift_tolerance    DECIMAL;
+  v_seconds_total      DOUBLE PRECISION;
+  v_seconds_left       DOUBLE PRECISION;
+  v_seconds_left_bucket INTEGER;
+  v_pct                DOUBLE PRECISION;
+  v_late_reject_s      DECIMAL;
+  v_late_30s_imbalance DECIMAL;
+
+  v_fair_prob_over     DECIMAL;
+  v_bsm_mark_side      DOUBLE PRECISION;
+  v_pricing            RECORD;
+  v_mark_prob          DECIMAL;
+  v_dist_pct           DOUBLE PRECISION;
+  v_cap_edge_thresh    DECIMAL;
+
+  v_is_winning         BOOLEAN;
+  v_fair_profit        NUMERIC;
+  v_margin             DOUBLE PRECISION;
+  v_cashout_raw        NUMERIC;       -- S0.11: pre-round raw value
+  v_cashout_amount     NUMERIC;       -- rounded for storage / parity
+
+  v_parity_prob_tol    DECIMAL;
+  v_parity_spot_tol    DECIMAL;
+  v_parity_cashout_tol DECIMAL;
+
+  v_existing_dup       RECORD;
+  v_trade_id           UUID;
+  v_new_balance        DECIMAL;
+BEGIN
+  v_user_id := app.user_id();
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  SELECT rate INTO v_kill_switch FROM fee_config WHERE fee_type = 'speed_cashout_enabled' LIMIT 1;
+  IF COALESCE(v_kill_switch, 1) <= 0 THEN
+    RAISE EXCEPTION 'Cashout temporarily disabled — please try again shortly';
+  END IF;
+
+  PERFORM set_config('app.trigger_bypass', 'true', true);
+
+  IF p_idempotency_key IS NOT NULL THEN
+    SELECT t.* INTO v_existing_dup
+    FROM speed_trades t
+    WHERE t.idempotency_key = p_idempotency_key AND t.user_id = v_user_id
+    LIMIT 1;
+    IF FOUND THEN
+      RETURN jsonb_build_object(
+        'idempotent', TRUE,
+        'trade_id', v_existing_dup.id,
+        'message', 'Duplicate cashout — returning existing trade_id'
+      );
+    END IF;
+  END IF;
+
+  SELECT market_id INTO v_market_id
+  FROM speed_positions WHERE id = p_position_id;
+  IF v_market_id IS NULL THEN
+    RAISE EXCEPTION 'Position not found';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtext('speed_resolve_' || v_market_id::TEXT));
+
+  SELECT * INTO v_position FROM speed_positions WHERE id = p_position_id FOR UPDATE;
+  IF v_position IS NULL THEN
+    RAISE EXCEPTION 'Position not found';
+  END IF;
+  IF v_position.user_id <> v_user_id THEN
+    RAISE EXCEPTION 'Not authorised for this position';
+  END IF;
+  IF v_position.status <> 'open' THEN
+    RAISE EXCEPTION 'Position is not open (status: %)', v_position.status;
+  END IF;
+
+  SELECT * INTO v_market FROM speed_markets WHERE id = v_position.market_id FOR UPDATE;
+  IF v_market.status <> 'open' THEN
+    RAISE EXCEPTION 'Market is not open for cashout (status: %)', v_market.status;
+  END IF;
+  IF NOW() >= v_market.closes_at THEN
+    RAISE EXCEPTION 'Market has closed; cannot cash out';
+  END IF;
+  IF v_market.duration::TEXT NOT IN ('5m','1h') THEN
+    RAISE EXCEPTION 'Duration % is no longer supported', v_market.duration;
+  END IF;
+
+  v_seconds_left := EXTRACT(EPOCH FROM (v_market.closes_at - NOW()));
+  SELECT rate INTO v_late_reject_s FROM fee_config WHERE fee_type = 'speed_cashout_late_reject_s';
+  v_late_reject_s := COALESCE(v_late_reject_s, 10);
+  IF v_seconds_left < v_late_reject_s THEN
+    RAISE EXCEPTION 'Market closing — no cashouts in last %s seconds', v_late_reject_s;
+  END IF;
+
+  v_seconds_left_bucket := _speed_seconds_left_bucket(v_seconds_left);
+  IF p_expected_seconds_left_bucket IS NOT NULL
+     AND v_seconds_left_bucket <> p_expected_seconds_left_bucket THEN
+    RAISE EXCEPTION 'PARITY_DRIFT [seconds_left_bucket]: expected=% actual=%',
+      p_expected_seconds_left_bucket, v_seconds_left_bucket
+      USING HINT = 'Cashout window changed — refresh quote';
+  END IF;
+
+  SELECT rate INTO v_oracle_stale_secs FROM fee_config WHERE fee_type = 'speed_oracle_stale_seconds' LIMIT 1;
+  v_oracle_stale_secs := COALESCE(v_oracle_stale_secs, 2);
+  SELECT * INTO v_oracle FROM speed_oracle_latest WHERE asset = v_market.asset;
+  IF v_oracle IS NULL THEN
+    RAISE EXCEPTION 'Oracle price unavailable';
+  END IF;
+  IF EXTRACT(EPOCH FROM (NOW() - v_oracle.received_at)) > v_oracle_stale_secs THEN
+    RAISE EXCEPTION 'Oracle price stale; try again';
+  END IF;
+
+  SELECT rate INTO v_parity_spot_tol FROM fee_config WHERE fee_type = 'speed_parity_spot_drift_pct';
+  v_parity_spot_tol := COALESCE(v_parity_spot_tol, 0.001);
+  PERFORM _speed_assert_parity('spot_price', p_expected_spot, v_oracle.price, v_parity_spot_tol);
+
+  v_iv := _speed_get_iv(v_market.asset, v_market.duration);
+
+  IF p_expected_iv IS NOT NULL THEN
+    SELECT rate INTO v_drift_tolerance FROM fee_config WHERE fee_type = 'speed_iv_drift_tolerance_pct';
+    v_drift_tolerance := COALESCE(v_drift_tolerance, 0.10);
+    IF v_iv = 0 OR ABS(v_iv - p_expected_iv) / v_iv > v_drift_tolerance THEN
+      RAISE EXCEPTION 'IV_DRIFT: server_iv=% client_iv=% — please retry', v_iv, p_expected_iv;
+    END IF;
+  END IF;
+
+  v_seconds_total := EXTRACT(EPOCH FROM (v_market.closes_at - v_market.opens_at));
+  v_pct := CASE WHEN v_seconds_total > 0 THEN v_seconds_left / v_seconds_total ELSE 0 END;
+
+  v_fair_prob_over := speed_fair_prob_over(
+    v_oracle.price, v_market.strike_price, v_seconds_left, v_iv
+  );
+  IF v_position.side = 'over' THEN
+    v_bsm_mark_side := v_fair_prob_over::DOUBLE PRECISION;
+  ELSE
+    v_bsm_mark_side := (1.0 - v_fair_prob_over)::DOUBLE PRECISION;
+  END IF;
+
+  v_dist_pct := (v_oracle.price::DOUBLE PRECISION - v_market.strike_price::DOUBLE PRECISION)
+              / NULLIF(v_market.strike_price::DOUBLE PRECISION, 0);
+
+  SELECT * INTO v_pricing
+  FROM _speed_pricing_apply(
+    v_market.asset,
+    v_market.duration,
+    v_position.side::TEXT,
+    v_dist_pct,
+    v_seconds_left,
+    v_bsm_mark_side,
+    0,
+    'cashout'
+  );
+
+  v_mark_prob := v_pricing.mark_prob::DECIMAL;
+
+  SELECT rate INTO v_parity_prob_tol FROM fee_config WHERE fee_type = 'speed_parity_prob_drift_pct';
+  v_parity_prob_tol := COALESCE(v_parity_prob_tol, 0.02);
+  -- S0.13: skip parity entirely when matrix engaged. Client sends BSM-derived
+  -- expected_mark_prob; matrix output (qualified or neighbor-fallback) is
+  -- legitimately a different value. Direction-matching invariant assertions
+  -- below catch real cashout bugs (winning < stake, losing > stake).
+  IF NOT v_pricing.matrix_used THEN
+    PERFORM _speed_assert_parity('mark_prob', p_expected_mark_prob, v_mark_prob, v_parity_prob_tol);
+  END IF;
+
+  SELECT rate INTO v_cap_edge_thresh FROM fee_config WHERE fee_type = 'speed_cashout_cap_edge_threshold' LIMIT 1;
+  v_cap_edge_thresh := COALESCE(v_cap_edge_thresh, 0.985);
+  IF v_position.entry_offered_prob >= v_cap_edge_thresh AND v_mark_prob >= v_cap_edge_thresh THEN
+    RAISE EXCEPTION 'CASHOUT_AT_CAP: position already at market cap — hold to settlement'
+      USING HINT = 'Hold for settlement to receive full payout';
+  END IF;
+
+  IF v_seconds_left < 30 THEN
+    SELECT rate INTO v_late_30s_imbalance FROM fee_config WHERE fee_type = 'speed_cashout_late_30s_imbalance_reject';
+    v_late_30s_imbalance := COALESCE(v_late_30s_imbalance, 0.30);
+    IF ABS(v_mark_prob::DOUBLE PRECISION - 0.5) > v_late_30s_imbalance::DOUBLE PRECISION THEN
+      RAISE EXCEPTION 'Cashout rejected: too late and too one-sided (mark=%, secs_left=%)',
+        ROUND(v_mark_prob, 4), ROUND(v_seconds_left::NUMERIC, 1)
+        USING HINT = 'Hold to expiry — cashout window is closed';
+    END IF;
+  END IF;
+
+  v_is_winning := v_mark_prob > v_position.entry_offered_prob;
+  v_fair_profit := v_position.stake
+                 * (v_mark_prob / v_position.entry_offered_prob - 1.0);
+
+  v_margin := _speed_cashout_margin(
+    v_market.duration, v_is_winning, v_mark_prob, v_seconds_left
+  );
+
+  IF v_is_winning THEN
+    v_cashout_raw := v_position.stake + v_fair_profit * (1.0 - v_margin);
+  ELSE
+    v_cashout_raw := v_position.stake + v_fair_profit * (1.0 + v_margin);
+  END IF;
+
+  IF v_cashout_raw < 0 THEN v_cashout_raw := 0; END IF;
+
+  -- S0.11: sufficiency checks on RAW value, not rounded. Thin winning
+  -- margins (e.g. profit of $0.001 → $0.0001 cashout above stake) shouldn't
+  -- spuriously raise INSUFFICIENT_PROFIT just because cents-rounding floors
+  -- them to stake. We DO still reject if structurally the raw amount didn't
+  -- exceed stake (no actual profit to cash out).
+  IF v_is_winning AND v_cashout_raw <= v_position.stake THEN
+    RAISE EXCEPTION 'INSUFFICIENT_PROFIT: profit too small to lock in cleanly (cashout=$% stake=$%)',
+      ROUND(v_cashout_raw, 4), v_position.stake
+      USING HINT = 'Wait for the chart to move further or hold to expiry';
+  END IF;
+  IF NOT v_is_winning AND v_mark_prob < v_position.entry_offered_prob
+     AND v_cashout_raw >= v_position.stake THEN
+    RAISE EXCEPTION 'INSUFFICIENT_LOSS: cashout would not register a loss (cashout=$% stake=$%)',
+      ROUND(v_cashout_raw, 4), v_position.stake
+      USING HINT = 'Hold to expiry — there is no meaningful loss to cut';
+  END IF;
+
+  v_cashout_amount := ROUND(v_cashout_raw, 2);
+
+  SELECT rate INTO v_parity_cashout_tol FROM fee_config WHERE fee_type = 'speed_parity_cashout_drift_pct';
+  v_parity_cashout_tol := COALESCE(v_parity_cashout_tol, 0.02);
+  -- S0.13: same skip-when-matrix-engaged as mark_prob parity above.
+  IF NOT v_pricing.matrix_used THEN
+    PERFORM _speed_assert_parity('cashout_amount', p_expected_cashout_amount, v_cashout_amount, v_parity_cashout_tol);
+  END IF;
+
+  -- Direction-matching invariant assertions on RAW value. These are the real
+  -- structural defenses; rounding can technically cause one of these to fire
+  -- only if the raw amount was already at the edge — and at that point the
+  -- INSUFFICIENT_* checks above should have caught it.
+  IF v_is_winning AND v_cashout_raw <= v_position.stake THEN
+    RAISE EXCEPTION 'INVARIANT VIOLATION: winning cashout=$% <= stake=$% (mark=%, entry=%)',
+      v_cashout_raw, v_position.stake, v_mark_prob, v_position.entry_offered_prob;
+  END IF;
+  IF NOT v_is_winning AND v_mark_prob < v_position.entry_offered_prob
+     AND v_cashout_raw >= v_position.stake THEN
+    RAISE EXCEPTION 'INVARIANT VIOLATION: losing cashout=$% >= stake=$% (mark=%, entry=%)',
+      v_cashout_raw, v_position.stake, v_mark_prob, v_position.entry_offered_prob;
+  END IF;
+
+  UPDATE speed_positions SET
+    status = 'cashed_out',
+    payout_amount = v_cashout_amount,
+    closed_at = NOW()
+  WHERE id = p_position_id;
+
+  INSERT INTO speed_trades (
+    position_id, user_id, market_id, kind, amount,
+    spot_price, fair_prob, offered_prob, cashout_multiplier,
+    iv_used, idempotency_key
+  ) VALUES (
+    p_position_id, v_user_id, v_market.id, 'cashout', v_cashout_amount,
+    v_oracle.price, v_mark_prob, v_position.entry_offered_prob, v_margin::DECIMAL,
+    v_iv, p_idempotency_key
+  )
+  RETURNING id INTO v_trade_id;
+
+  IF v_cashout_amount > 0 THEN
+    UPDATE users SET balance_usd = balance_usd + v_cashout_amount, updated_at = NOW()
+    WHERE id = v_user_id
+    RETURNING balance_usd INTO v_new_balance;
+
+    INSERT INTO transactions (user_id, type, amount, balance_after, reference_id, description)
+    VALUES (
+      v_user_id, 'speed_cashout', v_cashout_amount, v_new_balance, v_trade_id,
+      'Speed cashout (margin ' || ROUND(v_margin::NUMERIC, 4) || ', ' ||
+      CASE WHEN v_is_winning THEN 'winning' ELSE 'losing' END ||
+      ', pct ' || ROUND(v_pct::NUMERIC, 4) || ')'
+    );
+  END IF;
+
+  PERFORM _speed_update_daily_ngr(0, 0, v_cashout_amount, 0);
+
+  RETURN jsonb_build_object(
+    'success', TRUE,
+    'trade_id', v_trade_id,
+    'position_id', p_position_id,
+    'cashout_amount', v_cashout_amount,
+    'mark_prob', ROUND(v_mark_prob, 6),
+    'matrix_used', v_pricing.matrix_used,
+    'matrix_version', v_pricing.matrix_version,
+    'is_winning', v_is_winning,
+    'margin_applied', ROUND(v_margin::NUMERIC, 6),
+    'fair_profit', ROUND(v_fair_profit::NUMERIC, 6),
+    'pct_remaining', ROUND(v_pct::NUMERIC, 4),
+    'seconds_left_bucket', v_seconds_left_bucket
+  );
+END;
+$function$;
+
+COMMENT ON FUNCTION public.speed_execute_cashout(uuid, text, numeric, numeric, integer, numeric, numeric) IS
+  '0039 (S0.11 + S0.13): invariant + sufficiency checks on raw pre-round cashout (S0.11); parity skipped whenever matrix engaged, not just on push-up (S0.13).';
+
+GRANT EXECUTE ON FUNCTION public.speed_execute_cashout(uuid, text, numeric, numeric, integer, numeric, numeric) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION public.speed_execute_cashout(uuid, text, numeric, numeric, integer, numeric, numeric) TO sooqadmin;

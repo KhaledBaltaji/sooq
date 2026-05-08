@@ -1,0 +1,202 @@
+-- S0.10: float-comparison tolerance on soft-block threshold.
+--
+-- BUG (pre-0039): IF v_final_offered >= v_soft_block_thresh
+-- Float arithmetic in `v_final_offered := v_final_mark_prob + p_widened_spread / 2.0`
+-- can produce 0.9499999 in one path and 0.9500001 in another (quote vs execute).
+-- Quote shows "no soft block, trade allowed"; execute hits 0.9500001 and raises
+-- SOFT_BLOCK. Client sees a confusing race.
+--
+-- FIX: ROUND(v_final_offered, 6) before comparing. 6 decimal places is well below
+-- any meaningful pricing precision (cents on a dollar are 4 decimals of prob)
+-- but eliminates float-noise mismatch between paths.
+--
+-- All other logic byte-equal to canonical 0036.
+
+CREATE OR REPLACE FUNCTION public._speed_pricing_apply(
+  p_asset text,
+  p_duration speed_duration,
+  p_side text,
+  p_dist_pct double precision,
+  p_secs_left double precision,
+  p_bsm_prob_side double precision,
+  p_widened_spread double precision,
+  p_mode text,
+  p_market_id uuid DEFAULT NULL::uuid
+)
+ RETURNS TABLE(mark_prob double precision, offered_prob double precision, matrix_used boolean, matrix_version integer, soft_blocked boolean)
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+DECLARE
+  v_matrix_enabled    DECIMAL;
+  v_asym_enabled      DECIMAL;
+  v_soft_block_on     DECIMAL;
+  v_soft_block_thresh DECIMAL;
+  v_lookup            RECORD;
+  v_matrix_p_over     DOUBLE PRECISION;
+  v_matrix_p_side     DOUBLE PRECISION;
+  v_matrix_p_raw      DOUBLE PRECISION;
+  v_final_mark_prob   DOUBLE PRECISION;
+  v_final_offered     DOUBLE PRECISION;
+  v_used_matrix       BOOLEAN := FALSE;
+  v_neighbor_used     BOOLEAN := FALSE;
+  v_version           INTEGER := NULL;
+  v_blocked           BOOLEAN := FALSE;
+  v_d_idx             SMALLINT;
+  v_t_idx             SMALLINT;
+  v_active_version    INTEGER;
+  v_neighbor_p_over   DOUBLE PRECISION;
+  v_neighbor_p_side   DOUBLE PRECISION;
+BEGIN
+  SELECT rate INTO v_matrix_enabled FROM fee_config WHERE fee_type = 'speed_pricing_matrix_enabled' LIMIT 1;
+  SELECT rate INTO v_asym_enabled   FROM fee_config WHERE fee_type = 'speed_pricing_asym_pushup_enabled' LIMIT 1;
+  v_matrix_enabled := COALESCE(v_matrix_enabled, 0);
+  v_asym_enabled := COALESCE(v_asym_enabled, 1);
+
+  v_final_mark_prob := p_bsm_prob_side;
+
+  IF v_matrix_enabled = 1 THEN
+    SELECT id INTO v_active_version
+    FROM speed_pricing_matrix_versions
+    WHERE asset = p_asset AND duration = p_duration AND status = 'active'
+    ORDER BY computed_at DESC LIMIT 1;
+
+    v_d_idx := CASE
+      WHEN p_dist_pct <= -0.005 THEN 0
+      WHEN p_dist_pct <= -0.003 THEN 1
+      WHEN p_dist_pct <= -0.002 THEN 2
+      WHEN p_dist_pct <= -0.001 THEN 3
+      WHEN p_dist_pct <= -0.0005 THEN 4
+      WHEN p_dist_pct <  0       THEN 5
+      WHEN p_dist_pct <  0.0005  THEN 6
+      WHEN p_dist_pct <  0.001   THEN 7
+      WHEN p_dist_pct <  0.002   THEN 8
+      WHEN p_dist_pct <  0.003   THEN 9
+      WHEN p_dist_pct <  0.005   THEN 10
+      ELSE 11
+    END;
+    v_t_idx := CASE
+      WHEN p_secs_left <= 15  THEN 0
+      WHEN p_secs_left <= 30  THEN 1
+      WHEN p_secs_left <= 60  THEN 2
+      WHEN p_secs_left <= 120 THEN 3
+      WHEN p_secs_left <= 180 THEN 4
+      WHEN p_secs_left <= 240 THEN 5
+      ELSE 6
+    END;
+
+    SELECT * INTO v_lookup
+    FROM _speed_matrix_lookup(p_asset, p_duration, p_dist_pct, p_secs_left)
+    LIMIT 1;
+
+    IF v_lookup.qualifies THEN
+      v_used_matrix := TRUE;
+      v_version := v_active_version;
+
+      v_matrix_p_over := v_lookup.p_over;
+      IF p_side = 'over' THEN
+        v_matrix_p_side := v_matrix_p_over;
+      ELSE
+        v_matrix_p_side := 1.0 - v_matrix_p_over;
+      END IF;
+      v_matrix_p_raw := v_matrix_p_side;
+
+      IF v_asym_enabled = 1 THEN
+        v_final_mark_prob := GREATEST(p_bsm_prob_side, v_matrix_p_side);
+      ELSE
+        v_final_mark_prob := v_matrix_p_side;
+      END IF;
+    ELSE
+      IF p_side = 'over' THEN
+        SELECT MAX(p_over_final) INTO v_neighbor_p_over
+        FROM speed_pricing_matrix
+        WHERE version_id = v_active_version
+          AND asset = p_asset AND duration = p_duration
+          AND time_bucket = v_t_idx
+          AND dist_bucket <= v_d_idx
+          AND qualifies = TRUE;
+        IF v_neighbor_p_over IS NOT NULL THEN
+          v_neighbor_p_side := v_neighbor_p_over;
+          v_used_matrix := TRUE;
+          v_neighbor_used := TRUE;
+          v_version := v_active_version;
+          v_matrix_p_raw := v_neighbor_p_side;
+          IF v_asym_enabled = 1 THEN
+            v_final_mark_prob := GREATEST(p_bsm_prob_side, v_neighbor_p_side);
+          ELSE
+            v_final_mark_prob := v_neighbor_p_side;
+          END IF;
+        END IF;
+      ELSE
+        SELECT MIN(p_over_final) INTO v_neighbor_p_over
+        FROM speed_pricing_matrix
+        WHERE version_id = v_active_version
+          AND asset = p_asset AND duration = p_duration
+          AND time_bucket = v_t_idx
+          AND dist_bucket >= v_d_idx
+          AND qualifies = TRUE;
+        IF v_neighbor_p_over IS NOT NULL THEN
+          v_neighbor_p_side := 1.0 - v_neighbor_p_over;
+          v_used_matrix := TRUE;
+          v_neighbor_used := TRUE;
+          v_version := v_active_version;
+          v_matrix_p_raw := v_neighbor_p_side;
+          IF v_asym_enabled = 1 THEN
+            v_final_mark_prob := GREATEST(p_bsm_prob_side, v_neighbor_p_side);
+          ELSE
+            v_final_mark_prob := v_neighbor_p_side;
+          END IF;
+        END IF;
+      END IF;
+    END IF;
+  END IF;
+
+  IF p_mode = 'entry' THEN
+    v_final_offered := v_final_mark_prob + p_widened_spread / 2.0;
+
+    SELECT rate INTO v_soft_block_on FROM fee_config WHERE fee_type = 'speed_entry_soft_block_enabled' LIMIT 1;
+    SELECT rate INTO v_soft_block_thresh FROM fee_config WHERE fee_type = 'speed_entry_soft_block_threshold' LIMIT 1;
+    v_soft_block_on := COALESCE(v_soft_block_on, 0);
+    v_soft_block_thresh := COALESCE(v_soft_block_thresh, 0.95);
+
+    -- S0.10: ROUND to 6 decimal places before comparison so float-noise
+    -- (0.9499999 vs 0.9500001) doesn't cause quote/execute disagreement.
+    IF v_soft_block_on = 1
+       AND ROUND(v_final_offered::numeric, 6) >= v_soft_block_thresh THEN
+      v_blocked := TRUE;
+    END IF;
+  ELSE
+    v_final_offered := v_final_mark_prob;
+  END IF;
+
+  IF v_final_offered < 0.01 THEN v_final_offered := 0.01; END IF;
+  IF v_final_offered > 0.99 THEN v_final_offered := 0.99; END IF;
+  IF v_final_mark_prob < 0.01 THEN v_final_mark_prob := 0.01; END IF;
+  IF v_final_mark_prob > 0.99 THEN v_final_mark_prob := 0.99; END IF;
+
+  BEGIN
+    INSERT INTO speed_pricing_events (
+      asset, duration, side, mode, market_id,
+      dist_pct, secs_left, bsm_prob,
+      matrix_prob_raw, mark_prob, offered_prob,
+      matrix_used, matrix_version, neighbor_used, soft_blocked
+    ) VALUES (
+      p_asset, p_duration, p_side::speed_side, p_mode, p_market_id,
+      p_dist_pct, p_secs_left, p_bsm_prob_side,
+      v_matrix_p_raw, v_final_mark_prob, v_final_offered,
+      v_used_matrix, v_version, v_neighbor_used, v_blocked
+    );
+  EXCEPTION WHEN OTHERS THEN
+    NULL;
+  END;
+
+  RETURN QUERY SELECT v_final_mark_prob, v_final_offered, v_used_matrix, v_version, v_blocked;
+END;
+$function$;
+
+COMMENT ON FUNCTION public._speed_pricing_apply(text, speed_duration, text, double precision, double precision, double precision, double precision, text, uuid) IS
+  '0039 (S0.10): float-tolerance compare against soft-block threshold (ROUND to 6 dp). Eliminates quote/execute mismatch at 0.9499999 vs 0.9500001.';
+
+GRANT EXECUTE ON FUNCTION public._speed_pricing_apply(text, speed_duration, text, double precision, double precision, double precision, double precision, text, uuid) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION public._speed_pricing_apply(text, speed_duration, text, double precision, double precision, double precision, double precision, text, uuid) TO sooqadmin;
