@@ -14,7 +14,8 @@ import { cn } from "@/lib/utils";
 import { SpeedMiniCard } from "@/components/speed/speed-mini-card";
 import { MarketsTable } from "@/components/speed/markets-table";
 
-const DURATION_FILTERS = ["all", "5m", "1h"] as const;
+// Sprint 0.6 (mig 0040): 1h markets killed; only 5m active.
+const DURATION_FILTERS = ["all", "5m"] as const;
 type DurationFilter = (typeof DURATION_FILTERS)[number];
 
 // Asset filter is here so we can light up Gold/ETH later without redoing

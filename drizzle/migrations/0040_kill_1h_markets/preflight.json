@@ -1,0 +1,4 @@
+{
+  "tables": ["speed_markets", "speed_assets", "speed_oracle_latest", "speed_oracle_ticks", "fee_config"],
+  "functions": ["speed_roll_markets", "_next_clean_boundary"]
+}

@@ -23,10 +23,11 @@ import { cn } from "@/lib/utils";
 export function SpeedHomeView() {
   const { markets, loading } = useSpeedMarkets({ asset: "BTC" });
 
-  // Default hero: live 5m if present, else live 1h, else first.
+  // Default hero: live 5m if present, else first. Sprint 0.6 (mig 0040): 1h
+  // markets are no longer rolled, but legacy 1h positions still resolve, so
+  // we fall through to whatever the markets list shows as a safety net.
   const fiveMin = markets.find((m) => m.duration === "5m");
-  const oneHour = markets.find((m) => m.duration === "1h");
-  const defaultHeroId = fiveMin?.id ?? oneHour?.id ?? markets[0]?.id ?? null;
+  const defaultHeroId = fiveMin?.id ?? markets[0]?.id ?? null;
 
   const [heroId, setHeroId] = useState<string | null>(null);
   const activeHeroId = heroId ?? defaultHeroId;
