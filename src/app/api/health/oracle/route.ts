@@ -1,21 +1,24 @@
-// GET /api/health/oracle — public health check for the speed-oracle
-// worker on EC2. Returns the age of the most recent tick in
-// `speed_oracle_latest`. Used by external monitoring (uptime probes,
-// CI cron) to detect a silently-dead worker before users notice trades
-// rejecting with "oracle stale".
+// GET /api/health/oracle — gated health check for the speed-oracle
+// worker on EC2.
 //
-// Group B: bundled with the @trade switch on the worker. Pairs with the
-// worker's own /health endpoint (port 3000 on the EC2 host) to provide
-// public-facing visibility — the worker's endpoint is firewalled to
-// dev IPs only.
+// S0.6 (mig 0038): this endpoint used to be PUBLIC and returned every
+// asset's full oracle row (asset, age_ms, price). Anyone could poll it
+// and snapshot every current price the platform sees, killing the data
+// advantage. Now requires admin session OR x-monitor-token bearer.
+//
+// External monitors (GitHub Actions, uptime probes) pass:
+//   curl -H "x-monitor-token: $HEALTH_MONITOR_TOKEN" https://staging.sooq.exchange/api/health/oracle
 //
 // Returns 200 when fresh (<2s), 503 when stale (>2s — same threshold as
 // fee_config.speed_oracle_stale_seconds, beyond which speed_execute_trade
-// rejects new bets).
+// rejects new bets). Per-asset prices are ONLY included in authorized
+// responses; without them, the response is just {ok, oldest_age_ms,
+// threshold_ms} so a leaked endpoint reveals timing only.
 
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { authErrorToResponse, requireAdminOrMonitorToken } from "@/lib/auth/api-guards";
 
 interface LatestRow {
   [key: string]: unknown;
@@ -26,7 +29,15 @@ interface LatestRow {
 
 const STALE_THRESHOLD_MS = 2_000;
 
-export async function GET() {
+export async function GET(req: Request) {
+  try {
+    await requireAdminOrMonitorToken(req);
+  } catch (err) {
+    const resp = authErrorToResponse(err);
+    if (resp) return resp;
+    throw err;
+  }
+
   try {
     const result = await db.execute<LatestRow>(sql`
       SELECT

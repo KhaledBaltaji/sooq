@@ -48,3 +48,24 @@ export function authErrorToResponse(err: unknown): NextResponse | null {
   }
   return null;
 }
+
+/**
+ * Allow either an authenticated admin OR a request carrying a valid
+ * `x-monitor-token` header matching `process.env.HEALTH_MONITOR_TOKEN`.
+ *
+ * Used by /api/health/* endpoints (S0.6 mig 0038): these used to be public
+ * and leaked oracle prices, ledger drift counts, and cron schedules. They
+ * are now gated. External monitors (GitHub Actions, uptime probes) pass
+ * the bearer token; admins reading via browser pass session.
+ *
+ * Throws AuthError with appropriate status when neither succeeds.
+ */
+export async function requireAdminOrMonitorToken(req: Request): Promise<void> {
+  const monitorToken = process.env.HEALTH_MONITOR_TOKEN;
+  const headerToken = req.headers.get("x-monitor-token");
+  if (monitorToken && headerToken && headerToken === monitorToken) {
+    return;
+  }
+  // Fall through to admin session check.
+  await requireAdminApi();
+}

@@ -1,12 +1,19 @@
-// GET /api/health/audit — public health check for speed-mode invariants
+// GET /api/health/audit — gated health check for speed-mode invariants
 // the platform depends on but doesn't surface anywhere else. Mirrors
 // /api/health/oracle. Used by .github/workflows/audit-monitor.yml.
 //
+// S0.6 (mig 0038): this endpoint used to be PUBLIC and leaked
+// `ledger_drift_users` count, all cron job names + last_ok_age_s, and
+// the live `speed_cashout_enabled` kill-switch state. Anyone could map
+// our cron schedule and social-engineer support around the kill switch.
+// Now requires admin session OR x-monitor-token bearer.
+//
+// External monitors (GitHub Actions, uptime probes) pass:
+//   curl -H "x-monitor-token: $HEALTH_MONITOR_TOKEN" https://staging.sooq.exchange/api/health/audit
+//
 // Three checks:
 //   1. Stuck markets — any speed_markets with status='open' AND
-//      closes_at < NOW() - 30s. The mig 0016 settlement bug hid for
-//      hours because cron caught the inner exception silently; this
-//      check would have caught it within ~30s.
+//      closes_at < NOW() - 30s.
 //   2. Cron freshness — last successful speed-roll/speed-resolve run
 //      should be < 30s ago.
 //   3. Ledger drift — count of users where users.balance_usd diverges
@@ -20,6 +27,7 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { authErrorToResponse, requireAdminOrMonitorToken } from "@/lib/auth/api-guards";
 
 const STUCK_THRESHOLD_S = 30;
 const CRON_STALE_THRESHOLD_S = 30;
@@ -33,7 +41,15 @@ type CronRow = { jobname: string; last_ok_age_s: number | null; [k: string]: unk
 type DriftRow = { n: number; [k: string]: unknown };
 type KillSwitchRow = { rate: string | null; [k: string]: unknown };
 
-export async function GET() {
+export async function GET(req: Request) {
+  try {
+    await requireAdminOrMonitorToken(req);
+  } catch (err) {
+    const resp = authErrorToResponse(err);
+    if (resp) return resp;
+    throw err;
+  }
+
   try {
     const stuckRes = await db.execute<StuckRow>(sql`
       SELECT COUNT(*)::int AS n FROM speed_markets

@@ -1,0 +1,16 @@
+{
+  "functions": [
+    "process_withdrawal",
+    "admin_approve_withdrawal",
+    "admin_reject_withdrawal",
+    "admin_mark_withdrawal_sent_v2",
+    "speed_execute_trade",
+    "_speed_max_stake_for_offered"
+  ],
+  "expected_signatures": {
+    "process_withdrawal": "(p_amount numeric, p_method text, p_account_details jsonb, p_idempotency_key text DEFAULT NULL)"
+  },
+  "expected_function_count": {
+    "process_withdrawal": 1
+  }
+}

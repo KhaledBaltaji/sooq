@@ -1,0 +1,15 @@
+{
+  "tables": ["withdrawals", "admin_action_log", "speed_positions", "speed_trades", "fee_config"],
+  "functions": [
+    "process_withdrawal",
+    "admin_approve_withdrawal",
+    "admin_reject_withdrawal",
+    "admin_mark_withdrawal_sent_v2",
+    "speed_execute_trade",
+    "_speed_max_stake_for_offered"
+  ],
+  "columns": {
+    "withdrawals.idempotency_key": "TEXT (added in mig 0033, finally wired here)",
+    "admin_action_log.id": "exists from mig 0033"
+  }
+}
