@@ -1,0 +1,17 @@
+{
+  "tables": ["speed_user_edge_scores"],
+  "functions": [
+    "_speed_recompute_edge_scores",
+    "_speed_apply_user_shading",
+    "speed_execute_trade"
+  ],
+  "fee_config_keys": [
+    "speed_clv_throttle_enabled",
+    "speed_clv_min_settled_trades",
+    "speed_clv_min_ci_low",
+    "speed_clv_max_shading_pp",
+    "speed_clv_shading_factor",
+    "speed_clv_window_n",
+    "speed_clv_health_max_age_h"
+  ]
+}

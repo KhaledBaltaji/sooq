@@ -1,0 +1,4 @@
+{
+  "tables": ["users", "speed_positions", "fee_config"],
+  "functions": ["speed_execute_trade"]
+}

@@ -66,6 +66,9 @@ const FUNCTIONS = [
   { name: "_speed_jeffreys_ci_width",     source_mig: "0037_recalibration_cron/functions/_speed_jeffreys_ci_width.sql" },
   { name: "_speed_recalibrate_matrix",    source_mig: "0037_recalibration_cron/functions/_speed_recalibrate_matrix.sql" },
   { name: "_speed_promote_matrix_version",source_mig: "0037_recalibration_cron/functions/_speed_promote_matrix_version.sql" },
+  // Mig 0044: per-user CLV throttle (Sprint 2)
+  { name: "_speed_recompute_edge_scores", source_mig: "0044_sprint_2_clv_throttle/functions/_speed_recompute_edge_scores.sql" },
+  { name: "_speed_apply_user_shading",    source_mig: "0044_sprint_2_clv_throttle/functions/_speed_apply_user_shading.sql" },
 ];
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));

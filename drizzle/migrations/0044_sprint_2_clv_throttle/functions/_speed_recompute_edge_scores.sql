@@ -1,0 +1,142 @@
+-- _speed_recompute_edge_scores(p_window INT)
+--
+-- Nightly cron entrypoint. For each user with at least one settled speed
+-- position in the last 90 days, compute their edge_score over the last
+-- p_window settled trades (default 100 from fee_config) and UPSERT into
+-- speed_user_edge_scores.
+--
+-- Math:
+--   For each settled trade i: e_i = actual_i - offered_i
+--     where actual_i = 1 if status='won', 0 if status='lost'
+--     and offered_i = entry_offered_prob at trade-open
+--   edge_score = mean(e_i)
+--   edge_se    = sd(e_i) / sqrt(N)
+--   ci_low     = edge_score - 1.645 × edge_se   (one-tailed 95%)
+--   ci_high    = edge_score + 1.645 × edge_se
+--
+-- One-tailed CI matches the directional question we're asking: "is this
+-- user's edge reliably above 0?", not "is it different from 0?". Two-tailed
+-- CIs are too conservative for this use case.
+--
+-- Refunded / voided positions excluded (no realized outcome).
+-- Cashed-out positions excluded (no terminal win/loss outcome — the
+-- realized edge is encoded in the cashout amount, not a binary).
+--
+-- Skips users with manual_override_until > NOW() (admin pin survives cron).
+--
+-- Returns count of users updated.
+
+CREATE OR REPLACE FUNCTION public._speed_recompute_edge_scores(p_window INT DEFAULT NULL)
+ RETURNS INT
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+DECLARE
+  v_window         INT;
+  v_updated        INT := 0;
+  v_user           RECORD;
+  v_z              DOUBLE PRECISION := 1.645;  -- one-tailed 95%
+BEGIN
+  -- Resolve window from fee_config; default 100
+  SELECT rate::int INTO v_window FROM fee_config WHERE fee_type = 'speed_clv_window_n' LIMIT 1;
+  v_window := COALESCE(p_window, v_window, 100);
+  IF v_window <= 0 OR v_window > 10000 THEN
+    RAISE EXCEPTION 'Invalid window: % (must be 1-10000)', v_window;
+  END IF;
+
+  FOR v_user IN
+    WITH recent_users AS (
+      SELECT DISTINCT user_id
+      FROM speed_positions
+      WHERE status IN ('won','lost')
+        AND closed_at > NOW() - INTERVAL '90 days'
+    ),
+    user_trades AS (
+      SELECT
+        ru.user_id,
+        sp.entry_offered_prob,
+        CASE WHEN sp.status = 'won' THEN 1.0 ELSE 0.0 END AS actual,
+        ROW_NUMBER() OVER (PARTITION BY ru.user_id ORDER BY sp.closed_at DESC) AS rn
+      FROM recent_users ru
+      JOIN speed_positions sp ON sp.user_id = ru.user_id
+      WHERE sp.status IN ('won','lost')
+    ),
+    windowed AS (
+      SELECT
+        user_id,
+        actual::DOUBLE PRECISION AS actual,
+        entry_offered_prob::DOUBLE PRECISION AS offered,
+        (actual - entry_offered_prob)::DOUBLE PRECISION AS e_i
+      FROM user_trades
+      WHERE rn <= v_window
+    )
+    SELECT
+      user_id,
+      COUNT(*)::INT AS settled,
+      SUM(actual)::INT AS wins,
+      (COUNT(*) - SUM(actual))::INT AS losses,
+      AVG(offered) AS avg_offered,
+      AVG(actual) AS win_rate,
+      AVG(e_i) AS edge,
+      -- Sample SD of e_i; sample stdev over n-1 (handles n=1 edge case below)
+      CASE WHEN COUNT(*) > 1
+        THEN STDDEV_SAMP(e_i)
+        ELSE 0
+      END AS sd_e,
+      COUNT(*)::DOUBLE PRECISION AS n
+    FROM windowed
+    GROUP BY user_id
+  LOOP
+    DECLARE
+      v_se     DOUBLE PRECISION;
+      v_ci_low DOUBLE PRECISION;
+      v_ci_high DOUBLE PRECISION;
+    BEGIN
+      v_se := CASE WHEN v_user.n > 0 THEN COALESCE(v_user.sd_e, 0) / sqrt(v_user.n) ELSE 0 END;
+      v_ci_low  := v_user.edge - v_z * v_se;
+      v_ci_high := v_user.edge + v_z * v_se;
+
+      INSERT INTO speed_user_edge_scores (
+        user_id, settled_trades, wins, losses,
+        avg_offered, win_rate, edge_score, edge_se, ci_low, ci_high,
+        last_recomputed_at
+      ) VALUES (
+        v_user.user_id, v_user.settled, v_user.wins, v_user.losses,
+        ROUND(v_user.avg_offered::NUMERIC, 6),
+        ROUND(v_user.win_rate::NUMERIC, 6),
+        ROUND(v_user.edge::NUMERIC, 6),
+        ROUND(v_se::NUMERIC, 6),
+        ROUND(v_ci_low::NUMERIC, 6),
+        ROUND(v_ci_high::NUMERIC, 6),
+        NOW()
+      )
+      ON CONFLICT (user_id) DO UPDATE SET
+        settled_trades     = EXCLUDED.settled_trades,
+        wins               = EXCLUDED.wins,
+        losses             = EXCLUDED.losses,
+        avg_offered        = EXCLUDED.avg_offered,
+        win_rate           = EXCLUDED.win_rate,
+        edge_score         = EXCLUDED.edge_score,
+        edge_se            = EXCLUDED.edge_se,
+        ci_low             = EXCLUDED.ci_low,
+        ci_high            = EXCLUDED.ci_high,
+        last_recomputed_at = EXCLUDED.last_recomputed_at
+        -- Preserve manual_shading_factor + manual_override_until + manual_override_reason
+      WHERE
+        speed_user_edge_scores.manual_override_until IS NULL
+        OR speed_user_edge_scores.manual_override_until < NOW();
+
+      v_updated := v_updated + 1;
+    END;
+  END LOOP;
+
+  RETURN v_updated;
+END;
+$function$;
+
+COMMENT ON FUNCTION public._speed_recompute_edge_scores(INT) IS
+  '0044 Sprint 2: nightly cron entrypoint. Recomputes edge_score for users with settled trades in last 90d. UPSERTs to speed_user_edge_scores. Preserves manual override rows (manual_override_until > NOW()).';
+
+GRANT EXECUTE ON FUNCTION public._speed_recompute_edge_scores(INT) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION public._speed_recompute_edge_scores(INT) TO sooqadmin;
