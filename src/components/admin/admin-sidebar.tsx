@@ -66,6 +66,7 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     items: [
       { key: "withdrawals", href: "/admin/money", icon: "account_balance_wallet", label: "Money", badgeKey: "pending_finance" },
       { key: "fees", href: "/admin/fees", icon: "payments", label: "Fees" },
+      { key: "markets-config", href: "/admin/markets-config", icon: "tune", label: "Markets Config" },
     ],
   },
   {
@@ -90,7 +91,7 @@ function NavItems({ onNavigate, allowedViews }: { onNavigate?: () => void; allow
     // Superadmin-only entries: admins management + CLV throttle (Phase 5D).
     // Sharks page exposes per-user edge scores + manual override hints —
     // limit to superadmin until the proper override RPC + audit trail land.
-    if (item.key === "admins" || item.key === "sharks") return isSuperAdmin(allowedViews);
+    if (item.key === "admins" || item.key === "sharks" || item.key === "markets-config") return isSuperAdmin(allowedViews);
     return canAccessView(allowedViews, item.key);
   };
 
