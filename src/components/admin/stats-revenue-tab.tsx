@@ -28,6 +28,12 @@ type AssetFilter = "all" | "BTC" | "GOLD";
 
 const DURATION_FILTERS: DurationFilter[] = ["all", "5m", "1m", "1h"];
 
+// Dead durations stripped pre-Phase 5 (mig 0040 killed 1h-rolling but kept
+// historical FK; 15m/24h were never wired to the active rolling cron).
+// We hide their rows from the bucket table even when "All" is selected
+// because they show as zero-activity noise.
+const ACTIVE_DURATIONS = new Set(["5m", "1m", "1h"]);
+
 interface RevenueSummary {
   gross_volume: number;
   total_payouts: number;
@@ -174,6 +180,7 @@ export function StatsRevenueTab({
         const allBuckets: BucketRow[] = b.buckets ?? [];
         setBuckets(
           allBuckets
+            .filter((row) => ACTIVE_DURATIONS.has(row.duration))
             .filter((row) => asset === "all" || row.asset === asset)
             .sort((a, c) => c.stakes_in - a.stakes_in),
         );
