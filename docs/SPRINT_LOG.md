@@ -1302,3 +1302,107 @@ Net visible change: **one duplicate admin row goes away.**
 ### Pending — Phase 3: UX redesign
 
 Founder requested deferral of all UI/UX-touching work until a separate redesign phase. Backend is now clean enough to start that work whenever the team is ready.
+
+---
+
+## W13 — Pricing Engine v3 hardening + per-market foundation refactor (mig 0038–0051)
+
+A two-part anti-shark + foundation-refactor sprint. **Part A** closes silent-break risks in the live pricing/money-flow code. **Part B** rebuilds the per-market config layer so 1-minute markets and gold can ship without copy-paste hell.
+
+### Sprint 0 — Stop-the-bleed P0 fixes (mig 0038)
+
+Closed seven P0 silent-break risks found in a code-only `/investigate` audit:
+
+- **S0.1** `_speed_max_stake_for_offered`: liability formula `liability_cap × p / (1−p)` returned 99× cap at offered ≥ 0.99, completely bypassing stake_max. Clamped at offered ≥ 0.98.
+- **S0.2** `speed_execute_trade`: aggregate `SUM(stake / entry_offered_prob)` for per-side and strike-cluster caps had no NULL guard; one historical row with NULL/zero `entry_offered_prob` would crash all trades. Added `WHERE entry_offered_prob IS NOT NULL AND entry_offered_prob > 0`.
+- **S0.3** `admin_approve_withdrawal` / `_reject_withdrawal` / `_mark_withdrawal_sent_v2`: no audit trail. Added `INSERT INTO admin_action_log` wrapped in `EXCEPTION WHEN OTHERS THEN NULL` (mig 0033 created the table; triggers were "deferred" until now).
+- **S0.4** `withdrawals.idempotency_key` column existed since mig 0033 but was never populated. `process_withdrawal` now takes `p_idempotency_key TEXT DEFAULT NULL` (4-arg sig replaces 3-arg). Route computes deterministic key from `(user_id, amount, method, accountHash, minute-bucket)`.
+- **S0.5** Crypto address validation was length-only (`length >= 30`). Added per-network regex (`^0x[a-fA-F0-9]{40}$` for ERC20, `^T[1-9A-HJ-NP-Za-km-z]{33}$` for TRC20) plus burn-address ban.
+- **S0.6** `/api/health/oracle` and `/api/health/audit` were public and leaked all current asset prices, ledger drift count, cron schedule, and `speed_cashout_enabled` kill-switch state. Both gated to admin session OR `x-monitor-token` header.
+- **S0.7** Pre-mig-0033 `speed_execute_cashout` had `IF v_cashout_amount > 0 THEN ...` wrapping the balance update + transactions insert. $0 cashouts skipped both. Wrote a one-time audit script (`scripts/audit-zero-cashout-orphans.mjs`); staging clean (0 orphans).
+
+### Sprint 0.5 — P1 hardening (mig 0039 + 0043)
+
+- **S0.8** Webhook handlers (3pay, whish) returned full RPC error messages (including user IDs) to the webhook caller. Switched to generic "Deposit processing failed" for caller; full context still goes to server logs + Slack.
+- **S0.9** `speed_resolve_market` boundary check: `IF NOW() < closes_at` → `<=` (microsecond-window correctness).
+- **S0.10** `_speed_pricing_apply` soft-block compared float values that could differ between quote and execute paths (0.94999 vs 0.95001). Added `ROUND(v_final_offered, 6)` before threshold comparison.
+- **S0.11** `speed_execute_cashout` ran INSUFFICIENT_PROFIT / INSUFFICIENT_LOSS checks against `ROUND(cashout, 2)`. At thin winning margins (mark=0.501, entry=0.5) rounding flipped cashout to exactly stake → spurious rejection. Now checks the raw pre-round value.
+- **S0.12** `_speed_get_iv` fallback path read `speed_iv_btc` for any asset (would return BTC's vol for gold). Made fallback asset-aware (`speed_iv_<asset>` first, BTC fallthrough only when asset is BTC). Raises IV_MISSING on NULL/zero.
+- **S0.13** Cashout parity-skip simplified: skip whenever `matrix_used`, not just `matrix_used AND mark > bsm`.
+- **S0.15** Audit triggers added to PIN-gated `admin_adjust_balance` (mig 0006) — initial mig 0039 covered the no-PIN `admin_balance_adjust_v2` (mig 0026) but missed the PIN-gated path that the live `/api/admin/balance` route still uses. **mig 0043** patched this after pre-ship `/investigate` flagged it as P0.
+- **S0.16** Zod input validation on `/api/admin/balance` and `/api/admin/withdrawals/[id]/approve` (PIN format `^\d{4,6}$`, amount bounds, description length).
+
+S0.14 (Upstash Redis rate-limit) deferred pending account setup.
+
+### Sprint 0.6 — Kill 1h markets (mig 0040)
+
+Founder decision per Phase 4 plan: 1h volume too low for matrix qualification (per the recalibration audit). `speed_roll_markets` only opens 5m markets going forward; existing 1h positions resolve normally; frontend `/markets` filter and `speed-home-view` default-hero logic stripped of 1h.
+
+### Sprint 0.7 — Admin cleanup (mig 0041)
+
+Dropped three IV freshness fee_config keys (`speed_iv_freshness_15m_secs`, `_24h_secs`, `_ewma_secs`) that mig 0029 seeded speculatively but were never read by any code path.
+
+### Sprint 1 Phase 1 — Foundation tables (mig 0042)
+
+Per-(asset, duration) and per-asset config tables. Backfilled BTC-5m row from existing fee_config values; seeded GOLD asset placeholder (disabled=FALSE; oracle_source=TBD). Schema CHECK constraints on every numeric range (CC.1 mitigation: rejects typo/out-of-range admin saves at the DB layer).
+
+### Sprint 2 — Per-user CLV throttle (mig 0044)
+
+Surgical anti-shark layer. **Self-stabilizing** (as shading kicks in, future trades are at higher offered prices, so future edge_score shrinks).
+
+- New `speed_user_edge_scores` table (per-user edge over last N settled trades + one-tailed 95% Jeffreys CI).
+- Nightly cron `_speed_recompute_edge_scores` at 04:00 UTC.
+- Helper `_speed_apply_user_shading(user_id, offered_prob, soft_block_threshold)` pushes offered UP for users with reliably positive edge. Capped at +8pp.
+- Wired into `speed_execute_trade` AS the last pricing layer (after matrix + asym push-up + soft-block + floor/cap, before parity check).
+- Cashout coupling: Option A — shaded value stored in `speed_positions.entry_offered_prob`; cashout uses unshaded mark + stored shaded entry.
+- Property tests on Rami's actual 14-day data: with flag ON, his offered prices push UP by 8pp on every trade attempt. Modeled effect: $246/day → $108–143/day (-42% to -56%).
+- Master flag `speed_clv_throttle_enabled` ships OFF.
+
+Anti-multi-account skipped per founder decision (documented leak; KYC friction is the only mitigation).
+
+### Sprint 3 — 1-minute markets infrastructure (mig 0045 + 0046 + 0047)
+
+Mig 0045 (standalone): `ALTER TYPE speed_duration ADD VALUE '1m'`. Mig 0046: BTC-1m row in `speed_market_config` with launch tax (8% spread, 0.85 soft-block, 3s reject, $25 stake max, $250 payout cap); 1m IV cache row; `_next_clean_boundary` handles 1m; trade + cashout RPCs accept '1m'; `speed_roll_markets` rolls 1m gated behind `speed_1m_markets_enabled` (default OFF). Mig 0047: P1 fix caught by `/investigate` — 1m payout cap was falling through to 1h's $5000; added `speed_entry_max_payout_usd_1m = 250` + explicit branch.
+
+Frontend 1m duration tab deferred until activation flag flips.
+
+### Sprint 4 Phase 1 — Gold market infrastructure (mig 0048)
+
+GOLD-5m row in `speed_market_config` (4% spread, 0.92 soft-block, $25 stake max). Dual-gated OFF: `speed_assets.GOLD.enabled = FALSE` AND `speed_gold_markets_enabled = 0`. Patched `speed_roll_markets` to gate gold rolling. Patched `speed_execute_trade` payout cap cascade with explicit GOLD-5m branch (`speed_entry_max_payout_usd_gold_5m`).
+
+User-facing gold launch blocked on: oracle source decision (OANDA / CoinAPI / TradingView), oracle worker, frontend asset switcher.
+
+### Sprint 1 Phase 2 — Foundation refactor (mig 0049 + 0050 + 0051)
+
+Helpers and RPCs moved from reading global `fee_config` keys to per-(asset, duration) reads from `speed_market_config`, with three-layer fallback chain: market_config → fee_config global → hardcoded default.
+
+- **Phase 2A (mig 0049):** spread_pct + soft_block_threshold (the activation-blocking values for 1m/gold launch tax).
+- **Phase 2B (mig 0050):** 7 more reads in trade RPC: last_n_reject_secs, cap_per_side_usd, near_decided_dist, late_window_30s_mult, late_window_60s_mult, per_side_pool_pct, payout_max_usd. F1.3 mitigation: SELECT * INTO v_mc once at RPC entry → consistent snapshot.
+- **Phase 2C (mig 0051):** cashout_reject_secs, cashout_cap_edge_threshold, cashout_late_30s_imbalance in cashout RPC. **Helper signature changes:**
+  - `_speed_cashout_margin(asset, duration, is_winning, mark_prob, secs_left)` — old `(duration, ...)` DROPped.
+  - `_speed_max_stake_for_offered(asset, duration, offered_prob)` — old `(duration, offered_prob)` DROPped.
+  - All callers updated (RPCs + `/api/speed/quote/route.ts`).
+- **Phase 2D:** `/admin/fees` deprecation banner + `⚠ Per-market` badge on the 25 migrated keys. Full UI cutover (write-side switch + drop fee_config keys) deferred to UX redesign phase.
+
+Three pre-ship `/investigate` audits across the three phases caught two P1s (1m payout cap fall-through, quote RPC missed in helper sig change, cross-asset stake_max leak). All fixed before push.
+
+BTC-5m behavior is byte-identical pre-vs-post (market_config values matched fee_config in mig 0042 backfill).
+
+### Verification
+
+- All migrations applied to staging RDS via `apply-mig.mjs` with preflight ✅ + postflight ✅ + auto-refresh of `drizzle/functions/`.
+- `npx tsc --noEmit` clean throughout.
+- `node scripts/sync-functions.mjs --dry-run` zero drift across 23 canonical functions.
+- Smoke tests on staging confirmed: liability cap holds at $25 across offered=0.50/0.95/0.98/0.99; CLV shading direction correct (Rami at +11.5pp edge gets +8pp shade); 1m boundary correct at :00/:30/:55/:03; gold dual-gate working; per-market spread/soft-block reads return market_config values.
+
+### Pending action items (founder)
+
+1. `HEALTH_MONITOR_TOKEN` — generate token + add to Vercel staging env + GitHub repo secrets; update `oracle-monitor.yml` and `audit-monitor.yml` workflows.
+2. Upstash Redis account → wire `lib/rate-limit.ts` shared store (S0.14).
+3. Gold oracle source decision (OANDA / CoinAPI / TradingView).
+4. Gold oracle worker (depends on #3).
+5. Frontend duration tab for 1m + asset switcher for GOLD (when activation flags flip).
+
+### Pending — Phase 2E (deferred to UX redesign)
+
+Build `/admin/markets-config` page that writes directly to `speed_market_config`; drop the now-deprecated fee_config keys (~25 keys). Helpers' fee_config fallback can be removed once all keys are gone.
