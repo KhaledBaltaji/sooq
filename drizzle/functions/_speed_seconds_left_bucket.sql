@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0030_quote_execute_parity.sql:74
--- Last extracted: 2026-05-08T14:58:56.629Z
+-- Last extracted: 2026-05-09T14:16:58.414Z
 CREATE OR REPLACE FUNCTION public._speed_seconds_left_bucket(p_seconds_left double precision)
  RETURNS integer
  LANGUAGE plpgsql

@@ -6,9 +6,10 @@ import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 import type { SpeedAsset, SpeedDuration } from "@/types/database";
 
-const ASSET_LABELS: Record<SpeedAsset, string> = { BTC: "Bitcoin" };
+const ASSET_LABELS: Record<SpeedAsset, string> = { BTC: "Bitcoin", GOLD: "Gold" };
 
 const DURATION_LABELS: Record<SpeedDuration, string> = {
+  "1m": "1-minute",
   "5m": "5-minute",
   "1h": "1-hour",
 };

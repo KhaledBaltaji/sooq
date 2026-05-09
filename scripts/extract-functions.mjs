@@ -69,6 +69,9 @@ const FUNCTIONS = [
   // Mig 0044: per-user CLV throttle (Sprint 2)
   { name: "_speed_recompute_edge_scores", source_mig: "0044_sprint_2_clv_throttle/functions/_speed_recompute_edge_scores.sql" },
   { name: "_speed_apply_user_shading",    source_mig: "0044_sprint_2_clv_throttle/functions/_speed_apply_user_shading.sql" },
+  // Mig 0052: trading hours helpers (Sprint 4 Phase 5A)
+  { name: "_speed_is_market_open",        source_mig: "0052_phase_5a_gold_completeness/functions/_speed_is_market_open.sql" },
+  { name: "_speed_next_open_at",          source_mig: "0052_phase_5a_gold_completeness/functions/_speed_is_market_open.sql" },
 ];
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));

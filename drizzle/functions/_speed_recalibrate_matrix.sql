@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0037_recalibration_cron/functions/_speed_recalibrate_matrix.sql
--- Last extracted: 2026-05-08T14:58:59.265Z
+-- Last extracted: 2026-05-09T14:17:01.192Z
 CREATE OR REPLACE FUNCTION public._speed_recalibrate_matrix(p_asset text DEFAULT 'BTC'::text, p_duration speed_duration DEFAULT '5m'::speed_duration, p_window_days integer DEFAULT 14, p_status text DEFAULT 'shadow'::text)
  RETURNS integer
  LANGUAGE plpgsql

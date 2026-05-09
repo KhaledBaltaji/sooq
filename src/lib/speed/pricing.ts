@@ -340,6 +340,8 @@ export function speedOfferedProb(
  */
 export function durationToSeconds(d: SpeedDuration): number {
   switch (d) {
+    case "1m":
+      return 60;
     case "5m":
       return 5 * 60;
     case "1h":
@@ -390,6 +392,8 @@ export function isMarketAligned(
   if (ts.getUTCSeconds() !== 0 || ts.getUTCMilliseconds() !== 0) return false;
   const minutes = ts.getUTCMinutes();
   switch (duration) {
+    case "1m":
+      return true; // every minute boundary is aligned
     case "5m":
       return minutes % 5 === 0;
     case "1h":

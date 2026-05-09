@@ -9,6 +9,12 @@ const STYLES: Record<SpeedAsset, { bg: string; glyph: string; ring: string }> = 
     glyph: "₿",
     ring: "ring-[#F7931A]/30",
   },
+  GOLD: {
+    // Gold gets a tasteful tone, not a Bitcoin-orange.
+    bg: "bg-[#D4AF37]",
+    glyph: "Au",
+    ring: "ring-[#D4AF37]/30",
+  },
 };
 
 export function SpeedAssetIcon({

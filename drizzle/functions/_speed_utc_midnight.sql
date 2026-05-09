@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0028_pricing_engine_v2.sql:181
--- Last extracted: 2026-05-08T14:58:58.395Z
+-- Last extracted: 2026-05-09T14:17:00.269Z
 CREATE OR REPLACE FUNCTION public._speed_utc_midnight()
  RETURNS timestamp with time zone
  LANGUAGE sql

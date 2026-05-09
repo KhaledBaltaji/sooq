@@ -6,8 +6,19 @@
 // type-check until they're cut over to Drizzle proper.
 
 // ---- Speed enums ----
-export type SpeedAsset = "BTC";
-export type SpeedDuration = "5m" | "1h";
+//
+// Phase 5C (mig 0052): split duration into:
+//   - SpeedActiveDuration: durations that can host NEW markets ("5m", "1m")
+//   - SpeedDuration: includes legacy "1h" for displaying historical
+//     positions, transactions, notifications. mig 0040 killed 1h market
+//     creation but existing 1h rows still need to render correctly.
+//
+// New trade UIs use SpeedActiveDuration. Display surfaces (positions
+// list, transactions log, notifications) use SpeedDuration.
+
+export type SpeedAsset = "BTC" | "GOLD";
+export type SpeedActiveDuration = "5m" | "1m";
+export type SpeedDuration = "5m" | "1m" | "1h"; // 1h = legacy read-only
 export type SpeedSide = "over" | "under";
 export type SpeedMarketStatus = "open" | "resolving" | "resolved" | "voided";
 export type SpeedMarketOutcome = "over" | "under" | "at_strike";

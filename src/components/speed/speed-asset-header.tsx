@@ -12,7 +12,7 @@ import {
 } from "@/lib/speed/pricing";
 import type { SpeedAsset, SpeedDuration, SpeedMarketStatus } from "@/types/database";
 
-const ASSET_LABELS: Record<SpeedAsset, string> = { BTC: "Bitcoin" };
+const ASSET_LABELS: Record<SpeedAsset, string> = { BTC: "Bitcoin", GOLD: "Gold" };
 
 interface SpeedAssetHeaderProps {
   asset: SpeedAsset;

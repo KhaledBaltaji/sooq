@@ -44,8 +44,9 @@ export function SpeedHeroCardSkeleton() {
   );
 }
 
-const ASSET_LABELS: Record<string, string> = { BTC: "Bitcoin" };
+const ASSET_LABELS: Record<string, string> = { BTC: "Bitcoin", GOLD: "Gold" };
 const DURATION_LABELS: Record<SpeedDuration, string> = {
+  "1m": "1 minute",
   "5m": "5 minutes",
   "1h": "1 hour",
 };

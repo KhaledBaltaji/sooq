@@ -1,0 +1,4 @@
+{
+  "tables": ["speed_asset_config", "speed_market_config", "speed_volatility_cache", "speed_assets", "fee_config"],
+  "functions": ["speed_roll_markets", "speed_execute_trade", "speed_execute_cashout"]
+}

@@ -21,6 +21,7 @@ interface ListResponse {
 
 const ASSET_TO_BINANCE_SYMBOL: Record<SpeedAsset, string> = {
   BTC: "BTCUSDT",
+  GOLD: "PAXGUSDT",
 };
 
 /**

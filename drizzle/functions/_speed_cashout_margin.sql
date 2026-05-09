@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0028_pricing_engine_v2.sql:303
--- Last extracted: 2026-05-08T18:47:11.479Z
+-- Last extracted: 2026-05-09T14:16:58.124Z
 CREATE OR REPLACE FUNCTION public._speed_cashout_margin(p_asset text, p_duration speed_duration, p_is_winning boolean, p_mark_prob numeric, p_seconds_left double precision)
  RETURNS double precision
  LANGUAGE plpgsql

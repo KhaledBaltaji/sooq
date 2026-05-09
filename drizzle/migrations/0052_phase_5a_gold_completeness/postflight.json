@@ -1,0 +1,3 @@
+{
+  "functions": ["_speed_is_market_open", "_speed_next_open_at", "speed_roll_markets", "speed_execute_trade", "speed_execute_cashout"]
+}
