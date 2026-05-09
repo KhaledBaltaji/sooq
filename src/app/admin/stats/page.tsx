@@ -16,9 +16,11 @@ export default async function AdminStatsPage() {
           Stats
         </h2>
         <p className="text-[#566166] mt-2 max-w-2xl">
-          Platform commission = stakes&nbsp;−&nbsp;payouts on resolved markets.
-          The cash pool is open positions still in play (not yet revenue).
-          Cashout premium is what we keep when users exit early.
+          Four tabs, one job each. <strong>Revenue</strong> for stakes /
+          payouts / per-market P&amp;L. <strong>Money</strong> for deposits /
+          withdrawals / balance held. <strong>Users</strong> for DAU + the
+          leaderboard. <strong>Health</strong> for oracle / matrix coverage /
+          CLV / pricing telemetry.
         </p>
       </header>
       <StatsClient />
