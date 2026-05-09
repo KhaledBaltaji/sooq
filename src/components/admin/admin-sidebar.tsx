@@ -58,6 +58,7 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     group: "People",
     items: [
       { key: "users", href: "/admin/users", icon: "group", label: "Users" },
+      { key: "sharks", href: "/admin/sharks", icon: "shield_warning", label: "Sharks (CLV)" },
     ],
   },
   {
@@ -86,7 +87,10 @@ function NavItems({ onNavigate, allowedViews }: { onNavigate?: () => void; allow
   const counts = useAdminSidebarCounts();
 
   const isItemVisible = (item: NavItem) => {
-    if (item.key === "admins") return isSuperAdmin(allowedViews);
+    // Superadmin-only entries: admins management + CLV throttle (Phase 5D).
+    // Sharks page exposes per-user edge scores + manual override hints —
+    // limit to superadmin until the proper override RPC + audit trail land.
+    if (item.key === "admins" || item.key === "sharks") return isSuperAdmin(allowedViews);
     return canAccessView(allowedViews, item.key);
   };
 
