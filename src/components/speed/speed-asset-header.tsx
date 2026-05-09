@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 import { SpeedAssetIcon } from "./speed-asset-icon";
 import { SpeedVolatilityBadge } from "./speed-volatility-badge";
+import { formatPriceForAsset } from "@/lib/format-price";
 import {
   durationToSeconds,
   formatSpeedCountdown,
@@ -147,7 +148,7 @@ export const SpeedAssetHeader = forwardRef<HTMLDivElement, SpeedAssetHeaderProps
           <span className="hidden sm:flex items-center gap-1 shrink-0 tabular-nums">
             <span className="text-muted-custom">Target</span>
             <span className="text-text font-bold">
-              ${strikePrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              {formatPriceForAsset(asset, strikePrice)}
             </span>
           </span>
           {isResolved && twap != null ? (
@@ -155,7 +156,7 @@ export const SpeedAssetHeader = forwardRef<HTMLDivElement, SpeedAssetHeaderProps
               <span className="text-muted-custom/60">|</span>
               <span className="text-muted-custom">Close</span>
               <span className="text-text font-bold">
-                ${twap.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                {formatPriceForAsset(asset, twap)}
               </span>
             </span>
           ) : showLivePrice ? (
@@ -174,7 +175,7 @@ export const SpeedAssetHeader = forwardRef<HTMLDivElement, SpeedAssetHeaderProps
                         : "text-text",
                 )}
               >
-                ${livePrice!.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                {formatPriceForAsset(asset, livePrice!)}
               </span>
             </span>
           ) : null}

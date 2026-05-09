@@ -24,6 +24,7 @@ import { sql } from "drizzle-orm";
 import { auth } from "@/auth";
 import { runAs } from "@/lib/db/run-as";
 import { logger } from "@/lib/logger";
+import type { SpeedAsset } from "@/types/database";
 
 interface QuoteBody {
   mode: "trade" | "cashout";
@@ -39,6 +40,7 @@ interface TradeQuote {
   mode: "trade";
   market_id: string;
   side: "over" | "under";
+  asset: SpeedAsset;
   spot_price: number;
   strike_price: number;
   seconds_left: number;
@@ -57,6 +59,10 @@ interface TradeQuote {
   /** Mig 0035: true when entry is fully blocked because seconds_left < late_window_reject_s. */
   late_window_block: boolean;
   max_stake_allowed: number;
+  /** Phase 5C (mig 0052): asset's market is currently in trading hours. Always true for BTC; false for GOLD during weekend gap + daily 21:00-22:00 UTC break. */
+  is_open: boolean;
+  /** Phase 5C (mig 0052): ISO timestamp of next market open (when is_open=false). Powers MarketClosedCountdown component. */
+  next_open_at: string | null;
   rejected: boolean;
   reject_reason: string | null;
   reject_code: string | null;
@@ -246,6 +252,10 @@ export async function POST(req: Request) {
             'mode', 'trade',
             'market_id', ${body.market_id}::uuid,
             'side', ${body.side}::text,
+            -- P1.3 fix: explicit alias on 'final.asset' so a future CTE that
+            -- swaps SELECT * for an explicit column list can't silently drop
+            -- this field (which would render undefined in jsonb without error).
+            'asset', final.asset,
             'spot_price', ROUND(spot_price, 8),
             'strike_price', ROUND(strike_price, 8),
             'seconds_left', ROUND(seconds_left::NUMERIC, 2),
@@ -262,6 +272,9 @@ export async function POST(req: Request) {
             'near_decided_block', near_decided_block,
             'late_window_block', late_window_block,
             'max_stake_allowed', ROUND(max_stake_allowed::NUMERIC, 2),
+            -- Phase 5C (mig 0052): trading-hours fields for frontend countdown
+            'is_open', _speed_is_market_open(final.asset, NOW()),
+            'next_open_at', _speed_next_open_at(final.asset, NOW()),
             'rejected', (reject_tuple).f1 IS NOT NULL,
             'reject_reason', (reject_tuple).f1,
             'reject_code', (reject_tuple).f2

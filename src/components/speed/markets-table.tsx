@@ -11,8 +11,9 @@ import { cn } from "@/lib/utils";
 import type { SpeedMarket } from "@/types/database";
 import { useSpeedOracleLatest } from "@/hooks/use-speed-oracle";
 import { SpeedAssetIcon } from "./speed-asset-icon";
+import { formatPriceForAsset } from "@/lib/format-price";
 
-const ASSET_LABELS: Record<string, string> = { BTC: "Bitcoin" };
+const ASSET_LABELS: Record<string, string> = { BTC: "Bitcoin", GOLD: "Gold" };
 
 function fmtCountdown(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -91,7 +92,7 @@ function MarketRow({ market, last }: { market: SpeedMarket; last: boolean }) {
           </div>
           <div className="mt-1 font-dm-sans text-xs text-muted-custom">
             up or down · strike{" "}
-            {strike > 0 ? `$${fmtUSD(strike)}` : "pending"}
+            {strike > 0 ? formatPriceForAsset(market.asset, strike) : "pending"}
           </div>
         </div>
       </div>
@@ -104,7 +105,7 @@ function MarketRow({ market, last }: { market: SpeedMarket; last: boolean }) {
       {/* Price */}
       <div className="text-right">
         <div className="font-satoshi text-[17px] font-black leading-none tabular-nums text-text">
-          ${livePrice ? fmtUSD(livePrice) : "—"}
+          {livePrice ? formatPriceForAsset(market.asset, livePrice) : "$—"}
         </div>
         {strike > 0 && livePrice !== null && (
           <div

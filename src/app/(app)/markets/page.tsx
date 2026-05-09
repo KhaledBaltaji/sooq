@@ -22,7 +22,10 @@ type DurationFilter = (typeof DURATION_FILTERS)[number];
 
 // Asset filter is here so we can light up Gold/ETH later without redoing
 // the page. Today only BTC is live; everything else dims to "soon".
-const ASSET_FILTERS = ["all", "BTC"] as const;
+// Phase 5C (mig 0052): GOLD activated when speed_assets.GOLD.enabled = TRUE
+// AND speed_gold_markets_enabled = 1 AND PAXG oracle worker live. Until
+// then the GOLD pill renders but no markets populate (empty-state).
+const ASSET_FILTERS = ["all", "BTC", "GOLD"] as const;
 type AssetFilter = (typeof ASSET_FILTERS)[number];
 
 type ViewMode = "table" | "grid";

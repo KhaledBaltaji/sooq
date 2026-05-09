@@ -20,6 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useSpeedPriceHistory } from "@/hooks/use-speed-price-history";
 import { useSpeedOracleLatest } from "@/hooks/use-speed-oracle";
+import { formatPriceForAsset, priceDecimalsForAsset } from "@/lib/format-price";
 import type { SpeedAsset, SpeedDuration } from "@/types/database";
 
 export type SpeedChartType = "candle" | "line";
@@ -368,7 +369,13 @@ export function SpeedPriceChart({
         borderVisible: true,
         wickUpColor: "#26a69a",
         wickDownColor: "#ef5350",
-        priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+        // Phase 5C: per-asset precision. BTC = 0 decimals (cents are noise
+        // at ~$90k); GOLD = 2 decimals (each $0.01 matters at ~$2,650).
+        priceFormat: {
+          type: "price",
+          precision: priceDecimalsForAsset(asset),
+          minMove: priceDecimalsForAsset(asset) === 0 ? 1 : 0.01,
+        },
         // Hide right-axis live-price label + dashed line; the page header
         // shows live, the target priceLine owns the right-axis label.
         lastValueVisible: false,
@@ -385,7 +392,11 @@ export function SpeedPriceChart({
         topColor: "rgba(148, 163, 184, 0.18)",
         bottomColor: "rgba(148, 163, 184, 0.0)",
         lineWidth: 2,
-        priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+        priceFormat: {
+          type: "price",
+          precision: priceDecimalsForAsset(asset),
+          minMove: priceDecimalsForAsset(asset) === 0 ? 1 : 0.01,
+        },
         lastValueVisible: false,
         priceLineVisible: false,
         // Hide the crosshair marker — lightweight-charts otherwise draws
@@ -784,9 +795,9 @@ export function SpeedPriceChart({
   const ariaLabel = error
     ? "Price chart unavailable"
     : showCanvas
-      ? `${asset} price chart, ${candles.length} candles, current $${
-          lastClose?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? "—"
-        }, strike $${strikePrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+      ? `${asset} price chart, ${candles.length} candles, current ${
+          lastClose !== null ? formatPriceForAsset(asset, lastClose) : "$—"
+        }, strike ${formatPriceForAsset(asset, strikePrice)}`
       : "Price chart loading";
 
   return (
@@ -816,7 +827,7 @@ export function SpeedPriceChart({
           }}
           aria-hidden
         >
-          Target ${strikePrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+          Target {formatPriceForAsset(asset, strikePrice)}
         </div>
       )}
 
