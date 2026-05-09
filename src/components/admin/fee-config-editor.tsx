@@ -19,6 +19,38 @@ interface FeeConfigEditorProps {
   fees: FeeRow[];
 }
 
+// Phase 2C (mig 0049-0051): these keys are now read from speed_market_config
+// per (asset, duration) first. Editing them here only affects markets without
+// a speed_market_config row (none today on staging — BTC-5m, BTC-1m, GOLD-5m
+// all have rows). See /admin/fees banner.
+const DEPRECATED_PER_MARKET_KEYS = new Set<string>([
+  "speed_spread_pct",
+  "speed_entry_soft_block_threshold",
+  "speed_late_window_reject_s",
+  "speed_late_30s_imbalance_reject",
+  "speed_late_30s_spread_mult",
+  "speed_late_60s_spread_mult",
+  "speed_cap_per_side_usd",
+  "speed_max_market_exposure_pct",
+  "speed_entry_max_payout_usd_5m",
+  "speed_entry_max_payout_usd_1h",
+  "speed_entry_max_payout_usd_1m",
+  "speed_entry_max_payout_usd_gold_5m",
+  "speed_stake_max_5m_usd",
+  "speed_stake_max_1h_usd",
+  "speed_cashout_late_reject_s",
+  "speed_cashout_late_30s_imbalance_reject",
+  "speed_cashout_cap_edge_threshold",
+  "speed_cashout_winning_base_5m",
+  "speed_cashout_winning_base_1h",
+  "speed_cashout_losing_base_5m",
+  "speed_cashout_losing_base_1h",
+  "speed_cashout_saturation_coef",
+  "speed_cashout_desperation_coef",
+  "speed_cashout_late_window_winning_coef",
+  "speed_cashout_late_window_losing_coef",
+]);
+
 // ── Human-readable labels ──────────────────────────────────────
 //
 // Every fee_config key gets a plain-English title and a description an
@@ -527,17 +559,32 @@ const FEE_GROUPS: FeeGroup[] = [
 // ── Components ─────────────────────────────────────────────────
 
 function FeeItem({ fee, onClick }: { fee: FeeRow; onClick: () => void }) {
+  const isDeprecated = DEPRECATED_PER_MARKET_KEYS.has(fee.fee_type);
   return (
     <div
       onClick={onClick}
       className="flex items-center justify-between px-5 py-4 hover:bg-[#f0f4f7]/50 active:bg-[#e8eff3] cursor-pointer transition-colors group"
     >
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-semibold text-[#2a3439]">{getLabelForFee(fee)}</p>
-        <p className="text-xs text-[#566166] mt-0.5">{getHintForFee(fee)}</p>
+        <p className="text-sm font-semibold text-[#2a3439]">
+          {getLabelForFee(fee)}
+          {isDeprecated && (
+            <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
+              ⚠ Per-market
+            </span>
+          )}
+        </p>
+        <p className="text-xs text-[#566166] mt-0.5">
+          {isDeprecated && (
+            <span className="text-amber-700 font-medium">
+              Read from speed_market_config first; this row only fallback for un-configured markets. Edit the row in speed_market_config table directly via SQL until /admin/markets-config ships.{" "}
+            </span>
+          )}
+          {getHintForFee(fee)}
+        </p>
       </div>
       <div className="flex items-center gap-3 ml-4">
-        <span className="text-base font-bold font-[family-name:var(--font-manrope)] text-[var(--yes)] tabular-nums">
+        <span className={`text-base font-bold font-[family-name:var(--font-manrope)] tabular-nums ${isDeprecated ? "text-amber-700" : "text-[var(--yes)]"}`}>
           {formatRate(fee)}
         </span>
         <span className="material-symbols-outlined text-sm text-[#a9b4b9] group-hover:text-[#566166] transition-colors">

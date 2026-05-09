@@ -31,6 +31,29 @@ export default async function AdminFeesPage() {
         </p>
       </div>
 
+      {/* Phase 2C banner — alert admin that several keys are now per-market */}
+      <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+        <div className="flex items-start gap-3">
+          <span className="material-symbols-outlined text-amber-600 text-xl">info</span>
+          <div className="text-sm text-amber-900">
+            <p className="font-semibold">Some keys moved to per-(asset, duration) config (mig 0049–0051).</p>
+            <p className="mt-1">
+              Spread, soft-block, late-window multipliers, reject windows, payout caps,
+              cashout coefficients, stake max, and per-side pool % are now read from{" "}
+              <code className="px-1 py-0.5 bg-amber-100 rounded">speed_market_config</code>{" "}
+              per (asset, duration). Edits to the corresponding keys below are
+              effectively dead for BTC-5m, BTC-1m, and GOLD-5m. A dedicated{" "}
+              <code className="px-1 py-0.5 bg-amber-100 rounded">/admin/markets-config</code>{" "}
+              page is on the UX-redesign roadmap. Until then, edit those values
+              directly via SQL or wait for the new admin UI.
+            </p>
+            <p className="mt-1 text-xs text-amber-700">
+              Affected keys are tagged below with ⚠ <em>Per-market</em>.
+            </p>
+          </div>
+        </div>
+      </div>
+
       <FeeConfigEditor fees={legacyShape as never[]} />
     </div>
   );
