@@ -305,13 +305,58 @@ function MarketTab({ row }: { row: MarketRow }) {
   const dirty = Object.keys(buildDiff()).length > 0;
 
   const handleSave = async () => {
-    setSaving(true);
-    setMessage(null);
     const diff = buildDiff();
     if (Object.keys(diff).length === 0) {
       setSaving(false);
       return;
     }
+
+    // Master switch confirmation — toggling the enabled flag is high
+    // blast radius (auto-cascades to asset gate + global flag, can take
+    // a market live with real money or kill one full of open positions).
+    // Require explicit confirmation before saving when enabled changes.
+    if (diff.enabled !== undefined) {
+      const turningOn = diff.enabled === true;
+      const lines: string[] = [];
+      if (turningOn) {
+        lines.push(`Turn ON ${draft.asset} · ${draft.duration} for users?`);
+        lines.push("");
+        lines.push("This will cascade automatically:");
+        lines.push("  • Set speed_market_config.enabled = TRUE");
+        if (draft.asset === "GOLD") {
+          lines.push("  • Set speed_assets.GOLD.enabled = TRUE");
+          lines.push("  • Set speed_gold_markets_enabled = 1");
+          lines.push("  • Worker redeploy required (PAXG ticks)");
+        }
+        if (draft.duration === "1m") {
+          lines.push("  • Set speed_1m_markets_enabled = 1");
+        }
+        lines.push("");
+        lines.push("Real users will see this market in seconds.");
+        lines.push("Real money will start flowing through it.");
+      } else {
+        lines.push(`Turn OFF ${draft.asset} · ${draft.duration} for users?`);
+        lines.push("");
+        lines.push("This will:");
+        lines.push("  • Set speed_market_config.enabled = FALSE");
+        lines.push("  • Stop opening new markets of this type");
+        lines.push("  • Existing OPEN positions resolve normally (NOT cancelled)");
+        lines.push("  • Asset gate + global flag stay ON (other markets may need them)");
+        lines.push("");
+        lines.push("Frontend tab disappears. Existing positions are safe.");
+      }
+      lines.push("");
+      lines.push("Type YES to confirm.");
+
+      const confirmation = window.prompt(lines.join("\n"));
+      if (confirmation !== "YES") {
+        setMessage({ kind: "err", text: "Cancelled. No changes saved." });
+        return;
+      }
+    }
+
+    setSaving(true);
+    setMessage(null);
     try {
       const res = await fetch(
         `/api/admin/markets-config/${draft.asset}/${draft.duration}`,
