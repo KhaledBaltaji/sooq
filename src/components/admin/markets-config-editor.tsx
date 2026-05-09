@@ -66,16 +66,22 @@ type FieldGroup = {
   }>;
 };
 
-const FIELD_GROUPS: ReadonlyArray<FieldGroup> = [
-  {
-    title: "Stake & payout bounds",
-    fields: [
-      { key: "stake_min_usd", label: "Stake min ($)", hint: "Smallest allowed bet.", step: 1 },
-      { key: "stake_max_usd", label: "Stake max ($)", hint: "Hard ceiling per ticket. Dynamic stake formula throttles below this for capped outcomes.", step: 1 },
-      { key: "payout_max_usd", label: "Payout max ($)", hint: "Max payout-if-won per ticket.", step: 1 },
-      { key: "cap_per_side_usd", label: "Per-user per-side cap ($)", hint: "Max combined liability per user per market per side.", step: 1 },
-    ],
-  },
+// Phase 5J — split into ESSENTIAL_GROUP (visible by default) and
+// ADVANCED_GROUPS (collapsed inside per-tab "Advanced" section).
+// Hidden values for each market are in docs/CONFIG_HIDDEN.md.
+
+const ESSENTIAL_GROUP: FieldGroup = {
+  title: "Stake & payout bounds",
+  hint: "The four operator dials per market. Edit weekly/monthly as the platform grows.",
+  fields: [
+    { key: "stake_min_usd", label: "Stake min ($)", hint: "Smallest allowed bet.", step: 1 },
+    { key: "stake_max_usd", label: "Stake max ($)", hint: "Hard ceiling per ticket. Dynamic stake formula throttles below this for capped outcomes.", step: 1 },
+    { key: "payout_max_usd", label: "Payout max ($)", hint: "Max payout-if-won per ticket.", step: 1 },
+    { key: "cap_per_side_usd", label: "Per-user per-side cap ($)", hint: "Max combined liability per user per market per side.", step: 1 },
+  ],
+};
+
+const ADVANCED_GROUPS: ReadonlyArray<FieldGroup> = [
   {
     title: "Risk caps",
     fields: [
@@ -125,6 +131,10 @@ const FIELD_GROUPS: ReadonlyArray<FieldGroup> = [
     ],
   },
 ];
+
+// Combined for diff/save logic — order matters only for visual display
+// (essentials first, then advanced when expanded).
+const FIELD_GROUPS: ReadonlyArray<FieldGroup> = [ESSENTIAL_GROUP, ...ADVANCED_GROUPS];
 
 export function MarketsConfigEditor({ markets }: { markets: MarketRow[] }) {
   const [activeKey, setActiveKey] = useState<string>(() => {
@@ -284,54 +294,22 @@ function MarketTab({ row }: { row: MarketRow }) {
         </label>
       </div>
 
-      {FIELD_GROUPS.map((group) => (
-        <fieldset
-          key={group.title}
-          className="border border-[#e8eff3] rounded-lg p-4"
-        >
-          <legend className="px-2 text-xs font-bold uppercase tracking-[0.18em] text-[#566166]">
-            {group.title}
-          </legend>
-          {group.hint && (
-            <p className="text-xs text-[#566166] mb-3">{group.hint}</p>
-          )}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {group.fields.map((f) => {
-              const value = draft[f.key];
-              const orig = original[f.key];
-              const changed = value !== orig;
-              return (
-                <label key={f.key} className="block text-xs">
-                  <div className="flex items-baseline justify-between">
-                    <span className="font-semibold text-[#2a3439]">
-                      {f.label}
-                    </span>
-                    {changed && (
-                      <span className="text-[10px] text-amber-700 font-bold">
-                        was {String(orig)}
-                      </span>
-                    )}
-                  </div>
-                  <input
-                    type="number"
-                    step={f.step ?? "any"}
-                    value={Number(value)}
-                    onChange={(e) =>
-                      setField(f.key, Number(e.target.value))
-                    }
-                    className={`mt-1 w-full rounded-md border px-3 py-2 font-mono text-sm tabular-nums ${
-                      changed
-                        ? "border-amber-400 bg-amber-50"
-                        : "border-[#e8eff3] bg-white"
-                    }`}
-                  />
-                  <p className="mt-1 text-[#566166]">{f.hint}</p>
-                </label>
-              );
-            })}
-          </div>
-        </fieldset>
-      ))}
+      {/* Essentials — always visible */}
+      <FieldGroupBlock
+        group={ESSENTIAL_GROUP}
+        draft={draft}
+        original={original}
+        setField={setField}
+      />
+
+      {/* Advanced — collapsed by default. Reference values + change SQL
+          in docs/CONFIG_HIDDEN.md. */}
+      <AdvancedFieldsSection
+        groups={ADVANCED_GROUPS}
+        draft={draft}
+        original={original}
+        setField={setField}
+      />
 
       <fieldset className="border border-[#e8eff3] rounded-lg p-4">
         <legend className="px-2 text-xs font-bold uppercase tracking-[0.18em] text-[#566166]">
@@ -383,6 +361,133 @@ function MarketTab({ row }: { row: MarketRow }) {
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+function FieldGroupBlock({
+  group,
+  draft,
+  original,
+  setField,
+}: {
+  group: FieldGroup;
+  draft: MarketRow;
+  original: MarketRow;
+  setField: (k: EditableNumericKey, v: number) => void;
+}) {
+  return (
+    <fieldset className="border border-[#e8eff3] rounded-lg p-4">
+      <legend className="px-2 text-xs font-bold uppercase tracking-[0.18em] text-[#566166]">
+        {group.title}
+      </legend>
+      {group.hint && <p className="text-xs text-[#566166] mb-3">{group.hint}</p>}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {group.fields.map((f) => {
+          const value = draft[f.key];
+          const orig = original[f.key];
+          const changed = value !== orig;
+          return (
+            <label key={f.key} className="block text-xs">
+              <div className="flex items-baseline justify-between">
+                <span className="font-semibold text-[#2a3439]">{f.label}</span>
+                {changed && (
+                  <span className="text-[10px] text-amber-700 font-bold">
+                    was {String(orig)}
+                  </span>
+                )}
+              </div>
+              <input
+                type="number"
+                step={f.step ?? "any"}
+                value={Number(value)}
+                onChange={(e) => setField(f.key, Number(e.target.value))}
+                className={`mt-1 w-full rounded-md border px-3 py-2 font-mono text-sm tabular-nums ${
+                  changed
+                    ? "border-amber-400 bg-amber-50"
+                    : "border-[#e8eff3] bg-white"
+                }`}
+              />
+              <p className="mt-1 text-[#566166]">{f.hint}</p>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
+function AdvancedFieldsSection({
+  groups,
+  draft,
+  original,
+  setField,
+}: {
+  groups: ReadonlyArray<FieldGroup>;
+  draft: MarketRow;
+  original: MarketRow;
+  setField: (k: EditableNumericKey, v: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  // Count changed fields inside Advanced — surface that count on the
+  // collapsed header so a slip-edit can never go invisible.
+  const advancedKeys = groups.flatMap((g) => g.fields.map((f) => f.key));
+  const changedCount = advancedKeys.reduce(
+    (acc, k) => (draft[k] !== original[k] ? acc + 1 : acc),
+    0,
+  );
+  const totalCount = advancedKeys.length;
+
+  return (
+    <div className="rounded-lg border border-amber-200/60 bg-amber-50/40 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-amber-50 transition-colors text-left"
+      >
+        <div className="flex items-center gap-3">
+          <span className="material-symbols-outlined text-amber-700 text-lg">
+            tune
+          </span>
+          <div>
+            <p className="text-sm font-bold text-[#2a3439]">
+              Advanced (statistical) — {totalCount} fields
+            </p>
+            <p className="text-xs text-[#566166]">
+              Pricing math, cashout coefficients, matrix calibration. Set
+              once; rarely touched. Reference values in{" "}
+              <code>docs/CONFIG_HIDDEN.md</code>.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          {changedCount > 0 && (
+            <span className="text-[10px] font-bold uppercase tracking-widest text-amber-900 bg-amber-200 px-2.5 py-1 rounded-full">
+              {changedCount} edited
+            </span>
+          )}
+          <span
+            className="material-symbols-outlined text-amber-700 text-lg transition-transform duration-200"
+            style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+          >
+            expand_more
+          </span>
+        </div>
+      </button>
+      {open && (
+        <div className="border-t border-amber-200/60 p-4 space-y-4 bg-white">
+          {groups.map((g) => (
+            <FieldGroupBlock
+              key={g.title}
+              group={g}
+              draft={draft}
+              original={original}
+              setField={setField}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

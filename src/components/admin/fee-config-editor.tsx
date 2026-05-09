@@ -414,18 +414,23 @@ interface FeeGroup {
   types: string[];
 }
 
-const FEE_GROUPS: FeeGroup[] = [
+// Phase 5J — split into PRIMARY (always visible) + ADVANCED (collapsed).
+// Primary = operator decisions (touch monthly / on-incident). Advanced =
+// pricing-engine math + deprecated per-market keys (set once, never touch).
+// Hidden keys are documented in docs/CONFIG_HIDDEN.md.
+
+const PRIMARY_FEE_GROUPS: FeeGroup[] = [
   {
     key: "money",
-    title: "Deposits & Withdrawals",
-    subtitle: "Fees on money in and out",
+    title: "Money Fees",
+    subtitle: "Deposit + withdrawal cuts",
     icon: "account_balance",
     types: ["deposit_fee", "withdrawal_fee"],
   },
   {
     key: "speed_master",
-    title: "Speed Master Switches",
-    subtitle: "Kill switches + oracle freshness gate",
+    title: "Kill Switches",
+    subtitle: "Markets / cashout master switches + oracle freshness gate",
     icon: "bolt",
     types: [
       "speed_markets_enabled",
@@ -434,21 +439,9 @@ const FEE_GROUPS: FeeGroup[] = [
     ],
   },
   {
-    key: "speed_stake_caps",
-    title: "Speed Stake Caps",
-    subtitle: "Per-bet ceilings and per-user-per-market caps",
-    icon: "shield",
-    types: [
-      "speed_stake_max_5m_usd",
-      "speed_stake_max_1h_usd",
-      "speed_cap_per_side_usd",
-      "speed_stake_max_usd",
-    ],
-  },
-  {
     key: "speed_pool_caps",
-    title: "Speed Pool Caps",
-    subtitle: "Pool-wide collateral and exposure limits (mig 0028)",
+    title: "Risk Caps",
+    subtitle: "Pool size, per-side cap %, cluster cap %, legacy daily NGR floor",
     icon: "account_balance_wallet",
     types: [
       "speed_pool_collateral_usd",
@@ -458,12 +451,60 @@ const FEE_GROUPS: FeeGroup[] = [
     ],
   },
   {
+    key: "speed_ngr_breaker",
+    title: "NGR Breaker",
+    subtitle: "Three-tier daily-loss circuit (alert / reduce stake / hard stop)",
+    icon: "warning",
+    types: [
+      "speed_daily_ngr_alert_usd",
+      "speed_daily_ngr_soft_block_usd",
+      "speed_daily_ngr_hard_stop_usd",
+      "speed_ngr_soft_block_stake_max_usd",
+    ],
+  },
+  {
+    key: "speed_soft_guards",
+    title: "Per-User Soft Guards",
+    subtitle: "Velocity + exposure + daily-handle alert tripwire",
+    icon: "speed",
+    types: [
+      "speed_per_user_velocity_max",
+      "speed_per_user_open_exposure_pct",
+      "speed_per_user_daily_handle_alert",
+    ],
+  },
+  {
+    key: "speed_payout_caps",
+    title: "Per-Ticket Payout Caps",
+    subtitle: "Maximum gross payout per single ticket — blast-radius cap",
+    icon: "shield",
+    types: [
+      "speed_entry_max_payout_usd_5m",
+      "speed_entry_max_payout_usd_1h",
+    ],
+  },
+  {
+    key: "speed_master_flags",
+    title: "Master Flags",
+    subtitle: "Set once at launch; flip only during pricing incidents",
+    icon: "toggle_on",
+    types: [
+      "speed_pricing_matrix_enabled",
+      "speed_pricing_asym_pushup_enabled",
+      "speed_entry_soft_block_enabled",
+      "speed_use_realized_vol",
+      "speed_iv_fail_closed",
+    ],
+  },
+];
+
+const ADVANCED_FEE_GROUPS: FeeGroup[] = [
+  {
     key: "speed_pricing",
-    title: "Speed Pricing Engine",
-    subtitle: "Spread, late-window mults, hard-reject thresholds (mig 0028)",
+    title: "Pricing Engine internals",
+    subtitle: "Hard-reject thresholds, late-window multipliers, near-decided guards",
     icon: "tune",
     types: [
-      "speed_spread_pct",
       "speed_extreme_spread_coeff",
       "speed_late_60s_spread_mult",
       "speed_late_30s_spread_mult",
@@ -472,12 +513,38 @@ const FEE_GROUPS: FeeGroup[] = [
       "speed_late_30s_imbalance_reject",
       "speed_cashout_late_30s_imbalance_reject",
       "speed_cashout_late_reject_s",
+      "speed_spread_pct",
     ],
   },
   {
-    key: "speed_cashout_margins",
-    title: "Speed Cashout Margins",
-    subtitle: "Profit-based margin (option C, mig 0028)",
+    key: "speed_matrix_internals",
+    title: "Matrix pricing — statistical knobs",
+    subtitle: "Bayesian prior strength, sample-size floor, CI cap, soft-block thresholds",
+    icon: "analytics",
+    types: [
+      "speed_pricing_matrix_version",
+      "speed_pricing_matrix_min_n_eff",
+      "speed_pricing_matrix_ci_max_width",
+      "speed_pricing_matrix_prior_n",
+      "speed_entry_soft_block_threshold",
+      "speed_entry_soft_block_unlock_threshold",
+      "speed_cashout_cap_edge_threshold",
+    ],
+  },
+  {
+    key: "speed_iv",
+    title: "IV / volatility internals",
+    subtitle: "Fallback BTC vol, drift tolerance",
+    icon: "timeline",
+    types: [
+      "speed_iv_btc",
+      "speed_iv_drift_tolerance_pct",
+    ],
+  },
+  {
+    key: "speed_cashout_margins_legacy",
+    title: "Cashout margin coefficients (deprecated — per-market)",
+    subtitle: "Read from speed_market_config first; rows here only fallback for un-configured markets",
     icon: "redeem",
     types: [
       "speed_cashout_winning_base_5m",
@@ -491,70 +558,20 @@ const FEE_GROUPS: FeeGroup[] = [
     ],
   },
   {
-    key: "speed_iv",
-    title: "Speed IV / Volatility",
-    subtitle: "RV cache controls and parity tolerances (mig 0029, 0030)",
-    icon: "timeline",
-    types: [
-      "speed_use_realized_vol",
-      "speed_iv_fail_closed",
-      "speed_iv_btc",
-      "speed_iv_drift_tolerance_pct",
-    ],
-  },
-  {
-    key: "speed_soft_guards",
-    title: "Speed Soft Guards",
-    subtitle: "Per-user velocity, exposure, and daily-handle alerts (mig 0031)",
-    icon: "speed",
-    types: [
-      "speed_per_user_velocity_max",
-      "speed_per_user_open_exposure_pct",
-      "speed_per_user_daily_handle_alert",
-    ],
-  },
-  // ── Mig 0034: pricing engine v3 ──
-  {
-    key: "speed_matrix_pricing",
-    title: "Speed Matrix Pricing (mig 0034)",
-    subtitle: "Empirical-matrix pricing + asymmetric push-up + soft-block. DANGER ZONE.",
-    icon: "matrix",
-    types: [
-      "speed_pricing_matrix_enabled",
-      "speed_pricing_asym_pushup_enabled",
-      "speed_pricing_matrix_version",
-      "speed_pricing_matrix_min_n_eff",
-      "speed_pricing_matrix_ci_max_width",
-      "speed_pricing_matrix_prior_n",
-      "speed_entry_soft_block_enabled",
-      "speed_entry_soft_block_threshold",
-      "speed_entry_soft_block_unlock_threshold",
-      "speed_cashout_cap_edge_threshold",
-    ],
-  },
-  {
-    key: "speed_payout_caps",
-    title: "Speed Per-Ticket Payout Caps (mig 0034)",
-    subtitle: "Maximum gross payout per single ticket — blast-radius cap",
+    key: "speed_stake_caps_legacy",
+    title: "Stake caps (deprecated — per-market)",
+    subtitle: "Read from speed_market_config first; rows here only fallback",
     icon: "shield",
     types: [
-      "speed_entry_max_payout_usd_5m",
-      "speed_entry_max_payout_usd_1h",
-    ],
-  },
-  {
-    key: "speed_ngr_breaker",
-    title: "Speed Three-Tier NGR Breaker (mig 0034)",
-    subtitle: "Alert / soft-block / hard-stop tiers when daily NGR drops",
-    icon: "warning",
-    types: [
-      "speed_daily_ngr_alert_usd",
-      "speed_daily_ngr_soft_block_usd",
-      "speed_daily_ngr_hard_stop_usd",
-      "speed_ngr_soft_block_stake_max_usd",
+      "speed_stake_max_5m_usd",
+      "speed_stake_max_1h_usd",
+      "speed_cap_per_side_usd",
+      "speed_stake_max_usd",
     ],
   },
 ];
+
+const FEE_GROUPS: FeeGroup[] = [...PRIMARY_FEE_GROUPS, ...ADVANCED_FEE_GROUPS];
 
 // ── Components ─────────────────────────────────────────────────
 
@@ -666,10 +683,16 @@ export function FeeConfigEditor({ fees }: FeeConfigEditorProps) {
   const groupedTypes = new Set(FEE_GROUPS.flatMap((g) => g.types));
   const ungrouped = fees.filter((f) => !groupedTypes.has(f.fee_type));
 
+  const advancedFeeCount = ADVANCED_FEE_GROUPS.reduce(
+    (acc, g) => acc + getFeesForGroup(g).length,
+    0,
+  );
+
   return (
     <>
       <div className="space-y-4">
-        {FEE_GROUPS.map((group, i) => (
+        {/* Primary groups — always visible */}
+        {PRIMARY_FEE_GROUPS.map((group, i) => (
           <CollapsibleSection
             key={group.key}
             group={group}
@@ -678,6 +701,16 @@ export function FeeConfigEditor({ fees }: FeeConfigEditorProps) {
             onEditFee={setEditingFee}
           />
         ))}
+
+        {/* Advanced super-group — collapsed by default; contains all
+            statistical knobs + deprecated per-market keys. Hidden values
+            are documented in docs/CONFIG_HIDDEN.md. */}
+        <AdvancedFeeSection
+          groups={ADVANCED_FEE_GROUPS}
+          getFeesForGroup={getFeesForGroup}
+          totalCount={advancedFeeCount}
+          onEditFee={setEditingFee}
+        />
 
         {ungrouped.length > 0 && (
           <CollapsibleSection
@@ -703,5 +736,67 @@ export function FeeConfigEditor({ fees }: FeeConfigEditorProps) {
         />
       )}
     </>
+  );
+}
+
+function AdvancedFeeSection({
+  groups,
+  getFeesForGroup,
+  totalCount,
+  onEditFee,
+}: {
+  groups: FeeGroup[];
+  getFeesForGroup: (g: FeeGroup) => FeeRow[];
+  totalCount: number;
+  onEditFee: (fee: FeeRow) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className="bg-amber-50/40 rounded-xl border border-amber-200/60 overflow-hidden">
+        <CollapsibleTrigger className="w-full flex items-center justify-between px-6 py-4 hover:bg-amber-50 transition-colors cursor-pointer">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-amber-100 rounded-lg flex items-center justify-center">
+              <span className="material-symbols-outlined text-amber-700 text-lg">
+                tune
+              </span>
+            </div>
+            <div className="text-left">
+              <p className="text-sm font-bold text-[#2a3439]">
+                Advanced — internal pricing knobs
+              </p>
+              <p className="text-xs text-[#566166]">
+                Statistical / deprecated keys. Set once; rarely touched.
+                Reference values in <code>docs/CONFIG_HIDDEN.md</code>.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-amber-800 bg-amber-100 px-2.5 py-1 rounded-full">
+              {totalCount} hidden
+            </span>
+            <span
+              className="material-symbols-outlined text-amber-700 text-lg transition-transform duration-200"
+              style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+            >
+              expand_more
+            </span>
+          </div>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="border-t border-amber-200/60 p-3 space-y-3 bg-white">
+            {groups.map((group) => (
+              <CollapsibleSection
+                key={group.key}
+                group={group}
+                fees={getFeesForGroup(group)}
+                defaultOpen={false}
+                onEditFee={onEditFee}
+              />
+            ))}
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
   );
 }

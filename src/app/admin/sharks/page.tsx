@@ -298,26 +298,11 @@ export default async function AdminSharksPage() {
           95% Jeffreys interval. Shading fires only when CI low &gt; gate
           AND settled ≥ floor.
         </p>
-        <p>
-          <strong>Manual override:</strong> SQL until /admin/sharks gets the
-          edit modal:
-          <br />
-          <code className="text-xs">
-            UPDATE speed_user_edge_scores SET manual_shading_factor = 0.10,
-            manual_override_until = NOW() + INTERVAL &apos;30 days&apos;,
-            manual_override_reason = &apos;…&apos; WHERE user_id =
-            &apos;…&apos;;
-          </code>
-        </p>
-        <p>
-          <strong>Exempt:</strong>
-          <br />
-          <code className="text-xs">
-            UPDATE speed_user_edge_scores SET manual_shading_factor = NULL,
-            manual_override_until = NOW() + INTERVAL &apos;30 days&apos;,
-            manual_override_reason = &apos;exempt&apos; WHERE user_id =
-            &apos;…&apos;;
-          </code>
+        <p className="text-[#717c82]">
+          Manual override + exempt workflows are documented in{" "}
+          <code>docs/CONFIG_HIDDEN.md</code> → &quot;Sharks override&quot;
+          section. A proper override RPC + audit trail will land in a follow-up
+          sprint.
         </p>
       </div>
     </div>

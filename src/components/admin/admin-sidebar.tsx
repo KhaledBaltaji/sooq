@@ -58,7 +58,7 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     group: "People",
     items: [
       { key: "users", href: "/admin/users", icon: "group", label: "Users" },
-      { key: "sharks", href: "/admin/sharks", icon: "shield_warning", label: "Sharks (CLV)" },
+      { key: "sharks", href: "/admin/sharks", icon: "gpp_maybe", label: "Sharks (CLV)" },
     ],
   },
   {
