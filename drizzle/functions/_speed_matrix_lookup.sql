@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0034_pricing_engine_v3.sql:177
--- Last extracted: 2026-05-09T14:16:57.495Z
+-- Last extracted: 2026-05-09T16:57:12.204Z
 CREATE OR REPLACE FUNCTION public._speed_matrix_lookup(p_asset text, p_duration speed_duration, p_dist_pct double precision, p_secs_left double precision)
  RETURNS TABLE(p_over double precision, n_eff integer, ci_width double precision, qualifies boolean, version_id integer)
  LANGUAGE plpgsql

@@ -1,0 +1,7 @@
+{
+  "required_extensions": ["pg_cron"],
+  "required_functions": ["_speed_recalibrate_matrix"],
+  "required_jobs_present": [
+    "speed_recalibrate_matrix_btc_5m"
+  ]
+}

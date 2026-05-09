@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0034_pricing_engine_v3.sql:532
--- Last extracted: 2026-05-09T14:16:55.329Z
+-- Last extracted: 2026-05-09T16:57:10.822Z
 CREATE OR REPLACE FUNCTION public.speed_execute_trade(p_market_id uuid, p_side text, p_stake numeric, p_idempotency_key text DEFAULT NULL::text, p_expected_iv numeric DEFAULT NULL::numeric, p_expected_spot numeric DEFAULT NULL::numeric, p_expected_seconds_left_bucket integer DEFAULT NULL::integer, p_expected_fair_prob numeric DEFAULT NULL::numeric, p_expected_offered_prob numeric DEFAULT NULL::numeric)
  RETURNS jsonb
  LANGUAGE plpgsql

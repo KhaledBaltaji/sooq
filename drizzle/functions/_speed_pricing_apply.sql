@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0034_pricing_engine_v3.sql:262 + commit 38922ce
--- Last extracted: 2026-05-09T14:16:57.183Z
+-- Last extracted: 2026-05-09T16:57:12.009Z
 CREATE OR REPLACE FUNCTION public._speed_pricing_apply(p_asset text, p_duration speed_duration, p_side text, p_dist_pct double precision, p_secs_left double precision, p_bsm_prob_side double precision, p_widened_spread double precision, p_mode text, p_market_id uuid DEFAULT NULL::uuid)
  RETURNS TABLE(mark_prob double precision, offered_prob double precision, matrix_used boolean, matrix_version integer, soft_blocked boolean)
  LANGUAGE plpgsql

@@ -1,0 +1,9 @@
+{
+  "expected_jobs": [
+    "speed_recalibrate_matrix_btc_5m",
+    "speed_recalibrate_matrix_btc_1m",
+    "speed_recalibrate_matrix_gold_5m",
+    "speed_recalibrate_matrix_gold_1m"
+  ],
+  "expected_active_count": 4
+}

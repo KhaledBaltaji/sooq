@@ -4,42 +4,32 @@
 # Deploy the speed-oracle worker (services/speed-oracle/) to EC2 for the
 # Phase 5A PAXG/USDT multi-asset rollout.
 #
-# What this script does:
-#   1. SSH to the EC2 oracle host
-#   2. Pull latest from origin/staging
-#   3. cd to services/speed-oracle/, npm ci + npm run build
-#   4. Restart the speed-oracle systemd service
-#   5. Stream logs for 30 seconds so you can verify the multi-asset boot
-#   6. Curl the /health endpoint to confirm both BTC and GOLD streams alive
+# Layout per docs/AWS_RESOURCES.md:
+#   - EC2 box runs `/opt/speed-oracle/dist/index.js` via systemd
+#   - It is an RSYNC TARGET, not a git checkout
+#   - `/etc/speed-oracle.env` is owned by root; never touched by deploy
+#   - SG `sg-0a4270ac6977f474a` must allow YOUR ip on port 22 (+ 3000 for /health)
 #
-# Pre-requisites on YOUR machine:
-#   - SSH key at ~/.ssh/sooq-oracle.pem (chmod 400)
-#   - The EC2 instance running at 63.183.214.217
-#   - Code already pushed to origin/staging
-#
-# Pre-requisites on the EC2 instance (one-time setup):
-#   - The repo cloned at /opt/speed-oracle (or wherever services/speed-oracle
-#     lives — adjust REMOTE_REPO_PATH below if different)
-#   - systemd unit speed-oracle.service exists and runs `node dist/index.js`
-#   - Node 20+ installed
-#   - DATABASE_URL + SENTRY_DSN exported in the systemd unit
-#
-# To activate gold (when ready):
-#   1. ssh to RDS staging and run: UPDATE speed_assets SET enabled=TRUE WHERE id='GOLD';
-#   2. Re-run this script — worker re-reads enabled assets at boot, picks up GOLD
-#   3. UPDATE fee_config SET rate=1 WHERE fee_type='speed_gold_markets_enabled';
+# Flow:
+#   1. Local: npm ci + npm run build inside services/speed-oracle/
+#   2. Snapshot remote /opt/speed-oracle/ → /opt/speed-oracle.bak/ (atomic rollback)
+#   3. Rsync dist/, node_modules/, package.json to /opt/speed-oracle/
+#   4. systemctl restart speed-oracle.service
+#   5. Stream logs (30s) + curl /health
 #
 # Rollback:
 #   bash scripts/deploy-paxg-oracle.sh --rollback
-# (rolls EC2 back to previous git HEAD and restarts service)
+#   (swaps .bak back into place + restart)
 
 set -euo pipefail
 
 EC2_HOST="ec2-user@63.183.214.217"
 SSH_KEY="${HOME}/.ssh/sooq-oracle.pem"
-REMOTE_REPO_PATH="/opt/sooq"   # adjust to wherever the Sooq repo lives on EC2
+REMOTE_DIR="/opt/speed-oracle"
+REMOTE_BAK="/opt/speed-oracle.bak"
 SERVICE_NAME="speed-oracle"
-HEALTH_URL_LOCAL="http://localhost:3000/health"  # health endpoint inside the worker
+HEALTH_URL_LOCAL="http://localhost:3000/health"
+LOCAL_WORKER_DIR="$(cd "$(dirname "$0")/.." && pwd)/services/speed-oracle"
 
 # ANSI colors
 RED='\033[0;31m'
@@ -53,103 +43,141 @@ ok()  { echo -e "${GREEN}[deploy]${NC} $*"; }
 warn(){ echo -e "${YELLOW}[deploy]${NC} $*"; }
 err() { echo -e "${RED}[deploy]${NC} $*" >&2; }
 
+# ────────────────────────────────────────────────────────────────────
+# Pre-flight
+# ────────────────────────────────────────────────────────────────────
+
 if [ ! -f "$SSH_KEY" ]; then
   err "SSH key not found at $SSH_KEY"
   exit 1
 fi
 chmod 400 "$SSH_KEY" 2>/dev/null || true
 
+if [ ! -d "$LOCAL_WORKER_DIR" ]; then
+  err "Local worker dir not found: $LOCAL_WORKER_DIR"
+  exit 1
+fi
+
+SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+
 # ────────────────────────────────────────────────────────────────────
 # Rollback path
 # ────────────────────────────────────────────────────────────────────
 
 if [ "${1:-}" = "--rollback" ]; then
-  warn "ROLLBACK requested. Reverting EC2 to previous HEAD..."
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new "$EC2_HOST" bash <<EOF
+  warn "ROLLBACK requested. Swapping $REMOTE_BAK -> $REMOTE_DIR ..."
+  ssh "${SSH_OPTS[@]}" "$EC2_HOST" bash <<EOF
 set -e
-cd $REMOTE_REPO_PATH
-echo "[remote] current HEAD: \$(git rev-parse --short HEAD)"
-git reset --hard HEAD~1
-echo "[remote] reverted to: \$(git rev-parse --short HEAD)"
-cd services/speed-oracle
-echo "[remote] installing all deps (build needs devDeps)..."
-npm ci --silent
-echo "[remote] building TypeScript..."
-npm run build
-echo "[remote] pruning to production deps..."
-npm prune --production --silent
-sudo systemctl restart $SERVICE_NAME.service
+if [ ! -d $REMOTE_BAK ]; then
+  echo "[remote] FATAL: no backup at $REMOTE_BAK"
+  exit 1
+fi
+sudo systemctl stop $SERVICE_NAME.service || true
+sudo rm -rf ${REMOTE_DIR}.failed 2>/dev/null || true
+sudo mv $REMOTE_DIR ${REMOTE_DIR}.failed
+sudo mv $REMOTE_BAK $REMOTE_DIR
+sudo systemctl start $SERVICE_NAME.service
 sleep 3
-sudo systemctl status $SERVICE_NAME.service --no-pager | head -20
+sudo systemctl status $SERVICE_NAME.service --no-pager | head -15
 EOF
-  ok "Rollback complete. Worker restarted on previous commit."
+  ok "Rollback complete. Worker restarted from previous snapshot."
   exit 0
 fi
 
 # ────────────────────────────────────────────────────────────────────
-# Forward deploy
+# 1. Local build
 # ────────────────────────────────────────────────────────────────────
 
-log "Connecting to $EC2_HOST..."
+log "Building worker locally in $LOCAL_WORKER_DIR ..."
+cd "$LOCAL_WORKER_DIR"
 
-# Step 1: pull + build + restart on EC2
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new "$EC2_HOST" bash <<EOF
-set -e
-cd $REMOTE_REPO_PATH
-echo "[remote] pre-pull HEAD: \$(git rev-parse --short HEAD)"
-# Defensive: bail loudly if EC2 has local mods (P1-3 from /investigate)
-if ! git diff-index --quiet HEAD --; then
-  echo "[remote] FATAL: uncommitted local changes on EC2. Inspect with: git status"
-  exit 1
-fi
-git fetch origin staging
-git checkout staging
-git pull --ff-only origin staging
-echo "[remote] post-pull HEAD: \$(git rev-parse --short HEAD)"
-echo "[remote] last commit: \$(git log -1 --oneline)"
+# Full deps for build (devDeps include tsc)
+npm ci --silent
 
-cd services/speed-oracle
-echo "[remote] installing deps..."
-npm ci --production --silent
-
-echo "[remote] building TypeScript..."
+# Compile TS -> dist/
 npm run build
 
-echo "[remote] restarting $SERVICE_NAME service..."
-sudo systemctl restart $SERVICE_NAME.service
+# Prune to production deps so node_modules/ shipped is lean
+npm prune --production --silent
 
-# Give the service 5s to boot before we check status
-sleep 5
+ok "Local build complete. dist/ + node_modules/ ready to ship."
 
-echo "[remote] service status:"
-sudo systemctl status $SERVICE_NAME.service --no-pager | head -15
+# ────────────────────────────────────────────────────────────────────
+# 2. Snapshot remote for rollback
+# ────────────────────────────────────────────────────────────────────
+
+log "Snapshotting remote $REMOTE_DIR -> $REMOTE_BAK ..."
+ssh "${SSH_OPTS[@]}" "$EC2_HOST" bash <<EOF
+set -e
+if [ -d $REMOTE_DIR ]; then
+  sudo rm -rf $REMOTE_BAK
+  sudo cp -a $REMOTE_DIR $REMOTE_BAK
+  echo "[remote] snapshot saved at $REMOTE_BAK"
+else
+  echo "[remote] no existing $REMOTE_DIR; first deploy"
+  sudo mkdir -p $REMOTE_DIR
+  sudo chown ec2-user:ec2-user $REMOTE_DIR
+fi
 EOF
 
-ok "Deploy step complete. Streaming logs for 30s to verify multi-asset boot..."
+# ────────────────────────────────────────────────────────────────────
+# 3. Rsync new build to remote
+# ────────────────────────────────────────────────────────────────────
 
-# Step 2: stream logs for 30s so user can see boot output (asset subscriptions, etc.)
-ssh -i "$SSH_KEY" "$EC2_HOST" "sudo journalctl -u $SERVICE_NAME.service -n 100 --since '1 minute ago' --no-pager" 2>&1 | tail -40
+log "Rsyncing dist/, node_modules/, package.json ..."
+# Use --delete on dist/ so removed files don't linger; node_modules/ uses
+# --delete-after to avoid races with running process file handles.
+rsync -avz --delete \
+  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new" \
+  "$LOCAL_WORKER_DIR/dist/" \
+  "$EC2_HOST:$REMOTE_DIR/dist/"
 
-ok "Checking /health endpoint..."
+rsync -avz --delete-after \
+  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new" \
+  "$LOCAL_WORKER_DIR/node_modules/" \
+  "$EC2_HOST:$REMOTE_DIR/node_modules/"
 
-# Step 3: curl /health from the EC2 host (worker listens on localhost:3000)
-HEALTH_BODY=$(ssh -i "$SSH_KEY" "$EC2_HOST" "curl -s -m 5 $HEALTH_URL_LOCAL || echo '{}'")
+rsync -avz \
+  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new" \
+  "$LOCAL_WORKER_DIR/package.json" \
+  "$LOCAL_WORKER_DIR/package-lock.json" \
+  "$EC2_HOST:$REMOTE_DIR/"
+
+ok "Rsync complete."
+
+# ────────────────────────────────────────────────────────────────────
+# 4. Restart service
+# ────────────────────────────────────────────────────────────────────
+
+log "Restarting $SERVICE_NAME.service ..."
+ssh "${SSH_OPTS[@]}" "$EC2_HOST" "sudo systemctl restart $SERVICE_NAME.service && sleep 5 && sudo systemctl status $SERVICE_NAME.service --no-pager | head -15"
+
+# ────────────────────────────────────────────────────────────────────
+# 5. Verify (logs + /health)
+# ────────────────────────────────────────────────────────────────────
+
+ok "Tailing recent journalctl ..."
+ssh "${SSH_OPTS[@]}" "$EC2_HOST" "sudo journalctl -u $SERVICE_NAME.service -n 80 --since '1 minute ago' --no-pager" 2>&1 | tail -50
+
+ok "Checking /health endpoint ..."
+HEALTH_BODY=$(ssh "${SSH_OPTS[@]}" "$EC2_HOST" "curl -s -m 5 $HEALTH_URL_LOCAL || echo '{}'")
 echo "$HEALTH_BODY" | python3 -m json.tool 2>/dev/null || echo "$HEALTH_BODY"
 
-# Step 4: check connected status
 if echo "$HEALTH_BODY" | grep -q '"connected":true'; then
   ok "Worker is connected and streaming."
   if echo "$HEALTH_BODY" | grep -q '"GOLD"'; then
-    ok "GOLD asset is in the per_asset map. Gold ticks will flow when GOLD asset is enabled in DB."
+    ok "GOLD asset is in the per_asset map. Gold ticks will flow now."
   else
-    warn "GOLD not in per_asset map. Either speed_assets.GOLD.enabled=FALSE or worker hasn't picked it up. To activate gold:"
-    warn "  1. UPDATE speed_assets SET enabled=TRUE WHERE id='GOLD';"
-    warn "  2. Re-run this script."
+    warn "GOLD not in per_asset map. Either speed_assets.GOLD.enabled=FALSE or worker hasn't picked it up."
+    warn "  To activate: UPDATE speed_assets SET enabled=TRUE WHERE id='GOLD'; then re-run this script."
   fi
 else
-  err "Worker reports disconnected or unhealthy. Check journalctl on EC2."
+  err "Worker reports disconnected or unhealthy. Check journalctl on EC2:"
+  err "  ssh -i $SSH_KEY $EC2_HOST 'sudo journalctl -u $SERVICE_NAME.service -f'"
+  err "Rollback available: bash scripts/deploy-paxg-oracle.sh --rollback"
   exit 1
 fi
 
-ok "Deploy complete. Tail full logs:"
-echo "  ssh -i $SSH_KEY $EC2_HOST 'sudo journalctl -u $SERVICE_NAME.service -f'"
+ok "Deploy complete."
+echo "  Tail live: ssh -i $SSH_KEY $EC2_HOST 'sudo journalctl -u $SERVICE_NAME.service -f'"
+echo "  Rollback:  bash scripts/deploy-paxg-oracle.sh --rollback"
