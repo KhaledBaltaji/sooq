@@ -20,7 +20,9 @@ import { speedMarkets } from "@/lib/db/schema";
 const STATUSES = ["open", "resolving", "resolved", "voided"] as const;
 type SpeedStatus = (typeof STATUSES)[number];
 
-const DURATIONS = ["5m", "1h"] as const;
+// Phase 5B (mig 0046+0052): 1m + 5m active. 1h kept for legacy market display only
+// (mig 0040 stopped opening new 1h markets but historical positions still resolve).
+const DURATIONS = ["5m", "1m", "1h"] as const;
 type SpeedDuration = (typeof DURATIONS)[number];
 
 export async function GET(req: Request) {

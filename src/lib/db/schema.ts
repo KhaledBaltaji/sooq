@@ -29,10 +29,12 @@ import {
 // Enums
 // ============================================================================
 
-// Mig 0028+: enum mirrors the DB type (which has 5m / 15m / 1h / 24h — keeping
-// historical values for FK integrity). User-facing SpeedDuration type narrows
-// to '5m' | '1h' (mig 361 + 363 + 369). Trade RPC rejects 15m / 24h at runtime.
-export const speedDuration = pgEnum("speed_duration", ["5m", "15m", "1h", "24h"]);
+// Active durations: 5m + 1m. Legacy enum values kept for FK integrity.
+//   - 15m / 24h never wired (mig 361 + 363 + 369). Trade RPC rejects.
+//   - 1h killed in mig 0040 (legacy positions still resolve; cron stopped
+//     opening new 1h markets).
+//   - 1m added in mig 0045 (Sprint 3 1-minute markets).
+export const speedDuration = pgEnum("speed_duration", ["5m", "15m", "1h", "24h", "1m"]);
 export const speedSide = pgEnum("speed_side", ["over", "under"]);
 export const speedMarketStatus = pgEnum("speed_market_status", [
   "open",

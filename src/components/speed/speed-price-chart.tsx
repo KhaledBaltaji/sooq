@@ -119,11 +119,14 @@ export function SpeedPriceChart({
   // aggregation hides those gaps, so the two views looked like different
   // charts on the same market. Aligning bucket sizes makes both views
   // honest about the actual data density.
-  // Mig 0028+: durations are 5m + 1h. 5m uses 15s buckets, 1h uses 60s buckets.
-  // Older 15m/24h enum values can still appear in historical markets but new
-  // markets are limited to 5m + 1h.
+  // Phase 5B (mig 0052): per-duration bucket size for visual density.
+  //   1m → 1s buckets (60 candles per market lifetime — alive chart)
+  //   5m → 15s buckets (20 candles)
+  //   1h → 60s buckets (60 candles, legacy)
+  // Historical 15m/24h markets still fall through to the 15s default.
   const resolvedBucket =
-    bucketSeconds ?? (duration === "1h" ? 60 : 15);
+    bucketSeconds ??
+    (duration === "1h" ? 60 : duration === "1m" ? 1 : 15);
   const t = useTranslations("speed");
   const { candles, loading, error } = useSpeedPriceHistory(
     asset,

@@ -14,8 +14,10 @@ import { cn } from "@/lib/utils";
 import { SpeedMiniCard } from "@/components/speed/speed-mini-card";
 import { MarketsTable } from "@/components/speed/markets-table";
 
-// Sprint 0.6 (mig 0040): 1h markets killed; only 5m active.
-const DURATION_FILTERS = ["all", "5m"] as const;
+// Phase 5B (mig 0046+0052): 5m + 1m active. 1h killed in mig 0040.
+// 1m markets only roll when speed_1m_markets_enabled=1; until then the
+// 1m tab shows empty state.
+const DURATION_FILTERS = ["all", "5m", "1m"] as const;
 type DurationFilter = (typeof DURATION_FILTERS)[number];
 
 // Asset filter is here so we can light up Gold/ETH later without redoing

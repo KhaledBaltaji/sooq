@@ -17,8 +17,9 @@ import { OdometerNumber } from "./odometer-number";
 import { SpeedAssetIcon } from "./speed-asset-icon";
 import { SpeedPriceChart } from "./speed-price-chart";
 
-const ASSET_LABELS: Record<string, string> = { BTC: "Bitcoin" };
+const ASSET_LABELS: Record<string, string> = { BTC: "Bitcoin", GOLD: "Gold" };
 const DURATION_LABELS: Record<string, string> = {
+  "1m": "1m round",
   "5m": "5m round",
   "1h": "1h round",
 };
