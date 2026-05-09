@@ -321,8 +321,14 @@ function MarketTab({ row }: { row: MarketRow }) {
           body: JSON.stringify(diff),
         },
       );
+      type CascadeInfo = {
+        asset_enabled?: boolean;
+        gold_global_flag?: number;
+        onem_global_flag?: number;
+        worker_redeploy_required?: boolean;
+      };
       const json = (await res.json()) as
-        | { ok: true; updated_fields: string[] }
+        | { ok: true; updated_fields: string[]; cascade?: CascadeInfo }
         | { error: string; issues?: string[] };
       if (!res.ok || !("ok" in json)) {
         const issues =
@@ -330,9 +336,20 @@ function MarketTab({ row }: { row: MarketRow }) {
         const err = "error" in json ? json.error : "Save failed";
         setMessage({ kind: "err", text: `${err}${issues}` });
       } else {
+        const cascade = json.cascade ?? {};
+        const cascadeNotes: string[] = [];
+        if (cascade.asset_enabled === true) cascadeNotes.push(`enabled ${draft.asset} asset`);
+        if (cascade.gold_global_flag === 1) cascadeNotes.push("flipped global gold flag ON");
+        if (cascade.onem_global_flag === 1) cascadeNotes.push("flipped global 1m flag ON");
+        const cascadeText = cascadeNotes.length > 0
+          ? ` Cascade: ${cascadeNotes.join("; ")}.`
+          : "";
+        const workerNote = cascade.worker_redeploy_required
+          ? " ⚠ Worker redeploy required: run `bash scripts/deploy-paxg-oracle.sh` so PAXG ticks start streaming."
+          : "";
         setMessage({
           kind: "ok",
-          text: `Saved ${json.updated_fields.length} field${json.updated_fields.length === 1 ? "" : "s"}. Refresh to confirm.`,
+          text: `Saved ${json.updated_fields.length} field${json.updated_fields.length === 1 ? "" : "s"}.${cascadeText}${workerNote} Refresh to confirm.`,
         });
       }
     } catch (e) {
@@ -357,15 +374,33 @@ function MarketTab({ row }: { row: MarketRow }) {
             <code>{new Date(row.updated_at).toLocaleString()}</code>
           </p>
         </div>
-        <label className="inline-flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={draft.enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-            className="h-4 w-4"
-          />
-          <span className="font-medium">Market enabled</span>
-        </label>
+        <div className="text-right">
+          <label
+            className={`inline-flex items-center gap-2 text-sm cursor-pointer rounded-lg border px-3 py-2 ${
+              draft.enabled
+                ? "border-emerald-300 bg-emerald-50"
+                : "border-amber-300 bg-amber-50"
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={draft.enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span className="font-bold">
+              {draft.enabled ? "● Live to users" : "○ Hidden from users"}
+            </span>
+          </label>
+          {draft.enabled !== original.enabled && (
+            <p className="text-[10px] text-amber-700 mt-1 max-w-[260px]">
+              ⚠ Press <strong>Save changes</strong> below to apply.
+              {draft.enabled
+                ? " Saving will auto-flip asset gate + global feature flag."
+                : " Asset gate + global flag stay ON (other markets may use them)."}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Essentials — always visible */}

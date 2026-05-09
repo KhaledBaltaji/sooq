@@ -120,13 +120,85 @@ export async function PATCH(
 
     const setClause = sql.join(setFragments, sql`, `);
 
-    // Update inside a transaction so the audit log is atomic with the change.
-    const result = await db.execute<{ asset: string }>(sql`
-      UPDATE speed_market_config
-        SET ${setClause}, updated_at = NOW()
-      WHERE asset = ${asset} AND duration = ${duration}::speed_duration
-      RETURNING asset, duration
-    `);
+    // Cascade tracking — when `enabled` is in the patch, we also touch the
+    // asset gate + global feature flag so the toggle is a true master
+    // switch from the admin UI perspective.
+    const cascade: {
+      asset_enabled?: boolean;
+      gold_global_flag?: number;
+      onem_global_flag?: number;
+      worker_redeploy_required?: boolean;
+    } = {};
+
+    // Single transaction so toggle + cascade + audit log are atomic.
+    const result = await db.transaction(async (tx) => {
+      // 1. Update the per-row config
+      const r = await tx.execute<{ asset: string }>(sql`
+        UPDATE speed_market_config
+          SET ${setClause}, updated_at = NOW()
+        WHERE asset = ${asset} AND duration = ${duration}::speed_duration
+        RETURNING asset, duration
+      `);
+      if (r.rows.length === 0) {
+        throw new Error(`No speed_market_config row for ${asset} / ${duration}`);
+      }
+
+      // 2. Cascade — only when `enabled` was actually in the patch body
+      if (updates.enabled !== undefined) {
+        const enabling = updates.enabled === true;
+
+        if (enabling) {
+          // Turning ON: ensure ALL gates required for this market are ON
+          // - speed_assets.{asset}.enabled = TRUE
+          // - per-asset / per-duration global feature flag = 1
+          await tx.execute(sql`
+            UPDATE speed_assets SET enabled = TRUE
+            WHERE id = ${asset} AND enabled = FALSE
+          `);
+          cascade.asset_enabled = true;
+
+          if (asset === "GOLD") {
+            await tx.execute(sql`
+              UPDATE fee_config SET rate = 1
+              WHERE fee_type = 'speed_gold_markets_enabled' AND rate <> 1
+            `);
+            cascade.gold_global_flag = 1;
+            // Worker only streams PAXG if speed_assets.GOLD.enabled was TRUE
+            // at boot. If asset was just flipped here, worker needs restart.
+            cascade.worker_redeploy_required = true;
+          }
+          if (duration === "1m") {
+            await tx.execute(sql`
+              UPDATE fee_config SET rate = 1
+              WHERE fee_type = 'speed_1m_markets_enabled' AND rate <> 1
+            `);
+            cascade.onem_global_flag = 1;
+          }
+        } else {
+          // Turning OFF: only flip the per-row gate (already done above).
+          // We do NOT auto-flip the asset gate or global flag because
+          // OTHER markets of the same asset/duration might still be active.
+          // Admin can flip those separately if they want a full asset shutdown.
+          //
+          // Exception: if turning OFF the only remaining enabled market for
+          // an asset, the asset/global-flag stay ON but they're harmless
+          // (no markets to gate; cron skips them anyway).
+        }
+      }
+
+      // 3. Audit log — same transaction so no orphan logs
+      await tx.execute(sql`
+        INSERT INTO admin_action_log (admin_id, action, target_id, metadata)
+        VALUES (
+          ${admin.id}::uuid,
+          'markets_config_update',
+          NULL,
+          ${JSON.stringify({ asset, duration, updates, cascade })}::jsonb
+        )
+      `);
+
+      return r;
+    });
 
     if (result.rows.length === 0) {
       return NextResponse.json(
@@ -135,30 +207,12 @@ export async function PATCH(
       );
     }
 
-    // Best-effort audit log; never block the update on logging failure
-    try {
-      await db.execute(sql`
-        INSERT INTO admin_action_log (admin_id, action, target_id, metadata)
-        VALUES (
-          ${admin.id}::uuid,
-          'markets_config_update',
-          NULL,
-          ${JSON.stringify({ asset, duration, updates })}::jsonb
-        )
-      `);
-    } catch (e) {
-      logger.error(
-        "audit log failed for markets-config update",
-        { source: "admin/markets-config" },
-        e instanceof Error ? e : undefined,
-      );
-    }
-
     return NextResponse.json({
       ok: true,
       asset,
       duration,
       updated_fields: Object.keys(updates),
+      cascade,
     });
   } catch (err) {
     const r = authErrorToResponse(err);
