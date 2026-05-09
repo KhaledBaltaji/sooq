@@ -60,7 +60,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",
     "@next/eslint-plugin-next": "^16.2.4",
-    "@tailwindcss/postcss": "^4.2.2",
+    "@tailwindcss/postcss": "^4.3.0",
     "@tanstack/react-query-devtools": "^5.99.1",
     "@types/pg": "^8.11.0",
     "autoprefixer": "^10.4.27",
