@@ -136,7 +136,49 @@ const ADVANCED_GROUPS: ReadonlyArray<FieldGroup> = [
 // (essentials first, then advanced when expanded).
 const FIELD_GROUPS: ReadonlyArray<FieldGroup> = [ESSENTIAL_GROUP, ...ADVANCED_GROUPS];
 
-export function MarketsConfigEditor({ markets }: { markets: MarketRow[] }) {
+interface GlobalFlags {
+  speed_markets_enabled: boolean;
+  speed_1m_markets_enabled: boolean;
+  speed_gold_markets_enabled: boolean;
+}
+
+/**
+ * Compute the effective live state of a market by AND-ing the three gates.
+ * Returns either { live: true } or { live: false, blocker: "<reason>" } so
+ * the UI can show admins exactly which gate is dark.
+ */
+function effectiveState(
+  row: MarketRow,
+  assetEnabled: Record<string, boolean>,
+  flags: GlobalFlags,
+): { live: boolean; blocker: string | null } {
+  if (!flags.speed_markets_enabled) {
+    return { live: false, blocker: "Master kill switch OFF (speed_markets_enabled)" };
+  }
+  if (!row.enabled) {
+    return { live: false, blocker: "Per-row enabled OFF (toggle below)" };
+  }
+  if (assetEnabled[row.asset] === false) {
+    return { live: false, blocker: `${row.asset} asset disabled (speed_assets.${row.asset}.enabled)` };
+  }
+  if (row.duration === "1m" && !flags.speed_1m_markets_enabled) {
+    return { live: false, blocker: "1m global flag OFF (speed_1m_markets_enabled)" };
+  }
+  if (row.asset === "GOLD" && !flags.speed_gold_markets_enabled) {
+    return { live: false, blocker: "Gold global flag OFF (speed_gold_markets_enabled)" };
+  }
+  return { live: true, blocker: null };
+}
+
+export function MarketsConfigEditor({
+  markets,
+  assetEnabled,
+  flags,
+}: {
+  markets: MarketRow[];
+  assetEnabled: Record<string, boolean>;
+  flags: GlobalFlags;
+}) {
   const [activeKey, setActiveKey] = useState<string>(() => {
     if (markets.length === 0) return "";
     const first = markets[0]!;
@@ -155,14 +197,18 @@ export function MarketsConfigEditor({ markets }: { markets: MarketRow[] }) {
   const active = markets.find(
     (m) => `${m.asset}-${m.duration}` === activeKey,
   );
+  const activeEffective = active
+    ? effectiveState(active, assetEnabled, flags)
+    : null;
 
   return (
     <div>
-      {/* Tab bar */}
+      {/* Tab bar — each tab shows live/dark state badge */}
       <div className="flex flex-wrap gap-2 border-b border-[#e8eff3] mb-4">
         {markets.map((m) => {
           const k = `${m.asset}-${m.duration}`;
           const isActive = k === activeKey;
+          const eff = effectiveState(m, assetEnabled, flags);
           return (
             <button
               key={k}
@@ -171,19 +217,47 @@ export function MarketsConfigEditor({ markets }: { markets: MarketRow[] }) {
                 isActive
                   ? "border-[var(--yes,#2D8CFF)] text-[#2a3439]"
                   : "border-transparent text-[#566166] hover:text-[#2a3439]"
-              } ${m.enabled ? "" : "opacity-60"}`}
+              } ${eff.live ? "" : "opacity-60"}`}
               type="button"
             >
               {m.asset} · {m.duration}
-              {!m.enabled && (
-                <span className="ms-2 text-[10px] uppercase tracking-wider text-amber-700">
-                  off
-                </span>
-              )}
+              <span
+                className={`ms-2 text-[10px] uppercase tracking-wider ${
+                  eff.live ? "text-emerald-700" : "text-amber-700"
+                }`}
+              >
+                {eff.live ? "● live" : "○ dark"}
+              </span>
             </button>
           );
         })}
       </div>
+
+      {/* Effective-state banner above the active tab */}
+      {active && activeEffective && !activeEffective.live && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 mb-4 text-xs">
+          <div className="font-bold text-amber-900">
+            ⚠ This market is NOT visible to users.
+          </div>
+          <div className="text-amber-800 mt-1">
+            Reason: <strong>{activeEffective.blocker}</strong>.
+          </div>
+          <div className="text-amber-700 mt-1">
+            Editing values below changes what would happen{" "}
+            <em>if</em> the gate flips on. Saves don&apos;t expose the market.
+          </div>
+        </div>
+      )}
+      {active && activeEffective && activeEffective.live && (
+        <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 mb-4 text-xs">
+          <div className="font-bold text-emerald-900">
+            ● This market is LIVE to users.
+          </div>
+          <div className="text-emerald-800 mt-1">
+            All three gates are ON. Edits below take effect on the next quote.
+          </div>
+        </div>
+      )}
 
       {active && <MarketTab key={activeKey} row={active} />}
     </div>

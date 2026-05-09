@@ -116,6 +116,42 @@ async function loadMarketConfigs(): Promise<MarketConfigRow[]> {
   return r.rows;
 }
 
+/**
+ * Global feature flags that gate visibility on top of per-row enabled.
+ * A market is live to users only if ALL of these are true:
+ *   1. speed_market_config.enabled (per-row, edited inside the editor)
+ *   2. speed_assets.{asset}.enabled (per-asset gate, in the asset card)
+ *   3. global feature flag in fee_config (this map)
+ *
+ * BTC has no global gate (always live since launch). 1m and gold each have
+ * their own. The editor uses this to show an "effective state" badge per
+ * tab so admins don't get confused by enabled=true rows that users can't
+ * actually see.
+ */
+type GlobalFlags = {
+  speed_markets_enabled: boolean;
+  speed_1m_markets_enabled: boolean;
+  speed_gold_markets_enabled: boolean;
+};
+
+async function loadGlobalFlags(): Promise<GlobalFlags> {
+  const r = await db.execute<{ fee_type: string; rate: string }>(sql`
+    SELECT fee_type, rate::text FROM fee_config
+    WHERE fee_type IN (
+      'speed_markets_enabled',
+      'speed_1m_markets_enabled',
+      'speed_gold_markets_enabled'
+    )
+  `);
+  const map: Record<string, number> = {};
+  for (const row of r.rows) map[row.fee_type] = Number(row.rate);
+  return {
+    speed_markets_enabled: (map["speed_markets_enabled"] ?? 0) > 0,
+    speed_1m_markets_enabled: (map["speed_1m_markets_enabled"] ?? 0) > 0,
+    speed_gold_markets_enabled: (map["speed_gold_markets_enabled"] ?? 0) > 0,
+  };
+}
+
 async function loadAssetConfigs(): Promise<AssetConfigRow[]> {
   // oracle_stale_seconds was added in mig 0052. Use to_jsonb to tolerate
   // schema variants — if the column doesn't exist (older staging), the
@@ -162,10 +198,15 @@ export default async function AdminMarketsConfigPage() {
     redirect("/admin");
   }
 
-  const [markets, assets] = await Promise.all([
+  const [markets, assets, flags] = await Promise.all([
     loadMarketConfigs(),
     loadAssetConfigs(),
+    loadGlobalFlags(),
   ]);
+
+  // Map asset -> enabled boolean for quick lookup in the editor
+  const assetEnabled: Record<string, boolean> = {};
+  for (const a of assets) assetEnabled[a.asset] = a.enabled;
 
   return (
     <div className="p-8 space-y-8">
@@ -228,13 +269,80 @@ export default async function AdminMarketsConfigPage() {
         </div>
       </section>
 
+      {/* Global flag banner — explains why some markets are dark even if row=enabled */}
+      <section>
+        <h3 className="text-sm font-bold uppercase tracking-[0.18em] text-[#566166] mb-3">
+          Global feature flags
+        </h3>
+        <div className="rounded-xl bg-white p-4 text-xs space-y-2">
+          <p className="text-[#566166]">
+            A market is live to users only when{" "}
+            <strong>all three layers</strong> are ON:{" "}
+            <strong>per-row enabled</strong> (edit below) AND{" "}
+            <strong>asset enabled</strong> (above) AND{" "}
+            <strong>global flag</strong> (here).
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2">
+            <FlagPill
+              label="Speed markets"
+              on={flags.speed_markets_enabled}
+              hint="Master kill switch for the entire speed product"
+            />
+            <FlagPill
+              label="1m markets"
+              on={flags.speed_1m_markets_enabled}
+              hint="Gates BTC-1m and GOLD-1m markets"
+            />
+            <FlagPill
+              label="Gold markets"
+              on={flags.speed_gold_markets_enabled}
+              hint="Gates GOLD-5m and GOLD-1m markets"
+            />
+          </div>
+        </div>
+      </section>
+
       {/* Market config editor */}
       <section>
         <h3 className="text-sm font-bold uppercase tracking-[0.18em] text-[#566166] mb-3">
           Market knobs (per asset × duration)
         </h3>
-        <MarketsConfigEditor markets={markets} />
+        <MarketsConfigEditor
+          markets={markets}
+          assetEnabled={assetEnabled}
+          flags={flags}
+        />
       </section>
+    </div>
+  );
+}
+
+function FlagPill({
+  label,
+  on,
+  hint,
+}: {
+  label: string;
+  on: boolean;
+  hint: string;
+}) {
+  return (
+    <div
+      className={`rounded-lg border px-3 py-2 ${
+        on ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <span className="font-bold text-[#2a3439]">{label}</span>
+        <span
+          className={`text-[10px] font-semibold ${
+            on ? "text-emerald-800" : "text-amber-800"
+          }`}
+        >
+          {on ? "● ON" : "○ OFF"}
+        </span>
+      </div>
+      <p className="text-[10px] text-[#566166] mt-1">{hint}</p>
     </div>
   );
 }
