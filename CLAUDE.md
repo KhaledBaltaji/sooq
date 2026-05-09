@@ -117,6 +117,70 @@ Starting with mig 0035, migrations follow a folder layout: `0035_my_change/{sche
 | `0033_money_safety_v1.sql` | Money flow safety improvements (held in this slot). |
 | `0034_pricing_engine_v3.sql` | **Pricing engine v3.** Matrix-based pricing via `_speed_pricing_apply()` shared helper. Asymmetric only-push-up rule (matrix can only RAISE the price, never lower). 0.95 soft-block on entries (never on cashouts). Cashout uses same helper for direction-matching consistency. Reduced late-window multipliers (1.4/1.8 → 1.2/1.4). Per-ticket payout caps. Dynamic stake formula. Three-tier daily NGR breaker. **Includes neighbor-aware fallback for non-qualifying matrix cells** (added post-codex review). All flags ship OFF; admin enables via `/admin/fees`. |
 | `0035_sprint_b_polish/` | First migration in the new folder layout. NGR table + column comments (today's `net`/`ngr` typo prevention). Drops legacy `speed_per_user_per_market_cap_usd` fee_config alias. No function changes. |
+| `0036_pricing_telemetry/` | `speed_pricing_events` insert-only log; `_speed_pricing_apply` writes a row per call (matrix vs BSM, neighbor fallback, soft-block). Insert wrapped in EXCEPTION WHEN OTHERS so telemetry can never block trades. |
+| `0037_recalibration_cron/` | PL/pgSQL port of the matrix recalibration script + nightly `pg_cron` schedule (03:00 UTC). Dual-run diff views (shadow vs active) for the ≥7-night observation window before promotion. |
+| `0038_sprint_0_p0_fixes/` | **Sprint 0 — 7 P0 fixes.** Liability cap clamp at offered≥0.98 (was 99× bypass), aggregate-cap NULL guards, audit triggers on admin withdrawal RPCs, withdrawal idempotency_key wired, crypto address regex per network, `/api/health/oracle` + `/audit` gated behind admin OR `x-monitor-token`, $0-cashout orphan audit. |
+| `0039_sprint_05_hardening/` | **Sprint 0.5 — P1 hardening.** Webhook errors no longer leak user IDs; settlement boundary `<` → `<=`; soft-block float-tolerance via ROUND(6dp); cashout invariant on raw pre-round value; `_speed_get_iv` asset-aware fallback; parity-skip simplified to `matrix_used` alone; admin balance audit (no-PIN variant). |
+| `0040_kill_1h_markets/` | `speed_roll_markets` only opens 5m. Existing 1h positions resolve normally; frontend hides 1h tab. |
+| `0041_sprint_07_admin_cleanup/` | Drops 3 unused IV freshness keys (`speed_iv_freshness_15m_secs`, `_24h_secs`, `_ewma_secs`). |
+| `0042_sprint_1_market_config/` | **Foundation tables.** `speed_market_config` (asset, duration, ~26 columns) + `speed_asset_config` (oracle source, wick threshold, trading hours). BTC-5m row backfilled from current fee_config; GOLD placeholder seeded (disabled=FALSE). |
+| `0043_admin_adjust_balance_audit/` | Audit triggers on PIN-gated admin_adjust_balance (the no-PIN variant was already covered in 0039). |
+| `0044_sprint_2_clv_throttle/` | **Sprint 2 — per-user CLV throttle.** `speed_user_edge_scores` table + nightly cron `_speed_recompute_edge_scores` (one-tailed 95% Jeffreys CI on actual_outcome - offered_prob over last N settled trades). `_speed_apply_user_shading` helper wired into `speed_execute_trade` AS the last pricing layer. Flag-gated OFF (`speed_clv_throttle_enabled`). |
+| `0045_add_1m_duration/` | Standalone enum addition (`ALTER TYPE speed_duration ADD VALUE '1m'`). PG can't use new enum values in same txn. |
+| `0046_sprint_3_1m_markets/` | **Sprint 3 — 1m markets infrastructure.** BTC-1m row in speed_market_config (8% spread, 0.85 soft-block, 3s reject); 1m IV cache row; `_next_clean_boundary` handles 1m; `speed_roll_markets` rolls 1m gated behind `speed_1m_markets_enabled`; trade + cashout RPCs accept 1m. Frontend tab deferred until activation. |
+| `0047_1m_payout_cap_fix/` | P1 caught by /investigate: 1m payout cap was falling through to 1h's $5000. Adds `speed_entry_max_payout_usd_1m` + explicit branch. |
+| `0048_sprint_4_gold_markets/` | **Sprint 4 Phase 1 — gold market infrastructure.** GOLD-5m row in speed_market_config (4% spread, 0.92 soft-block); gold flag `speed_gold_markets_enabled` (default OFF). Dual-gated: speed_assets.GOLD.enabled=FALSE + flag OFF. Oracle worker pending. |
+| `0049_sprint_1_phase_2a/` | **Sprint 1 Phase 2A.** `_speed_pricing_apply` reads `soft_block_threshold` and `speed_execute_trade` reads `spread_pct` from speed_market_config per (asset, duration). Three-layer fallback chain: market_config → fee_config → hardcoded. |
+| `0050_sprint_1_phase_2b/` | **Phase 2B.** speed_execute_trade reads 7 more per-market values: last_n_reject_secs, cap_per_side_usd, near_decided_dist, late_window_30s_mult, late_window_60s_mult, per_side_pool_pct, payout_max_usd. F1.3 mitigation: SELECT * INTO v_mc once at RPC entry → consistent snapshot. |
+| `0051_sprint_1_phase_2c/` | **Phase 2C.** speed_execute_cashout reads cashout_reject_secs / cashout_cap_edge_threshold / cashout_late_30s_imbalance from market_config. `_speed_cashout_margin` SIGNATURE CHANGE: now takes (asset, duration, ...). `_speed_max_stake_for_offered` SIGNATURE CHANGE: now takes (asset, duration, offered_prob). Old sigs DROPped. Quote RPC updated. |
+
+## Per-(asset, duration) config pattern (post-mig 0049–0051)
+
+After Sprint 1 Phase 2 the trade and cashout RPCs read most pricing tunables
+from `speed_market_config` per (asset, duration), with `fee_config` as
+fallback for legacy callers / missing rows. The pattern in helpers and RPCs:
+
+```sql
+SELECT * INTO v_mc FROM speed_market_config
+WHERE asset = X AND duration = Y;
+
+-- For each value:
+v_setting := COALESCE(
+  v_mc.column_name,                          -- per-market override
+  (SELECT rate FROM fee_config WHERE ...),   -- legacy fee_config fallback
+  hardcoded_default                          -- last-resort safety
+);
+```
+
+**Migrated to per-market reads:** spread_pct, soft_block_threshold,
+last_n_reject_secs, cap_per_side_usd, near_decided_dist (late_30s_imbalance),
+late_window_30s/60s_mult, per_side_pool_pct (max_market_exposure_pct),
+payout_max_usd, stake_max_usd (via `_speed_max_stake_for_offered`),
+cashout_reject_secs, cashout_cap_edge_threshold, cashout_late_30s_imbalance,
+all 6 cashout_margin coefficients.
+
+**Still read from fee_config globals (cross-market):**
+- `speed_markets_enabled`, `speed_cashout_enabled` (kill switches)
+- `speed_oracle_stale_seconds`, `speed_pool_collateral_usd`
+- `speed_extreme_spread_coeff`, `speed_fair_prob_reject_high/low`
+- All IV cache controls (`speed_iv_*`, `speed_iv_freshness_*`)
+- Matrix master flag (`speed_pricing_matrix_enabled`, `_asym_pushup_enabled`)
+- Soft-block master flag (`speed_entry_soft_block_enabled`)
+- NGR breaker thresholds (`speed_daily_ngr_*`)
+- Parity tolerances (`speed_parity_*`)
+- All CLV throttle params (`speed_clv_*`)
+
+**Admin UI status:** `/admin/fees` shows the migrated keys with a
+`⚠ Per-market` badge (mig 0049–0051 banner). Edits to those rows have
+no effect on BTC-5m / BTC-1m / GOLD-5m markets — those read from
+`speed_market_config`. A dedicated `/admin/markets-config` page is on
+the UX-redesign roadmap (Phase 2E). Until then, edit per-market values
+directly via SQL.
+
+**Helper signature changes (mig 0051):**
+- `_speed_cashout_margin(asset, duration, is_winning, mark_prob, secs_left)` — old `(duration, ...)` dropped
+- `_speed_max_stake_for_offered(asset, duration, offered_prob)` — old `(duration, offered_prob)` dropped
+- All callers (RPCs + `/api/speed/quote/route.ts`) updated.
 
 ## Environments
 
