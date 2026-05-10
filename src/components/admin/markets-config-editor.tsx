@@ -45,14 +45,27 @@ interface MarketRow {
   matrix_ci_max_width: number;
   matrix_prior_n: number;
   matrix_calibration_window_days: number;
+  // 0055: tie-loser settlement rule (1m only)
+  tie_loser_rule_enabled: boolean;
+  tie_low_stake_threshold_usd: number;
   enabled: boolean;
   notes: string | null;
   updated_at: string;
+  // 0055: count of currently-open markets that opened with tie_loser_rule_active=TRUE.
+  // Read-only. Server populates from speed_markets snapshot. Helps admins see
+  // what's in flight after toggling the config flag.
+  open_with_tie_rule_active?: number;
 }
 
 type EditableNumericKey = Exclude<
   keyof MarketRow,
-  "asset" | "duration" | "enabled" | "notes" | "updated_at"
+  | "asset"
+  | "duration"
+  | "enabled"
+  | "notes"
+  | "updated_at"
+  | "tie_loser_rule_enabled"
+  | "open_with_tie_rule_active"
 >;
 
 type FieldGroup = {
@@ -282,6 +295,14 @@ function MarketTab({ row }: { row: MarketRow }) {
     setDraft((d) => ({ ...d, enabled: v }));
   };
 
+  const setTieRuleEnabled = (v: boolean) => {
+    setDraft((d) => ({ ...d, tie_loser_rule_enabled: v }));
+  };
+
+  const setTieLowStakeThreshold = (v: number) => {
+    setDraft((d) => ({ ...d, tie_low_stake_threshold_usd: v }));
+  };
+
   const setNotes = (v: string) => {
     setDraft((d) => ({ ...d, notes: v }));
   };
@@ -296,6 +317,15 @@ function MarketTab({ row }: { row: MarketRow }) {
       }
     }
     if (draft.enabled !== original.enabled) out.enabled = draft.enabled;
+    if (draft.tie_loser_rule_enabled !== original.tie_loser_rule_enabled) {
+      out.tie_loser_rule_enabled = draft.tie_loser_rule_enabled;
+    }
+    if (
+      draft.tie_low_stake_threshold_usd !==
+      original.tie_low_stake_threshold_usd
+    ) {
+      out.tie_low_stake_threshold_usd = draft.tie_low_stake_threshold_usd;
+    }
     if ((draft.notes ?? "") !== (original.notes ?? "")) {
       out.notes = draft.notes ?? "";
     }
@@ -348,6 +378,35 @@ function MarketTab({ row }: { row: MarketRow }) {
       lines.push("");
       lines.push("Type YES to confirm.");
 
+      const confirmation = window.prompt(lines.join("\n"));
+      if (confirmation !== "YES") {
+        setMessage({ kind: "err", text: "Cancelled. No changes saved." });
+        return;
+      }
+    }
+
+    // 0055: tie-loser rule confirmation. Settlement-mechanic flip — needs
+    // its own YES gate on FALSE → TRUE. (Turning OFF only affects future
+    // markets; in-flight ones still settle under their snapshot.)
+    if (
+      diff.tie_loser_rule_enabled === true &&
+      original.tie_loser_rule_enabled === false
+    ) {
+      const lines = [
+        `Turn ON tie-loser settlement rule on ${draft.asset} · ${draft.duration}?`,
+        "",
+        "What changes:",
+        "  • New markets opened from now will settle ties (close = strike)",
+        "    against the heavier-stake side, instead of refunding everyone.",
+        "  • Existing OPEN markets are unaffected — they snapshotted FALSE",
+        "    at open and will keep settling pushes as legacy refunds.",
+        "  • 1-minute markets only — 5m and 1h ignore this flag.",
+        "",
+        "Hard prerequisite: T&C section is published AND on-screen disclosure",
+        "is visible on the trade ticket. Do not flip ON without both.",
+        "",
+        "Type YES to confirm.",
+      ];
       const confirmation = window.prompt(lines.join("\n"));
       if (confirmation !== "YES") {
         setMessage({ kind: "err", text: "Cancelled. No changes saved." });
@@ -463,6 +522,18 @@ function MarketTab({ row }: { row: MarketRow }) {
         draft={draft}
         original={original}
         setField={setField}
+      />
+
+      {/* 0055: Tie-loser settlement rule (1m only). Snapshotted at market
+          open onto speed_markets.tie_loser_rule_active. Live flips affect
+          only NEW markets — in-flight markets settle under their own
+          snapshot. */}
+      <TieRuleSection
+        row={row}
+        draft={draft}
+        original={original}
+        setEnabled={setTieRuleEnabled}
+        setThreshold={setTieLowStakeThreshold}
       />
 
       <fieldset className="border border-[#e8eff3] rounded-lg p-4">
@@ -643,5 +714,119 @@ function AdvancedFieldsSection({
         </div>
       )}
     </div>
+  );
+}
+
+// 0055 — Tie-loser settlement rule (1m only).
+//
+// Two fields:
+//   - tie_loser_rule_enabled (boolean): master flag. Snapshotted onto
+//     each new market at speed_roll_markets time, so flipping here only
+//     affects NEW markets — in-flight markets settle under whatever
+//     snapshot they were opened with.
+//   - tie_low_stake_threshold_usd (numeric): below this total stake at
+//     close, tie outcomes use a deterministic-from-md5(market_id)
+//     fallback (no bias).
+//
+// Reads `row.open_with_tie_rule_active` (server-populated) to show
+// admins how many in-flight markets opened with the rule active. After
+// flipping OFF, this stays > 0 until the in-flight markets close.
+function TieRuleSection({
+  row,
+  draft,
+  original,
+  setEnabled,
+  setThreshold,
+}: {
+  row: MarketRow;
+  draft: MarketRow;
+  original: MarketRow;
+  setEnabled: (v: boolean) => void;
+  setThreshold: (v: number) => void;
+}) {
+  const enabledChanged =
+    draft.tie_loser_rule_enabled !== original.tie_loser_rule_enabled;
+  const thresholdChanged =
+    draft.tie_low_stake_threshold_usd !== original.tie_low_stake_threshold_usd;
+  const onlyApplies = row.duration === "1m";
+  const inFlightSnapshot = row.open_with_tie_rule_active ?? 0;
+
+  return (
+    <fieldset className="border border-[#e8eff3] rounded-lg p-4 space-y-3">
+      <legend className="px-2 text-xs font-bold uppercase tracking-[0.18em] text-[#566166]">
+        Tie settlement rule (1m only)
+      </legend>
+      <p className="text-[11px] text-[#566166]">
+        When the closing price equals the strike exactly, the heavier-stake
+        side loses (no refund). Snapshotted at market open — flipping
+        below only affects markets opened from now on.
+      </p>
+      {!onlyApplies && (
+        <p className="text-[11px] text-amber-700">
+          ⚠ This row is <strong>{row.duration}</strong>. The rule is read
+          by <code>speed_roll_markets</code> at INSERT, but the resolver
+          fires the tie path only on 1m. Editing here is harmless but
+          has no effect on settlement.
+        </p>
+      )}
+      <label
+        className={`flex items-center gap-2 text-sm cursor-pointer rounded-md border px-3 py-2 ${
+          draft.tie_loser_rule_enabled
+            ? "border-emerald-300 bg-emerald-50"
+            : "border-[#e8eff3] bg-white"
+        }`}
+      >
+        <input
+          type="checkbox"
+          checked={draft.tie_loser_rule_enabled}
+          onChange={(e) => setEnabled(e.target.checked)}
+          className="h-4 w-4"
+        />
+        <span className="font-bold">
+          {draft.tie_loser_rule_enabled
+            ? "● Tie rule ON for new markets"
+            : "○ Tie rule OFF (legacy push refund)"}
+        </span>
+        {enabledChanged && (
+          <span className="ms-auto text-[10px] font-bold uppercase tracking-wider text-amber-700">
+            ⚠ unsaved
+          </span>
+        )}
+      </label>
+      <div className="grid grid-cols-1 sm:grid-cols-[200px_1fr] gap-2 items-center">
+        <label className="text-xs font-semibold text-[#566166]">
+          Low-stake threshold ($)
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={draft.tie_low_stake_threshold_usd}
+            onChange={(e) =>
+              setThreshold(Number(e.target.value) || 0)
+            }
+            className={`w-32 rounded-md border px-2 py-1.5 text-sm ${
+              thresholdChanged
+                ? "border-amber-300 bg-amber-50"
+                : "border-[#e8eff3] bg-white"
+            }`}
+          />
+          <span className="text-[11px] text-[#566166]">
+            Below this total open-position stake at close, ties pick a
+            loser deterministically from <code>md5(market_id)</code>.
+          </span>
+        </div>
+      </div>
+      {inFlightSnapshot > 0 && (
+        <p className="text-[11px] text-[#2a3439] bg-blue-50 border border-blue-200 rounded-md px-3 py-2">
+          <strong>{inFlightSnapshot}</strong> currently-open{" "}
+          {row.asset}·{row.duration} markets opened with{" "}
+          <code>tie_loser_rule_active = TRUE</code>. They will settle
+          under the tie rule regardless of what you set above. New
+          markets reflect the toggle on next roll.
+        </p>
+      )}
+    </fieldset>
   );
 }

@@ -137,6 +137,36 @@ export default function TermsPage() {
             and return all funds to traders (less any fees already incurred). Our
             resolution decisions are final and binding.
           </p>
+          <h3 className="mt-4 font-semibold">
+            7.1 1-Minute Markets — Tie Settlement Convention
+          </h3>
+          <p className="mt-2">
+            For 1-minute speed markets, when the closing price of the
+            underlying asset is exactly equal to the strike price (a
+            &quot;tie&quot;), the market is settled against the side
+            carrying greater total stake at close. The side with less stake
+            wins. Positions that have been cashed out before close are
+            excluded from this calculation.
+          </p>
+          <p className="mt-2">
+            In the event of an exact 50/50 stake split between sides, or
+            where the total open-position stake at close is below a
+            configurable minimum threshold, the losing side is selected
+            deterministically based on the market&apos;s unique identifier
+            — the same input always produces the same outcome, and no
+            randomness is introduced at settlement.
+          </p>
+          <p className="mt-2">
+            When the closing price differs from the strike price by any
+            amount (even a single cent), settlement follows the standard
+            rule: the side correctly predicting price direction wins. The
+            tie convention applies only to literal price equality, and only
+            to 1-minute markets. 5-minute and 1-hour markets settle ties as
+            full-stake refunds (push) as before. Whether the tie convention
+            is active for any specific market is recorded at the moment the
+            market is opened and does not change for the lifetime of that
+            market, even if Platform configuration changes mid-window.
+          </p>
         </section>
 
         <section>

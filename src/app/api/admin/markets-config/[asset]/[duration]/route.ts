@@ -55,6 +55,9 @@ const SCHEMA = z
     matrix_ci_max_width: z.number().positive().max(1).optional(),
     matrix_prior_n: z.number().int().nonnegative().max(10_000).optional(),
     matrix_calibration_window_days: z.number().int().positive().max(90).optional(),
+    // 0055: tie-loser settlement rule (1m only, snapshotted at market open)
+    tie_loser_rule_enabled: z.boolean().optional(),
+    tie_low_stake_threshold_usd: z.number().nonnegative().max(100_000).optional(),
     enabled: z.boolean().optional(),
     notes: z.string().max(500).optional(),
   })

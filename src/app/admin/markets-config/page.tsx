@@ -54,9 +54,14 @@ type MarketConfigRow = {
   matrix_ci_max_width: number;
   matrix_prior_n: number;
   matrix_calibration_window_days: number;
+  // 0055: tie-loser settlement rule (1m only)
+  tie_loser_rule_enabled: boolean;
+  tie_low_stake_threshold_usd: number;
   enabled: boolean;
   notes: string | null;
   updated_at: string;
+  // 0055: in-flight markets opened with snapshot=TRUE (server-populated)
+  open_with_tie_rule_active?: number;
   [key: string]: unknown;
 };
 
@@ -73,6 +78,23 @@ type AssetConfigRow = {
 };
 
 async function loadMarketConfigs(): Promise<MarketConfigRow[]> {
+  // 0055: tie_loser_rule_enabled / tie_low_stake_threshold_usd were added
+  // in mig 0055. If running against an older DB (pre-mig), the SELECT
+  // below will throw and we fall back to a query without those columns,
+  // synthesizing defaults so the editor renders gracefully.
+  const r = await loadMarketConfigsRows();
+  return r;
+}
+
+async function loadMarketConfigsRows(): Promise<MarketConfigRow[]> {
+  try {
+    return await loadMarketConfigsWithTieCols();
+  } catch {
+    return await loadMarketConfigsLegacy();
+  }
+}
+
+async function loadMarketConfigsWithTieCols(): Promise<MarketConfigRow[]> {
   const r = await db.execute<MarketConfigRow>(sql`
     SELECT
       asset,
@@ -107,12 +129,87 @@ async function loadMarketConfigs(): Promise<MarketConfigRow[]> {
       matrix_ci_max_width::float AS matrix_ci_max_width,
       matrix_prior_n,
       matrix_calibration_window_days,
+      tie_loser_rule_enabled,
+      tie_low_stake_threshold_usd::float AS tie_low_stake_threshold_usd,
       enabled,
       notes,
       updated_at::text AS updated_at
     FROM speed_market_config
     ORDER BY asset, duration
   `);
+
+  // 0055: in-flight count of markets opened with snapshot=TRUE. Pre-mig
+  // the column doesn't exist so we wrap and fall back to zero counts.
+  try {
+    const inFlight = await db.execute<{
+      asset: string;
+      duration: string;
+      n: string;
+    }>(sql`
+      SELECT asset, duration::text AS duration, COUNT(*)::text AS n
+      FROM speed_markets
+      WHERE status = 'open' AND tie_loser_rule_active = TRUE
+      GROUP BY asset, duration
+    `);
+    const flightMap = new Map<string, number>();
+    for (const f of inFlight.rows) {
+      flightMap.set(`${f.asset}-${f.duration}`, Number(f.n));
+    }
+    for (const m of r.rows) {
+      m.open_with_tie_rule_active =
+        flightMap.get(`${m.asset}-${m.duration}`) ?? 0;
+    }
+  } catch {
+    for (const m of r.rows) m.open_with_tie_rule_active = 0;
+  }
+
+  return r.rows;
+}
+
+async function loadMarketConfigsLegacy(): Promise<MarketConfigRow[]> {
+  const r = await db.execute<MarketConfigRow>(sql`
+    SELECT
+      asset,
+      duration::text AS duration,
+      stake_min_usd::float AS stake_min_usd,
+      stake_max_usd::float AS stake_max_usd,
+      payout_max_usd::float AS payout_max_usd,
+      cap_per_side_usd::float AS cap_per_side_usd,
+      per_side_pool_pct::float AS per_side_pool_pct,
+      per_user_open_exposure_pct::float AS per_user_open_exposure_pct,
+      velocity_max_per_min,
+      daily_handle_alert_usd::float AS daily_handle_alert_usd,
+      spread_pct::float AS spread_pct,
+      soft_block_threshold::float AS soft_block_threshold,
+      soft_block_unlock::float AS soft_block_unlock,
+      late_window_60s_secs,
+      late_window_30s_secs,
+      late_window_60s_mult::float AS late_window_60s_mult,
+      late_window_30s_mult::float AS late_window_30s_mult,
+      last_n_reject_secs,
+      near_decided_dist::float AS near_decided_dist,
+      cashout_winning_base::float AS cashout_winning_base,
+      cashout_losing_base::float AS cashout_losing_base,
+      cashout_saturation_coef::float AS cashout_saturation_coef,
+      cashout_desperation_coef::float AS cashout_desperation_coef,
+      cashout_late_winning_coef::float AS cashout_late_winning_coef,
+      cashout_late_losing_coef::float AS cashout_late_losing_coef,
+      cashout_reject_secs,
+      cashout_late_30s_imbalance::float AS cashout_late_30s_imbalance,
+      cashout_cap_edge_threshold::float AS cashout_cap_edge_threshold,
+      matrix_min_n_eff,
+      matrix_ci_max_width::float AS matrix_ci_max_width,
+      matrix_prior_n,
+      matrix_calibration_window_days,
+      FALSE AS tie_loser_rule_enabled,
+      200::float AS tie_low_stake_threshold_usd,
+      enabled,
+      notes,
+      updated_at::text AS updated_at
+    FROM speed_market_config
+    ORDER BY asset, duration
+  `);
+  for (const m of r.rows) m.open_with_tie_rule_active = 0;
   return r.rows;
 }
 

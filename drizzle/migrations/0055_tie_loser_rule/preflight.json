@@ -1,0 +1,4 @@
+{
+  "tables": ["speed_market_config", "speed_markets", "speed_market_settlement_audit"],
+  "functions": ["speed_roll_markets", "speed_resolve_market"]
+}
