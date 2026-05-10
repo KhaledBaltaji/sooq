@@ -1406,3 +1406,54 @@ BTC-5m behavior is byte-identical pre-vs-post (market_config values matched fee_
 ### Pending — Phase 2E (deferred to UX redesign)
 
 Build `/admin/markets-config` page that writes directly to `speed_market_config`; drop the now-deprecated fee_config keys (~25 keys). Helpers' fee_config fallback can be removed once all keys are gone.
+
+## 2026-05-11 — mig 0055: 1m tie-loser settlement rule (ships dark)
+
+### Why
+
+1m markets push 18.57% of the time on staging vs 0.70% on 5m. Root cause is structural: Binance bookTicker quotes BTCUSDT to 2dp, our oracle captures the mid throttled at 10Hz, and on calm tape the price often doesn't move a cent in 60s — so the close tick captured at `closes_at` exactly equals the strike tick captured at `opens_at`. Today this refunds everyone (0% house edge on 18% of all 1m volume).
+
+### What landed
+
+- **Schema (mig 0055):**
+  - `speed_market_config.tie_loser_rule_enabled` (BOOL, default FALSE)
+  - `speed_market_config.tie_low_stake_threshold_usd` (NUMERIC, default 200)
+  - `speed_markets.tie_loser_rule_active` (snapshotted at INSERT)
+  - `speed_market_settlement_audit` gets 5 new columns: `tie_rule_applied`, `tie_loser_side`, `tie_imbalance_ratio`, `tie_total_stake_usd`, `tie_basis`
+- **`speed_roll_markets`:** reads `tie_loser_rule_enabled` from market_config and stamps it onto each new market row. Snapshot pattern means live config flips only affect NEW markets — in-flight markets carry the rule they opened with.
+- **`speed_resolve_market`:** new tie path. When snapshot=TRUE AND `v_settlement_price = strike_price`: aggregate stake by side from `speed_positions WHERE status='open'` (cashed-out excluded), pick loser of the heavier side. Deterministic-from-`md5(market_id)` fallback on low-stake / 50-50 splits — re-resolution is idempotent.
+- **Admin UI:** new "Tie settlement rule (1m)" section in `markets-config-editor.tsx` with toggle + threshold input + 2nd YES-confirmation gate on FALSE→TRUE flip. `/admin/markets-config` page shows in-flight count badge per row (pre-mig fallback included so the page never breaks if columns are absent).
+- **API:** PATCH whitelist extended with both new column names (without this the form saves silently no-op).
+- **T&C:** new §7.1 disclosure section on `/terms`.
+- **Tests:** `scripts/w12-tie-rule-suite.mjs` — 12 cases covering regression (flag OFF byte-identical to today), tie path (imbalance + 2 deterministic fallbacks), cashed-out exclusion, re-resolution determinism. All 12 pass on staging RDS.
+
+### Decisions
+
+- Plan reviewed via `/plan-eng-review` with full Codex outside-voice pass. **Codex caught 13 substantive issues the eng review missed** — most importantly, the simpler "tie-only rule" replaces the original "sub-cent threshold offset" approach. Same outcome for users, less code, fewer edge cases (no magnitude config, no tick-size assumptions, no wick-PERCENTILE half-cent risk, no CHECK constraint mess). See plan: `~/.claude/plans/i-have-a-question-purrfect-rainbow.md`.
+- **Snapshot at market open** (not live read at settlement) so users always settle under the rules in effect when they bet. Codex flagged this as a fairness invariant; correct.
+- **Cashed-out positions excluded** from bias direction (they exited before close, no longer at risk).
+- **Bias on ANY imbalance >50%** (not gated at 60%+) per founder decision — captures more push volume, every imbalanced book contributes.
+- **Default state: all markets ship with the flag FALSE.** Zero behavior change in production until per-market enable.
+
+### Hard prerequisite before flag flip
+
+Trade-ticket on-screen disclosure surface must ship first. T&C alone is insufficient for a casino-style settlement mechanic on real-money trades. Deferred to founder for a follow-up PR.
+
+### Verification
+
+- Mig 0055 applied to staging RDS via `apply-mig.mjs` with preflight ✅ + postflight ✅ + auto-refresh of canonical `drizzle/functions/` files.
+- `npx tsc --noEmit` clean.
+- `npm run build` clean.
+- `scripts/w12-tie-rule-suite.mjs` → PASS: 12 / FAIL: 0 (one /investigate cycle to catch test-setup bugs: wrong column name `entry_spot_price` → `entry_price`, ESM/CJS mismatch on `crypto.createHash`, synthetic test ticks colliding with live BTC oracle stream — solved by anchoring synthetic markets to mid-2024 timestamps).
+- `/terms` rendered new section verified via preview server DOM query.
+
+### Revenue model (honest)
+
+Tie cases were $0 net (refund). Under the rule, expected net per tie market is `stakes_in − light_payout = stakes_in − (light_stake / light_avg_offered_prob)`. Positive on average across realistic stake/offer distributions; pathological case (light side has avg offered_prob significantly below light_share) can produce a small loss but is bounded by the existing per-side / per-user / `fair_prob` hard-reject caps. Worked example for a 60/40 BTC-1m market with $1k pool: +$63 house net vs $0 push baseline. Order-of-magnitude lift on staging tape: ~$15K/day additional NGR (rough — staging A/B will pin it down).
+
+### Phase plan (founder)
+
+1. ✅ Phase 1: Land + verify (this entry).
+2. Phase 2: 30-min staging observation with flag still OFF — push rate must remain ~18% (proves migration is inert when dark).
+3. Phase 3 (founder): ship trade-ticket disclosure surface.
+4. Phase 4: Flip `tie_loser_rule_enabled = TRUE` on BTC-1m row only via `/admin/markets-config`. New 1m markets start with snapshot=TRUE; existing open markets keep settling as legacy push. Watch 24h for tie outcomes, audit invariants, daily NGR delta.
