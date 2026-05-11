@@ -22,6 +22,7 @@ import { db } from "@/lib/db";
 import { runAs } from "@/lib/db/run-as";
 import { logger } from "@/lib/logger";
 import { getSpeedFlags, isMarketEnabled } from "@/lib/speed/feature-flags";
+import { checkRateLimit, getClientIp } from "@/lib/speed/rate-limit";
 import type { SpeedAsset, SpeedDuration } from "@/types/database";
 
 interface TradeBody {
@@ -42,6 +43,14 @@ export async function POST(req: Request) {
     const session = await auth();
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const rl = checkRateLimit("trade", session.user.id, getClientIp(req));
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: "Too many requests" },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfter) } }
+      );
     }
 
     const body = (await req.json()) as TradeBody;

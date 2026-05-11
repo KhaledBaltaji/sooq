@@ -25,6 +25,7 @@ import { auth } from "@/auth";
 import { runAs } from "@/lib/db/run-as";
 import { logger } from "@/lib/logger";
 import { getSpeedFlags } from "@/lib/speed/feature-flags";
+import { checkRateLimit, getClientIp } from "@/lib/speed/rate-limit";
 import type { SpeedAsset } from "@/types/database";
 
 interface QuoteBody {
@@ -150,6 +151,14 @@ export async function POST(req: Request) {
     const session = await auth();
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const rl = checkRateLimit("quote", session.user.id, getClientIp(req));
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: "Too many requests" },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfter) } }
+      );
     }
 
     const body = (await req.json()) as QuoteBody;

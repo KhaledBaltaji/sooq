@@ -41,8 +41,13 @@ function makePool(): Pool {
 
   return new Pool({
     connectionString: url,
-    // Sane defaults for Vercel serverless; tune in W7.
-    max: 10,
+    // Pre-launch hardening Step 3 (2026-05-11): raised max 10 -> 20 per
+    // function instance to ride through agent-network traffic bursts
+    // without queueing. RDS db.t3.small has max_connections ~200; with
+    // ~5 warm Lambda instances at peak that's 100 connections — well
+    // inside headroom. runAs() uses db.transaction() which always
+    // releases connections (commit + rollback both); no leak paths.
+    max: 20,
     idleTimeoutMillis: 30_000,
     // 5-second connect cap so build-time SSG attempts fail fast when RDS
     // isn't reachable from the Vercel build pool, rather than hanging out
