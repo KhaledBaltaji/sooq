@@ -93,6 +93,14 @@ const FLUSH_INTERVAL_MS = 100;
 // RV cache writer (mig 0029) — runs per asset.
 const RV_INTERVAL_MS = 5_000;
 const RV_HORIZONS = [
+  // 1m added 2026-05-11 — closes the BTC-1m IV-fallback leak. The
+  // worker now writes a `1m` row into speed_volatility_cache every
+  // 5s; _speed_get_iv('BTC','1m') returns the cached value instead
+  // of falling back to fee_config.speed_iv_btc=0.60 (~5× actual).
+  // NOTE: intentionally NOT added to RV_EWMA_WEIGHTS below — the
+  // EWMA is a longer-horizon stability blend; mixing a noisy 1m
+  // signal would degrade it.
+  { label: "1m",  windowSeconds: 60 },
   { label: "5m",  windowSeconds: 5 * 60 },
   { label: "15m", windowSeconds: 15 * 60 },
   { label: "1h",  windowSeconds: 60 * 60 },
