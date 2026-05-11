@@ -99,6 +99,31 @@ rsync -avz -e 'ssh -i ~/.ssh/sooq-oracle.pem' \
 ssh -i ~/.ssh/sooq-oracle.pem ec2-user@63.183.214.217 'sudo systemctl restart speed-oracle'
 ```
 
+**⚠️ Worker env file rotation (2026-05-11 incident note):** the worker's
+DATABASE_URL lives in `/etc/speed-oracle.env` on the EC2 host. When the
+RDS master password rotates (e.g. via Secrets Manager) and you update
+`.env.local` + Vercel envs, you MUST also update this file or the next
+worker restart will FAIL with `password authentication failed for user
+"sooqadmin"` (the live pg pool runs on whatever creds it bootstrapped
+with, so the staleness is invisible until a restart). One-liner to
+rotate (from dev Mac, no plaintext in shell history):
+
+```bash
+grep ^DATABASE_URL= /Users/khaledbaltaji/Desktop/Sooq/.env.local > /tmp/sooq-dburl.txt && \
+scp -i ~/.ssh/sooq-oracle.pem /tmp/sooq-dburl.txt ec2-user@63.183.214.217:/tmp/dburl.txt && \
+ssh -i ~/.ssh/sooq-oracle.pem ec2-user@63.183.214.217 \
+  "sudo sed -i '/^DATABASE_URL=/d' /etc/speed-oracle.env && \
+   cat /tmp/dburl.txt | sudo tee -a /etc/speed-oracle.env > /dev/null && \
+   rm /tmp/dburl.txt && \
+   sudo systemctl restart speed-oracle && sleep 4 && \
+   sudo journalctl -u speed-oracle -n 25 --no-pager" && \
+rm /tmp/sooq-dburl.txt
+```
+
+Auto-rotation on the RDS Secret is DISABLED as of 2026-05-10 (see
+MEMORY.md `staging_db_rotation_incident.md`); manual rotations must
+update Vercel + .env.local + this env file in lockstep.
+
 ## Production environment
 
 Not yet provisioned. W11 (canary cutover) creates production RDS + S3 + CloudFront. Production will have:
