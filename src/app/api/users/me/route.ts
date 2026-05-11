@@ -47,5 +47,9 @@ export async function GET() {
     updated_at: u.updatedAt.toISOString(),
   };
 
-  return NextResponse.json(profile);
+  return NextResponse.json(profile, {
+    headers: {
+      "Cache-Control": "no-store, no-cache, must-revalidate, private",
+    },
+  });
 }

@@ -26,17 +26,20 @@ export async function GET(req: Request) {
     .orderBy(desc(transactions.createdAt))
     .limit(limit);
 
-  return NextResponse.json({
-    transactions: rows.map((t) => ({
-      id: t.id,
-      user_id: t.userId,
-      type: t.type,
-      amount: Number(t.amount),
-      balance_after: Number(t.balanceAfter),
-      reference_id: t.referenceId,
-      description: t.description,
-      performed_by: t.performedBy,
-      created_at: t.createdAt.toISOString(),
-    })),
-  });
+  return NextResponse.json(
+    {
+      transactions: rows.map((t) => ({
+        id: t.id,
+        user_id: t.userId,
+        type: t.type,
+        amount: Number(t.amount),
+        balance_after: Number(t.balanceAfter),
+        reference_id: t.referenceId,
+        description: t.description,
+        performed_by: t.performedBy,
+        created_at: t.createdAt.toISOString(),
+      })),
+    },
+    { headers: { "Cache-Control": "no-store, no-cache, must-revalidate, private" } },
+  );
 }

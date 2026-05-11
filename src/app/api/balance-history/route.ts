@@ -42,10 +42,13 @@ export async function GET(req: Request) {
     )
     .orderBy(asc(transactions.createdAt));
 
-  return NextResponse.json({
-    points: rows.map((r) => ({
-      ts: r.ts.toISOString(),
-      balance: Number(r.balance),
-    })),
-  });
+  return NextResponse.json(
+    {
+      points: rows.map((r) => ({
+        ts: r.ts.toISOString(),
+        balance: Number(r.balance),
+      })),
+    },
+    { headers: { "Cache-Control": "no-store, no-cache, must-revalidate, private" } },
+  );
 }

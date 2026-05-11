@@ -72,7 +72,7 @@ export function UserProvider({ children, initialProfile }: UserProviderProps) {
     }
     setProfileLoading(true);
     try {
-      const res = await fetch("/api/users/me");
+      const res = await fetch("/api/users/me", { cache: "no-store" });
       if (!res.ok) {
         setProfileLoading(false);
         return null;

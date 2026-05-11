@@ -66,7 +66,8 @@ export async function GET(req: Request) {
     .orderBy(desc(speedPositions.createdAt))
     .limit(limit);
 
-  return NextResponse.json({
+  return NextResponse.json(
+    {
     positions: rows.map((r) => ({
       id: r.id,
       user_id: r.userId,
@@ -97,5 +98,7 @@ export async function GET(req: Request) {
           }
         : null,
     })),
-  });
+    },
+    { headers: { "Cache-Control": "no-store, no-cache, must-revalidate, private" } },
+  );
 }

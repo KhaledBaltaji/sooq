@@ -40,5 +40,8 @@ export async function GET(req: Request) {
     created_at: n.createdAt.toISOString(),
   }));
 
-  return NextResponse.json({ notifications: out });
+  return NextResponse.json(
+    { notifications: out },
+    { headers: { "Cache-Control": "no-store, no-cache, must-revalidate, private" } },
+  );
 }

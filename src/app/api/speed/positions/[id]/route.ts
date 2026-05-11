@@ -26,20 +26,23 @@ export async function GET(
   const p = rows[0];
   if (!p) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  return NextResponse.json({
-    position: {
-      id: p.id,
-      user_id: p.userId,
-      market_id: p.marketId,
-      side: p.side,
-      stake: Number(p.stake),
-      entry_price: Number(p.entryPrice),
-      entry_fair_prob: Number(p.entryFairProb),
-      entry_offered_prob: Number(p.entryOfferedProb),
-      status: p.status,
-      payout_amount: p.payoutAmount ? Number(p.payoutAmount) : null,
-      closed_at: p.closedAt?.toISOString() ?? null,
-      created_at: p.createdAt.toISOString(),
+  return NextResponse.json(
+    {
+      position: {
+        id: p.id,
+        user_id: p.userId,
+        market_id: p.marketId,
+        side: p.side,
+        stake: Number(p.stake),
+        entry_price: Number(p.entryPrice),
+        entry_fair_prob: Number(p.entryFairProb),
+        entry_offered_prob: Number(p.entryOfferedProb),
+        status: p.status,
+        payout_amount: p.payoutAmount ? Number(p.payoutAmount) : null,
+        closed_at: p.closedAt?.toISOString() ?? null,
+        created_at: p.createdAt.toISOString(),
+      },
     },
-  });
+    { headers: { "Cache-Control": "no-store, no-cache, must-revalidate, private" } },
+  );
 }
