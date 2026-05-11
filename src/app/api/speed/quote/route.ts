@@ -36,6 +36,52 @@ interface QuoteBody {
   position_id?: string;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// In-process /quote response cache (Step 1 of pre-launch hardening, 2026-05-11)
+//
+// The client polls /quote every 1.5s. Under N concurrent users on the same
+// hot market each poll runs the full pricing CTE (BSM + matrix lookup +
+// fee_config reads) — wasted DB cycles. This cache shares one response
+// across all callers within a 250ms window keyed by:
+//   - trade:   `t:${market_id}:${side}`
+//   - cashout: `c:${position_id}`     (position_id is per-user already)
+//
+// Caching is safe AFTER auth — the 401 check still runs every request.
+// Trade quotes are user-invariant today (CLV shading happens at execute,
+// not quote). Cashout responses are naturally per-user because the
+// position_id is per-user. 250ms TTL keeps quotes effectively
+// indistinguishable from live (BTC moves ~1¢/0.000013% in that window;
+// well inside the parity-drift tolerances on /trade and /cashout).
+//
+// Per-Lambda-instance only (Map in module scope). Multiple instances
+// don't share state, but each amortizes its own users.
+// ─────────────────────────────────────────────────────────────────────────
+const QUOTE_CACHE_TTL_MS = 250;
+const QUOTE_CACHE_MAX_ENTRIES = 2000;
+type QuoteCacheEntry = { value: unknown; expiresAt: number };
+const quoteCache = new Map<string, QuoteCacheEntry>();
+
+function quoteCacheGet(key: string): unknown | null {
+  const e = quoteCache.get(key);
+  if (!e) return null;
+  if (e.expiresAt <= Date.now()) {
+    quoteCache.delete(key);
+    return null;
+  }
+  return e.value;
+}
+
+function quoteCacheSet(key: string, value: unknown): void {
+  // Crude size cap: when oversized, drop the oldest insertion (Map preserves
+  // insertion order). One-shot prune; not perfectly LRU but cheap and fine
+  // for 250ms TTL traffic patterns.
+  if (quoteCache.size >= QUOTE_CACHE_MAX_ENTRIES) {
+    const firstKey = quoteCache.keys().next().value;
+    if (firstKey !== undefined) quoteCache.delete(firstKey);
+  }
+  quoteCache.set(key, { value, expiresAt: Date.now() + QUOTE_CACHE_TTL_MS });
+}
+
 interface TradeQuote {
   mode: "trade";
   market_id: string;
@@ -116,6 +162,12 @@ export async function POST(req: Request) {
       }
       if (body.side !== "over" && body.side !== "under") {
         return NextResponse.json({ error: "Invalid side" }, { status: 400 });
+      }
+
+      const cacheKey = `t:${body.market_id}:${body.side}`;
+      const cached = quoteCacheGet(cacheKey) as TradeQuote | null;
+      if (cached) {
+        return NextResponse.json(cached);
       }
 
       const data = await runAs(session.user.id, async (tx) => {
@@ -287,12 +339,19 @@ export async function POST(req: Request) {
       if (!data) {
         return NextResponse.json({ error: "Quote unavailable (market or oracle missing)" }, { status: 404 });
       }
+      quoteCacheSet(cacheKey, data);
       return NextResponse.json(data);
     }
 
     if (body.mode === "cashout") {
       if (!body.position_id) {
         return NextResponse.json({ error: "Missing position_id" }, { status: 400 });
+      }
+
+      const cacheKey = `c:${body.position_id}`;
+      const cached = quoteCacheGet(cacheKey) as CashoutQuote | null;
+      if (cached) {
+        return NextResponse.json(cached);
       }
 
       const data = await runAs(session.user.id, async (tx) => {
@@ -468,6 +527,7 @@ export async function POST(req: Request) {
       if (!data) {
         return NextResponse.json({ error: "Quote unavailable (position not found)" }, { status: 404 });
       }
+      quoteCacheSet(cacheKey, data);
       return NextResponse.json(data);
     }
 
