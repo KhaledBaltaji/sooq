@@ -22,9 +22,15 @@ const DURATION_LABELS: Record<SpeedDuration, string> = {
 export function SpeedAboutMarket({
   asset,
   duration,
+  tieLoserRuleActive = false,
 }: {
   asset: SpeedAsset;
   duration: SpeedDuration;
+  // Mig 0055: snapshotted on the market row at open. When TRUE, ties
+  // (close == strike) settle as a loss for the heavier-stake side.
+  // When FALSE (legacy behavior), ties refund both sides. Defaults to
+  // FALSE for backward compat with callers that don't yet pass it.
+  tieLoserRuleActive?: boolean;
 }) {
   const t = useTranslations("market");
   const [expanded, setExpanded] = useState(true);
@@ -78,8 +84,10 @@ export function SpeedAboutMarket({
             market close time.{" "}
             <span className="font-bold text-text">Up</span> wins if the close
             is above target. <span className="font-bold text-text">Down</span>{" "}
-            wins if below. If the close lands exactly at target, both sides
-            lose.
+            wins if below.
+            {tieLoserRuleActive
+              ? " If the close lands exactly at the target, the side carrying greater total stake at close loses (cashed-out positions excluded)."
+              : " If the close lands exactly at the target, both sides receive a full refund."}
           </p>
           <div className="pt-4 border-t border-border-custom flex items-center gap-3">
             <Info className="w-4 h-4 text-yes shrink-0" />

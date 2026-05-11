@@ -720,19 +720,17 @@ function Dock({
       triggerHapticConfirm();
       setTapFire(side);
       setTimeout(() => setTapFire(null), 380);
-      // Mig 0030: full quote/execute parity snapshot.
-      const fairForSide = side === "over" ? fairOver : 1 - (fairOver ?? 0);
-      const offeredForSide = side === "over" ? offeredOver : offeredUnder;
+      // Mig 0030 / 0057 follow-up: only echo client-truthful inputs (spot,
+      // bucket). IV / fair_prob / offered_prob are computed from globals
+      // on the client but per-market on the server (mig 0049-0051) so they
+      // diverged silently. Server treats NULL as skip. See speed-trade-panel.tsx.
       const parity: TradeParitySnapshot = {
-        expectedIv: sigma,
         expectedSpot: livePrice ?? undefined,
         expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
-        expectedFairProb: fairForSide ?? undefined,
-        expectedOfferedProb: offeredForSide ?? undefined,
       };
       await placeBet(market.id, side, stake, parity);
     },
-    [canBetOver, canBetUnder, placeBet, market.id, stake, sigma, livePrice, secondsLeft, fairOver, offeredOver, offeredUnder],
+    [canBetOver, canBetUnder, placeBet, market.id, stake, livePrice, secondsLeft],
   );
 
   return (

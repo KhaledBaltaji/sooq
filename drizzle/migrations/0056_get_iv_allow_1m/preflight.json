@@ -1,0 +1,4 @@
+{
+  "tables": ["speed_volatility_cache", "fee_config"],
+  "functions": ["_speed_get_iv"]
+}

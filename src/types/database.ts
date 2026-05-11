@@ -48,6 +48,11 @@ export interface SpeedMarket {
   void_reason: string | null;
   resolved_at: string | null;
   created_at: string;
+  // Mig 0055: snapshotted at market open. TRUE = tie-loser rule active for
+  // THIS market (heavier-stake side loses on close == strike). FALSE =
+  // legacy push refund. The /speed/[id] about section reads this to render
+  // the right copy. Older markets may not have this field — treat as FALSE.
+  tie_loser_rule_active?: boolean;
 }
 
 export interface SpeedPosition {

@@ -34,6 +34,8 @@ export async function GET(
       void_reason: m.voidReason,
       resolved_at: m.resolvedAt?.toISOString() ?? null,
       created_at: m.createdAt.toISOString(),
+      // Mig 0055: snapshot of the settlement rule at market open.
+      tie_loser_rule_active: m.tieLoserRuleActive,
     },
   });
 }

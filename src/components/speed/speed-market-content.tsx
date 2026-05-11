@@ -503,7 +503,11 @@ export function SpeedMarketContent({ params, inModal = false, isClosing = false,
             </div>
           )}
 
-          <SpeedAboutMarket asset={market.asset} duration={market.duration} />
+          <SpeedAboutMarket
+            asset={market.asset}
+            duration={market.duration}
+            tieLoserRuleActive={market.tie_loser_rule_active ?? false}
+          />
         </div>
 
         {/* Desktop: sticky right column. Trade panel renders on top while

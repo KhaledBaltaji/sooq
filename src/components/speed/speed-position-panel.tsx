@@ -113,15 +113,17 @@ export function SpeedPositionPanel({
   const sideColor = position.side === "over" ? "text-success" : "text-destructive";
   const sideBg = position.side === "over" ? "bg-success/10" : "bg-destructive/10";
 
-  // Mig 0030: full quote/execute parity snapshot. Server validates these on
-  // execute and rejects with PARITY_DRIFT if anything moved beyond tolerance.
+  // Mig 0030 / 0057 follow-up: only echo client-truthful inputs (spot,
+  // bucket). expectedIv / expectedMarkProb / expectedCashoutAmount come
+  // from client-side computation that uses globals while the server's
+  // _speed_cashout_margin and pricing_apply read per-market from
+  // speed_market_config (mig 0050-0051). They diverged silently.
+  // Server treats NULL as skip. See speed-trade-panel.tsx for full
+  // rationale; cashout follows the same pattern.
   function buildParitySnapshot(): CashoutParitySnapshot {
     return {
-      expectedIv: ivUsed,
       expectedSpot: livePrice ?? undefined,
       expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
-      expectedMarkProb: markProb ?? undefined,
-      expectedCashoutAmount: estCashout ?? undefined,
     };
   }
 

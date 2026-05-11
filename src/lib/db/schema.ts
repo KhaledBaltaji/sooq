@@ -300,6 +300,9 @@ export const speedMarkets = pgTable(
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // Mig 0055: snapshotted at INSERT from speed_market_config.tie_loser_rule_enabled.
+    // Determines settlement rule for THIS market regardless of later config flips.
+    tieLoserRuleActive: boolean("tie_loser_rule_active").notNull().default(false),
   },
   (t) => ({
     assetStatusIdx: index("speed_markets_asset_status_idx").on(t.asset, t.status),

@@ -290,17 +290,21 @@ export function SpeedTradePanel({
     return !canTrade;
   };
 
-  // Mig 0030: full quote/execute parity snapshot. Server validates these
-  // on execute and rejects with PARITY_DRIFT if anything moved beyond
-  // tolerance. All optional — leaving any field undefined skips that
-  // particular drift check on the server.
+  // Mig 0030: quote/execute parity snapshot. Mig 0057 follow-up:
+  // expectedIv / expectedFairProb / expectedOfferedProb are intentionally
+  // OMITTED. The client computes those from globals (fee_config + a
+  // duration-agnostic /volatility hook) while the server reads from
+  // per-market sources (speed_market_config per mig 0049-0051,
+  // speed_volatility_cache per mig 0029). They diverged silently —
+  // 214% IV drift on 5m, 2.86% spread drift on 1m — and rejected every
+  // trade with IV_DRIFT / PARITY_DRIFT. Server treats NULL as skip.
+  // We keep the universally-comparable inputs (spot, bucket) so basic
+  // staleness protection remains. Full parity restoration requires a
+  // proper /api/speed/quote echo hook — tracked as follow-up.
   function buildParitySnapshot(): TradeParitySnapshot {
     return {
-      expectedIv: sigma,
       expectedSpot: livePrice ?? undefined,
       expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
-      expectedFairProb: fairForSide ?? undefined,
-      expectedOfferedProb: offeredForSide ?? undefined,
     };
   }
 
