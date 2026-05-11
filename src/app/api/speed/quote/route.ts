@@ -303,20 +303,27 @@ export async function POST(req: Request) {
                 (sm.seconds_left < sm.late_reject_s) AS late_window_block,
                 (sm.seconds_left < 30
                   AND ABS(sm.fair_prob_side::DOUBLE PRECISION - 0.5) > sm.late_30s_imb::DOUBLE PRECISION) AS near_decided_block,
+                -- Hot-fix 2026-05-11: switched from anonymous record tuples
+                -- to jsonb. The (record).f1 access pattern requires pg-types
+                -- to have the record OID registered in the connection's type
+                -- cache; on fresh pool connections (more common after pool
+                -- max 10->20) it throws "record type has not been registered"
+                -- and the entire /quote endpoint 500s. jsonb is a built-in
+                -- so it always parses. Logical behavior unchanged.
                 CASE
-                  WHEN sm.status <> 'open' THEN ('Market is not open'::text, 'MARKET_CLOSED'::text)
-                  WHEN NOW() >= sm.closes_at THEN ('Market has closed', 'MARKET_CLOSED')
+                  WHEN sm.status <> 'open' THEN jsonb_build_object('reason', 'Market is not open', 'code', 'MARKET_CLOSED')
+                  WHEN NOW() >= sm.closes_at THEN jsonb_build_object('reason', 'Market has closed', 'code', 'MARKET_CLOSED')
                   WHEN EXTRACT(EPOCH FROM (NOW() - sm.received_at))
                        > COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_oracle_stale_seconds'), 2)
-                    THEN ('Oracle price stale — try again', 'ORACLE_STALE')
-                  WHEN sm.seconds_left < sm.late_reject_s THEN ('Market closing — no new bets', 'LATE_WINDOW')
-                  WHEN sm.fair_prob_side > sm.reject_high THEN ('Outcome too close to certain', 'FAIR_PROB_TOO_HIGH')
-                  WHEN sm.fair_prob_side < sm.reject_low THEN ('Side too unlikely', 'FAIR_PROB_TOO_LOW')
+                    THEN jsonb_build_object('reason', 'Oracle price stale — try again', 'code', 'ORACLE_STALE')
+                  WHEN sm.seconds_left < sm.late_reject_s THEN jsonb_build_object('reason', 'Market closing — no new bets', 'code', 'LATE_WINDOW')
+                  WHEN sm.fair_prob_side > sm.reject_high THEN jsonb_build_object('reason', 'Outcome too close to certain', 'code', 'FAIR_PROB_TOO_HIGH')
+                  WHEN sm.fair_prob_side < sm.reject_low THEN jsonb_build_object('reason', 'Side too unlikely', 'code', 'FAIR_PROB_TOO_LOW')
                   WHEN sm.seconds_left < 30 AND ABS(sm.fair_prob_side::DOUBLE PRECISION - 0.5) > sm.late_30s_imb::DOUBLE PRECISION
-                    THEN ('Too late and too one-sided', 'LATE_30S_IMBALANCE')
-                  WHEN sm.soft_blocked THEN ('Market closing — try next round', 'SOFT_BLOCK')
-                  ELSE (NULL, NULL)
-                END AS reject_tuple
+                    THEN jsonb_build_object('reason', 'Too late and too one-sided', 'code', 'LATE_30S_IMBALANCE')
+                  WHEN sm.soft_blocked THEN jsonb_build_object('reason', 'Market closing — try next round', 'code', 'SOFT_BLOCK')
+                  ELSE NULL::jsonb
+                END AS reject_obj
               FROM stake_max sm
             )
           SELECT jsonb_build_object(
@@ -346,9 +353,9 @@ export async function POST(req: Request) {
             -- Phase 5C (mig 0052): trading-hours fields for frontend countdown
             'is_open', _speed_is_market_open(final.asset, NOW()),
             'next_open_at', _speed_next_open_at(final.asset, NOW()),
-            'rejected', (reject_tuple).f1 IS NOT NULL,
-            'reject_reason', (reject_tuple).f1,
-            'reject_code', (reject_tuple).f2
+            'rejected', reject_obj IS NOT NULL,
+            'reject_reason', reject_obj->>'reason',
+            'reject_code', reject_obj->>'code'
           )::jsonb AS result
           FROM final
         `);
@@ -504,20 +511,22 @@ export async function POST(req: Request) {
                 (c.seconds_left < c.late_reject_s) AS late_window_block,
                 (c.seconds_left < 30
                   AND ABS(c.mark_prob::DOUBLE PRECISION - 0.5) > c.late_30s_imb::DOUBLE PRECISION) AS near_decided_block,
+                -- Hot-fix 2026-05-11: same jsonb_build_object switch as the
+                -- trade path. See trade-mode CTE for rationale.
                 CASE
-                  WHEN c.kill_switch <= 0 THEN ('Cashout temporarily disabled'::text, 'CASHOUT_DISABLED'::text)
-                  WHEN c.position_status <> 'open' THEN ('Position is not open', 'POSITION_CLOSED')
-                  WHEN c.market_status <> 'open' THEN ('Market is not open', 'MARKET_CLOSED')
-                  WHEN NOW() >= c.closes_at THEN ('Market has closed', 'MARKET_CLOSED')
+                  WHEN c.kill_switch <= 0 THEN jsonb_build_object('reason', 'Cashout temporarily disabled', 'code', 'CASHOUT_DISABLED')
+                  WHEN c.position_status <> 'open' THEN jsonb_build_object('reason', 'Position is not open', 'code', 'POSITION_CLOSED')
+                  WHEN c.market_status <> 'open' THEN jsonb_build_object('reason', 'Market is not open', 'code', 'MARKET_CLOSED')
+                  WHEN NOW() >= c.closes_at THEN jsonb_build_object('reason', 'Market has closed', 'code', 'MARKET_CLOSED')
                   WHEN EXTRACT(EPOCH FROM (NOW() - c.received_at))
                        > COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_oracle_stale_seconds'), 2)
-                    THEN ('Oracle price stale — try again', 'ORACLE_STALE')
-                  WHEN c.cap_edge THEN ('Hold to settlement', 'CASHOUT_AT_CAP')
-                  WHEN c.seconds_left < c.late_reject_s THEN ('Market closing — no cashouts', 'LATE_WINDOW')
+                    THEN jsonb_build_object('reason', 'Oracle price stale — try again', 'code', 'ORACLE_STALE')
+                  WHEN c.cap_edge THEN jsonb_build_object('reason', 'Hold to settlement', 'code', 'CASHOUT_AT_CAP')
+                  WHEN c.seconds_left < c.late_reject_s THEN jsonb_build_object('reason', 'Market closing — no cashouts', 'code', 'LATE_WINDOW')
                   WHEN c.seconds_left < 30 AND ABS(c.mark_prob::DOUBLE PRECISION - 0.5) > c.late_30s_imb::DOUBLE PRECISION
-                    THEN ('Too late and too one-sided', 'LATE_30S_IMBALANCE')
-                  ELSE (NULL, NULL)
-                END AS reject_tuple
+                    THEN jsonb_build_object('reason', 'Too late and too one-sided', 'code', 'LATE_30S_IMBALANCE')
+                  ELSE NULL::jsonb
+                END AS reject_obj
               FROM cashout c
             )
           SELECT jsonb_build_object(
@@ -543,9 +552,9 @@ export async function POST(req: Request) {
             'expected_settlement_payout', ROUND(expected_settlement_payout::NUMERIC, 2),
             'near_decided_block', near_decided_block,
             'late_window_block', late_window_block,
-            'rejected', (reject_tuple).f1 IS NOT NULL,
-            'reject_reason', (reject_tuple).f1,
-            'reject_code', (reject_tuple).f2
+            'rejected', reject_obj IS NOT NULL,
+            'reject_reason', reject_obj->>'reason',
+            'reject_code', reject_obj->>'code'
           )::jsonb AS result
           FROM final
         `);
