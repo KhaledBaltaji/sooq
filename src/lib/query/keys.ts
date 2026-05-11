@@ -37,6 +37,12 @@ export const queryKeys = {
   speedFees: {
     config: () => ["speed-fee-config"] as const,
   },
+  speedQuote: {
+    trade: (marketId: string, side: "over" | "under") =>
+      ["speed-quote", "trade", marketId, side] as const,
+    cashout: (positionId: string) =>
+      ["speed-quote", "cashout", positionId] as const,
+  },
   speedSparkline: {
     by24h: (asset: string) => ["speed-sparkline-24h", asset] as const,
   },

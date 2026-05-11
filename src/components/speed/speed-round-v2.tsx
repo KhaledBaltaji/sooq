@@ -36,6 +36,7 @@ import {
   type TradeParitySnapshot,
 } from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
+import { useSpeedTradeQuote } from "@/hooks/use-speed-quote";
 import { useSpeedPositions } from "@/hooks/use-speed-positions";
 import { useUser } from "@/lib/auth/hooks";
 import {
@@ -676,18 +677,37 @@ function Dock({
     fee.realizedVol?.[market.asset]?.rv ?? fee.iv[market.asset] ?? 0.6;
   // T3.1: gate Dock bet buttons on RV snapshot being loaded.
   const rvLoaded = !fee.useRealizedVol || Boolean(fee.realizedVol?.[market.asset]);
-  const fairOver =
+
+  const expired = secondsLeft <= 0 || market.status !== "open";
+
+  // Mig 0034+0044 follow-up: server-authoritative quotes for both sides.
+  // The Dock bet buttons display payout multipliers that need to match
+  // what the trade RPC will actually execute at. See use-speed-quote.ts.
+  const quoteEnabled = !expired && !isStale && market.status === "open";
+  const { quote: overQuote } = useSpeedTradeQuote(market.id, "over", {
+    enabled: quoteEnabled,
+  });
+  const { quote: underQuote } = useSpeedTradeQuote(market.id, "under", {
+    enabled: quoteEnabled,
+  });
+
+  // Local fallback while quote loads or for anon users.
+  const localFairOver =
     livePrice !== null && !isStale
       ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
       : null;
-  const offeredOver =
-    fairOver !== null
-      ? speedOfferedProb(fairOver, "over", fee, secondsLeft)
+  const localOfferedOver =
+    localFairOver !== null
+      ? speedOfferedProb(localFairOver, "over", fee, secondsLeft)
       : null;
-  const offeredUnder =
-    fairOver !== null
-      ? speedOfferedProb(fairOver, "under", fee, secondsLeft)
+  const localOfferedUnder =
+    localFairOver !== null
+      ? speedOfferedProb(localFairOver, "under", fee, secondsLeft)
       : null;
+
+  const offeredOver = overQuote?.offered_prob ?? localOfferedOver;
+  const offeredUnder = underQuote?.offered_prob ?? localOfferedUnder;
+  const fairOver = overQuote?.fair_prob_side ?? localFairOver;
 
   const upMul = offeredOver ? 1 / offeredOver : null;
   const downMul = offeredUnder ? 1 / offeredUnder : null;
@@ -696,18 +716,20 @@ function Dock({
   const upPayout = upMul !== null ? stake * upMul : null;
   const downPayout = downMul !== null ? stake * downMul : null;
 
-  const expired = secondsLeft <= 0 || market.status !== "open";
-  // Mig 0028: entry-side gating predicates mirrored on client.
-  const fairUpForGate = fairOver;
-  const fairDownForGate = fairOver !== null ? 1 - fairOver : null;
+  // Mig 0028: entry-side gating predicates mirrored on client. Prefer
+  // server booleans from the quote when available.
   const upBlocked =
-    fairUpForGate !== null
-      ? isEntryRejectedNearDecided(fairUpForGate, secondsLeft, fee)
-      : false;
+    overQuote?.near_decided_block ??
+    overQuote?.soft_blocked ??
+    (fairOver !== null
+      ? isEntryRejectedNearDecided(fairOver, secondsLeft, fee)
+      : false);
   const downBlocked =
-    fairDownForGate !== null
-      ? isEntryRejectedNearDecided(fairDownForGate, secondsLeft, fee)
-      : false;
+    underQuote?.near_decided_block ??
+    underQuote?.soft_blocked ??
+    (fairOver !== null
+      ? isEntryRejectedNearDecided(1 - fairOver, secondsLeft, fee)
+      : false);
   const canBetOver =
     !expired && !isStale && fairOver !== null && stake > 0 && !loading && !upBlocked && rvLoaded;
   const canBetUnder =

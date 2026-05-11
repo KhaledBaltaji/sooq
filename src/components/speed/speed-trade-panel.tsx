@@ -22,6 +22,7 @@ import {
   type TradeParitySnapshot,
 } from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
+import { useSpeedTradeQuote } from "@/hooks/use-speed-quote";
 import { useUser } from "@/lib/auth/hooks";
 import { useAuthModal } from "@/components/auth/auth-modal-provider";
 import { useDepositModal } from "@/components/wallet/deposit-modal-provider";
@@ -93,18 +94,52 @@ export function SpeedTradePanel({
   // more than the IV_DRIFT tolerance, producing a confusing reject after
   // the user taps Bet. Block until snapshot arrives.
   const rvLoaded = !feeConfig.useRealizedVol || Boolean(realizedVol?.[market.asset]);
-  const fairOver = livePrice
+  // Local fallback estimates — kept for pill display (both sides shown
+  // simultaneously, fetching a quote per side would double bandwidth) and
+  // for the brief window before the quote loads. Once `quote` arrives the
+  // selected-side values switch to server-truth below.
+  const localFairOver = livePrice
     ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
     : null;
-  // Mig 0028: speedOfferedProb uses multiplicative late-window spread
-  // escalation (×1.4 last 60s, ×1.8 last 30s) and clamps to [0.03, 0.97]
-  // to match the server's hard-reject thresholds.
+  const localOfferedOver =
+    localFairOver !== null
+      ? speedOfferedProb(localFairOver, "over", feeConfig, secondsLeft)
+      : null;
+  const localOfferedUnder =
+    localFairOver !== null
+      ? speedOfferedProb(localFairOver, "under", feeConfig, secondsLeft)
+      : null;
+
+  // Mig 0034+0044 follow-up: server-authoritative quote for the selected
+  // side. The server applies _speed_pricing_apply (matrix asym push-up)
+  // and _speed_apply_user_shading (CLV throttle) and reads per-market
+  // values from speed_market_config — none of which the client can
+  // replicate locally. `useSpeedTradeQuote` fetches /api/speed/quote and
+  // refetches every 1.5s while the round is open.
+  const { quote: tradeQuote } = useSpeedTradeQuote(
+    market?.id ?? null,
+    side,
+    { enabled: !!user && !expired && market.status === "open" },
+  );
+
+  // Display values: prefer server quote, fall back to local estimate while
+  // the quote loads or for anonymous users.
+  const offeredForSide =
+    tradeQuote?.offered_prob ??
+    (side === "over" ? localOfferedOver : localOfferedUnder);
+  const fairForSide =
+    tradeQuote?.fair_prob_side ??
+    (localFairOver !== null ? (side === "over" ? localFairOver : 1 - localFairOver) : null);
+
+  // Pill display (both sides) — informational, local estimate is fine.
   const offeredOver =
-    fairOver !== null ? speedOfferedProb(fairOver, "over", feeConfig, secondsLeft) : null;
+    side === "over" && tradeQuote ? tradeQuote.offered_prob : localOfferedOver;
   const offeredUnder =
-    fairOver !== null ? speedOfferedProb(fairOver, "under", feeConfig, secondsLeft) : null;
-  const offeredForSide = side === "over" ? offeredOver : offeredUnder;
-  const fairForSide = fairOver !== null ? (side === "over" ? fairOver : 1 - fairOver) : null;
+    side === "under" && tradeQuote ? tradeQuote.offered_prob : localOfferedUnder;
+  // Convenience for any downstream readers expecting `fairOver`.
+  const fairOver =
+    side === "over" && tradeQuote ? tradeQuote.fair_prob_side : localFairOver;
+
   const payoutPerDollar = offeredForSide ? 1 / offeredForSide : null;
   const toWin = payoutPerDollar && amount > 0 ? amount * payoutPerDollar : 0;
 
@@ -113,15 +148,18 @@ export function SpeedTradePanel({
   // exception strings; the client gate avoids the reject + toast cycle.
   const lateRejectS =
     feeConfig.pricing.cashoutLateRejectS ?? ENTRY_LATE_WINDOW_REJECT_S;
-  const lateRejected = secondsLeft < lateRejectS;
+  const lateRejected =
+    tradeQuote?.late_window_block ?? secondsLeft < lateRejectS;
   const nearDecidedReject =
-    fairForSide !== null &&
-    isEntryRejectedNearDecided(fairForSide, secondsLeft, feeConfig);
+    tradeQuote?.near_decided_block ??
+    (fairForSide !== null &&
+      isEntryRejectedNearDecided(fairForSide, secondsLeft, feeConfig));
 
-  // Mig 0034: soft-block — UI greys button before quote endpoint confirms.
-  // Server enforces authoritatively; this is fallback display only.
+  // Mig 0034: soft-block — prefer server's authoritative boolean from the
+  // quote when available. Local predicate is fallback only.
   const softBlocked =
-    offeredForSide !== null && isEntrySoftBlocked(offeredForSide, feeConfig);
+    tradeQuote?.soft_blocked ??
+    (offeredForSide !== null && isEntrySoftBlocked(offeredForSide, feeConfig));
 
   // Per-duration stake max from fee_config (admin-tunable per duration),
   // falling back to the generic UI ceiling.
@@ -238,10 +276,12 @@ export function SpeedTradePanel({
         type: "warning" as const,
       };
     }
-    // Mig 0034: soft-block — friendly "market closing" message
+    // Mig 0034 (soft-block) — copy revised in mig 0058 follow-up. Old
+    // "Market closing" euphemism misled users (showed at 1+ min remaining).
+    // Honest text: this side is at the price ceiling, trade the other side.
     if (softBlocked) {
       return {
-        text: "Market closing — try next round in a moment",
+        text: "Odds too one-sided here — try the other side",
         type: "warning" as const,
       };
     }
@@ -278,7 +318,7 @@ export function SpeedTradePanel({
     if (!hasBalance && amount > 0) return tTrade("insufficientBalance");
     if (lateRejected) return t("entryLockedLate");
     if (nearDecidedReject) return t("entryLockedNearDecided");
-    if (softBlocked) return "Market closing";
+    if (softBlocked) return "Side at limit";
     return `${t("placeBet")} · ${side === "over" ? t("up") : t("down")} · ${formatCurrency(amount)}`;
   };
 

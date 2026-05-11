@@ -80,8 +80,10 @@ export function SpeedAboutMarket({
             will be lower.
           </p>
           <p className="text-muted-custom text-base leading-relaxed font-dm-sans">
-            Resolution reads the Binance BTC/USDT close price at exactly the
-            market close time.{" "}
+            {/* Copy fix (audit #1): server reads Binance bookTicker mid
+                (per mig 0018) not the official Binance "close price". */}
+            Resolution reads the Binance BTC/USDT live mid-price at exactly
+            the market close time.{" "}
             <span className="font-bold text-text">Up</span> wins if the close
             is above target. <span className="font-bold text-text">Down</span>{" "}
             wins if below.

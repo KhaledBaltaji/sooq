@@ -24,6 +24,7 @@ import {
   type CashoutParitySnapshot,
 } from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
+import { useSpeedCashoutQuote } from "@/hooks/use-speed-quote";
 
 export function SpeedPositionPanel({
   market,
@@ -59,55 +60,66 @@ export function SpeedPositionPanel({
   const payoutPerDollar = entryOfferedProb > 0 ? 1 / entryOfferedProb : 0;
   const potentialPayout = stake * payoutPerDollar;
 
-  // Mig 0028+: option-C profit-based cashout. Use realized vol when fresh
-  // (matches server `_speed_get_iv`); fall back to static IV when RV is
-  // missing or stale. Same lookup the trade panel uses. Cached IV is also
-  // what the API will send as `expected_iv` for parity.
+  // Mig 0034+0044 follow-up: authoritative server cashout quote.
+  // _speed_cashout_margin reads per-market values from speed_market_config
+  // (mig 0050-0051) and the matrix correction the client can't replicate.
+  // Fetched every 1.5s while the position is open; falls back to local
+  // estimate while loading.
+  const cashoutEnabled = !expired && position.status === "open";
+  const { quote: cashoutQuote } = useSpeedCashoutQuote(position.id, {
+    enabled: cashoutEnabled,
+  });
+
+  // Local fallback computation (while quote loads, or anon).
   const sigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
-  const ivUsed = sigma;
-  const fairOver =
+  const ivUsed = cashoutQuote?.iv_used ?? sigma;
+  const localFairOver =
     livePrice && !isStale
       ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
       : null;
-  const markProb =
-    fairOver !== null
+  const localMarkProb =
+    localFairOver !== null
       ? position.side === "over"
-        ? fairOver
-        : 1 - fairOver
+        ? localFairOver
+        : 1 - localFairOver
       : null;
 
-  // Mig 0028: cashout amount via option-C profit-based formula. Direction-
-  // matching invariant (winning ⇒ cashout > stake) holds by construction.
-  let estCashout: number | null = null;
-  let isWinning = false;
-  let margin = 0;
-  if (markProb !== null) {
-    isWinning = markProb >= entryOfferedProb;
-    margin = speedCashoutMargin(
+  let localEstCashout: number | null = null;
+  let localIsWinning = false;
+  let localMargin = 0;
+  if (localMarkProb !== null) {
+    localIsWinning = localMarkProb >= entryOfferedProb;
+    localMargin = speedCashoutMargin(
       market.duration,
-      isWinning,
-      markProb,
+      localIsWinning,
+      localMarkProb,
       secondsLeft,
       feeConfig,
     );
-    estCashout = computeCashoutAmount(
+    localEstCashout = computeCashoutAmount(
       stake,
       entryOfferedProb,
-      markProb,
-      isWinning,
-      margin,
+      localMarkProb,
+      localIsWinning,
+      localMargin,
     );
-    estCashout = Math.round(estCashout * 100) / 100;
+    localEstCashout = Math.round(localEstCashout * 100) / 100;
   }
 
-  // Mig 0028: cashout gating predicates.
-  // - Last 10s of round: cashout rejected entirely (server: speed_cashout_late_reject_s).
-  // - Last 30s + near-decided (|mark − 0.5| > 0.30): rejected to mirror entry-side defense.
+  // Prefer server values, fall back to local estimate.
+  const markProb = cashoutQuote?.mark_prob ?? localMarkProb;
+  const estCashout = cashoutQuote?.cashout_amount ?? localEstCashout;
+  const isWinning = cashoutQuote?.is_winning ?? localIsWinning;
+  const margin = cashoutQuote?.margin_applied ?? localMargin;
+
+  // Mig 0028: cashout gating predicates. Prefer server booleans from quote.
   const cashoutLockedLate =
+    cashoutQuote?.late_window_block ??
     secondsLeft < (feeConfig.pricing.cashoutLateRejectS ?? CASHOUT_REJECT_WINDOW_SECONDS);
   const cashoutLockedNearDecided =
-    markProb !== null &&
-    isCashoutRejectedNearDecided(markProb, secondsLeft, feeConfig);
+    cashoutQuote?.near_decided_block ??
+    (markProb !== null &&
+      isCashoutRejectedNearDecided(markProb, secondsLeft, feeConfig));
   const cashoutLocked = cashoutLockedLate || cashoutLockedNearDecided;
 
   const sideColor = position.side === "over" ? "text-success" : "text-destructive";
@@ -292,12 +304,22 @@ export function SpeedPositionPanel({
         <div className="rounded-lg bg-bg p-3 text-center text-sm">
           <span className="font-bold uppercase tracking-wide">
             {position.status === "cashed_out" && t("cashOut")}
-            {position.status === "refunded" && t("voided")}
+            {/* Copy fix (audit #5): server stores 'refunded', not 'voided'.
+                On legacy push (tie_loser_rule_active = false) this is a push
+                refund — both sides got their stake back. Render the correct
+                label and add a small "Push refund" subtitle so the user
+                understands why they got their money back. */}
+            {position.status === "refunded" && t("refunded")}
           </span>
           {position.payout_amount && (
             <span className="ml-2 font-satoshi tabular-nums">
               {formatCurrency(Number(position.payout_amount))}
             </span>
+          )}
+          {position.status === "refunded" && market.tie_loser_rule_active !== true && (
+            <div className="mt-1 text-[10px] uppercase tracking-wide text-muted-custom">
+              {t("pushRefund")}
+            </div>
           )}
         </div>
       )}

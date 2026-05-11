@@ -85,10 +85,15 @@ export function mapSpeedRpcError(raw: string | null | undefined): SpeedErrorMapp
   }
 
   // ---- Mig 0034 pricing engine v3 errors ----
+  // Mig 0058 follow-up: replaced misleading "Market closing" copy with
+  // honest text describing the actual condition (this side is past the
+  // 0.97 ceiling). Server error string still matches both the old
+  // "market closing" substring and the new SOFT_BLOCK prefix for back-
+  // compat with any in-flight tickets that hit the old exception string.
   if (msg.startsWith("SOFT_BLOCK") || msg.includes("market closing — try next round")) {
     return {
       kind: "soft_block",
-      userMessage: "Market closing — try next round.",
+      userMessage: "Odds too one-sided here — try the other side.",
       retryable: false,
     };
   }
@@ -102,7 +107,10 @@ export function mapSpeedRpcError(raw: string | null | undefined): SpeedErrorMapp
   if (msg.startsWith("CASHOUT_AT_CAP")) {
     return {
       kind: "cashout_at_cap",
-      userMessage: "Hold for settlement to receive full payout.",
+      // Copy fix (audit #3): explain WHY the user is held — the entry odds
+      // are at the price ceiling, so cashout has no meaningful value. Hold
+      // to settlement for the full payout instead.
+      userMessage: "Stake is at the price cap — hold to settlement for full payout.",
       retryable: false,
     };
   }

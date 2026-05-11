@@ -98,6 +98,8 @@
     "lost": "خسارة",
     "atStrike": "عند السعر",
     "voided": "ملغى",
+    "refunded": "مُسترد",
+    "pushRefund": "استرداد بسبب التعادل",
     "nextMarket": "السوق التالي",
     "resolving": "قيد التسوية",
     "settling": "تسوية الجولة…",

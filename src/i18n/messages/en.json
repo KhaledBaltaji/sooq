@@ -98,6 +98,8 @@
     "lost": "Lost",
     "atStrike": "At strike",
     "voided": "Voided",
+    "refunded": "Refunded",
+    "pushRefund": "Push refund",
     "nextMarket": "Next Market",
     "resolving": "Resolving",
     "settling": "Settling round…",

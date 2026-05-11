@@ -24,6 +24,10 @@ import {
   type TradeParitySnapshot,
 } from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
+import {
+  useSpeedTradeQuote,
+  useSpeedCashoutQuote,
+} from "@/hooks/use-speed-quote";
 import type { SpeedMarket, SpeedPosition, SpeedSide } from "@/types/database";
 
 const STAKE_PRESETS = [10, 50, 100, 1000];
@@ -80,6 +84,31 @@ export function SpeedMobileTradeBar({
   const secondsLeft = Math.max(0, Math.floor((closesAt - now) / 1000));
   const expired = secondsLeft <= 0 || market.status !== "open";
 
+  // CRITICAL: All hooks must be called at the top level (React Rules of
+  // Hooks). The component branches into no-position vs has-position UIs
+  // below, but the hook calls must be unconditional. `enabled` gates the
+  // actual network fetch — when irrelevant for the current branch the
+  // query stays idle, no request fired, no rerender churn.
+  const noPosition = !position || position.status !== "open";
+
+  // Trade-mode quotes for both sides (used by no-position branch).
+  const tradeQuotesEnabled =
+    noPosition && !expired && !isStale && market.status === "open";
+  const { quote: overQuote } = useSpeedTradeQuote(market.id, "over", {
+    enabled: tradeQuotesEnabled,
+  });
+  const { quote: underQuote } = useSpeedTradeQuote(market.id, "under", {
+    enabled: tradeQuotesEnabled,
+  });
+
+  // Cashout quote for the open-position branch.
+  const cashoutQuoteEnabled =
+    !noPosition && !!position && !expired && market.status === "open";
+  const { quote: cashoutQuoteShared } = useSpeedCashoutQuote(
+    position?.id ?? null,
+    { enabled: cashoutQuoteEnabled },
+  );
+
   // ── No-position branch: stake stepper + Up/Down ────────────────────────
   if (!position || position.status !== "open") {
     const strike = Number(market.strike_price);
@@ -88,38 +117,55 @@ export function SpeedMobileTradeBar({
     // T3.1: gate on RV cache being loaded — see speed-trade-panel.tsx for
     // the rationale. When useRealizedVol is OFF, gate is a no-op.
     const rvLoaded = !feeConfig.useRealizedVol || Boolean(realizedVol?.[market.asset]);
-    const fairOver =
+
+    // Local-estimate fallbacks (while quote loads, or anon user).
+    const localFairOver =
       livePrice && !isStale
         ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
         : null;
-    // Mig 0028: multiplicative late-window spread escalation; clamp to [0.03, 0.97].
-    const offeredOver =
-      fairOver !== null ? speedOfferedProb(fairOver, "over", feeConfig, secondsLeft) : null;
-    const offeredUnder =
-      fairOver !== null ? speedOfferedProb(fairOver, "under", feeConfig, secondsLeft) : null;
+    const localOfferedOver =
+      localFairOver !== null
+        ? speedOfferedProb(localFairOver, "over", feeConfig, secondsLeft)
+        : null;
+    const localOfferedUnder =
+      localFairOver !== null
+        ? speedOfferedProb(localFairOver, "under", feeConfig, secondsLeft)
+        : null;
+
+    // Prefer server quote, fall back to local estimate.
+    const offeredOver = overQuote?.offered_prob ?? localOfferedOver;
+    const offeredUnder = underQuote?.offered_prob ?? localOfferedUnder;
+    const fairOver = overQuote?.fair_prob_side ?? localFairOver;
 
     const upPayout = offeredOver ? stake / offeredOver : null;
     const downPayout = offeredUnder ? stake / offeredUnder : null;
     const upProfit = upPayout !== null ? upPayout - stake : null;
     const downProfit = downPayout !== null ? downPayout - stake : null;
 
-    // Mig 0028 entry-side gating mirrored on client.
+    // Mig 0028 entry-side gating mirrored on client. Prefer server gate
+    // booleans from the quote when available.
     const lateRejectS =
       feeConfig.pricing.cashoutLateRejectS ?? ENTRY_LATE_WINDOW_REJECT_S;
-    const lateRejected = secondsLeft < lateRejectS;
+    const lateRejected =
+      overQuote?.late_window_block ??
+      underQuote?.late_window_block ??
+      secondsLeft < lateRejectS;
     const fairOverGate =
-      fairOver !== null
+      overQuote?.near_decided_block ??
+      (fairOver !== null
         ? isEntryRejectedNearDecided(fairOver, secondsLeft, feeConfig)
-        : false;
+        : false);
     const fairUnderGate =
-      fairOver !== null
+      underQuote?.near_decided_block ??
+      (fairOver !== null
         ? isEntryRejectedNearDecided(1 - fairOver, secondsLeft, feeConfig)
-        : false;
-    // Mig 0034: soft-block — same predicate desktop uses
+        : false);
     const overSoftBlocked =
-      offeredOver !== null && isEntrySoftBlocked(offeredOver, feeConfig);
+      overQuote?.soft_blocked ??
+      (offeredOver !== null && isEntrySoftBlocked(offeredOver, feeConfig));
     const underSoftBlocked =
-      offeredUnder !== null && isEntrySoftBlocked(offeredUnder, feeConfig);
+      underQuote?.soft_blocked ??
+      (offeredUnder !== null && isEntrySoftBlocked(offeredUnder, feeConfig));
     const canBetOver =
       !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
       !lateRejected && !fairOverGate && !overSoftBlocked && rvLoaded;
@@ -248,55 +294,74 @@ export function SpeedMobileTradeBar({
   const cashoutSigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
   const lateRejectS =
     feeConfig.pricing.cashoutLateRejectS ?? CASHOUT_REJECT_WINDOW_SECONDS;
-  const cashoutLockedLate = secondsLeft < lateRejectS;
-  const fairOver =
+
+  // Mig 0034+0044 follow-up: authoritative server cashout quote.
+  // The hook itself is hoisted to the top of the component (Rules of
+  // Hooks) — reuse its result here.
+  const cashoutQuote = cashoutQuoteShared;
+
+  // Local fallback computation (while quote loads).
+  const localFairOver =
     livePrice && !isStale
       ? speedFairProbOver(livePrice, strike, secondsLeft, cashoutSigma)
       : null;
-  const markProb =
-    fairOver !== null ? (position.side === "over" ? fairOver : 1 - fairOver) : null;
+  const localMarkProb =
+    localFairOver !== null
+      ? position.side === "over"
+        ? localFairOver
+        : 1 - localFairOver
+      : null;
 
-  let estCashout: number | null = null;
-  if (markProb !== null) {
-    const isWinning = markProb >= entryProb;
+  let localEstCashout: number | null = null;
+  if (localMarkProb !== null) {
+    const isWinning = localMarkProb >= entryProb;
     const margin = speedCashoutMargin(
       market.duration,
       isWinning,
-      markProb,
+      localMarkProb,
       secondsLeft,
       feeConfig,
     );
     const raw = computeCashoutAmount(
       stakeAmt,
       entryProb,
-      markProb,
+      localMarkProb,
       isWinning,
       margin,
     );
-    estCashout = Math.max(0, Math.round(raw * 100) / 100);
+    localEstCashout = Math.max(0, Math.round(raw * 100) / 100);
   }
 
+  // Prefer server quote, fall back to local estimate.
+  const markProb = cashoutQuote?.mark_prob ?? localMarkProb;
+  const estCashout = cashoutQuote?.cashout_amount ?? localEstCashout;
+
+  // Gating: prefer server boolean from the quote, fall back to local
+  // predicate while loading.
+  const cashoutLockedLate =
+    cashoutQuote?.late_window_block ?? secondsLeft < lateRejectS;
   const cashoutLockedNearDecided =
-    markProb !== null &&
-    isCashoutRejectedNearDecided(markProb, secondsLeft, feeConfig);
-  // Mig 0034: cap-edge — when both entry and current mark are at the price cap
+    cashoutQuote?.near_decided_block ??
+    (markProb !== null &&
+      isCashoutRejectedNearDecided(markProb, secondsLeft, feeConfig));
   const cashoutAtCap =
-    markProb !== null &&
-    isCashoutAtCapEdge(entryProb, markProb, feeConfig);
+    cashoutQuote?.cap_edge ??
+    (markProb !== null && isCashoutAtCapEdge(entryProb, markProb, feeConfig));
   const cashoutLocked = cashoutLockedLate || cashoutLockedNearDecided || cashoutAtCap;
   // Expected settlement payout shown in the cap-edge tooltip / message
-  const expectedSettlementPayout = entryProb > 0 ? stakeAmt / entryProb : 0;
+  const expectedSettlementPayout =
+    cashoutQuote?.expected_settlement_payout ??
+    (entryProb > 0 ? stakeAmt / entryProb : 0);
 
   const handleCashout = async () => {
     if (cashLoading || expired || cashoutLocked) return;
     triggerHapticConfirm();
-    // Mig 0030: full quote/execute parity snapshot.
+    // Mig 0030 / 0057 follow-up: only echo client-truthful inputs (spot,
+    // bucket). IV / markProb / cashoutAmount diverge between client and
+    // server when matrix + CLV are active; server treats NULL as skip.
     const parity: CashoutParitySnapshot = {
-      expectedIv: cashoutSigma,
       expectedSpot: livePrice ?? undefined,
       expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
-      expectedMarkProb: markProb ?? undefined,
-      expectedCashoutAmount: estCashout ?? undefined,
     };
     await cashout(position.id, parity);
   };
@@ -309,7 +374,9 @@ export function SpeedMobileTradeBar({
   } else if (cashoutLockedNearDecided) {
     cashoutLabel = t("cashoutLockedNearDecided");
   } else if (cashoutAtCap) {
-    cashoutLabel = `Hold for settlement · ${formatCurrency(expectedSettlementPayout)}`;
+    // Copy fix (audit item 4): add "if you win" caveat so user knows the
+    // shown amount only pays if they're correct at settlement.
+    cashoutLabel = `If you win at settlement: ${formatCurrency(expectedSettlementPayout)} · cashout currently unavailable`;
   } else if (estCashout !== null) {
     cashoutLabel = `${t("cashOut")} · ${formatCurrency(estCashout)}`;
   } else {
