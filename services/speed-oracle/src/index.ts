@@ -117,6 +117,16 @@ const RV_MIN_SAMPLES = 20;
 const RV_SIGMA_FLOOR = 0.05;
 const RV_SIGMA_CEILING = 2.0;
 
+// Step 9 (2026-05-11): feature-flag respect. Reread fee_config flags every
+// 30s so the worker doesn't write RV rows for disabled markets/durations.
+// `speed_1m_markets_enabled = 0` → skip the 1m horizon entirely. Same
+// pattern can extend to per-asset gates if other assets ship later.
+const FLAG_REFRESH_INTERVAL_MS = 30_000;
+const featureFlags = {
+  enabled_1m: true,           // optimistic default; refresher overwrites
+  loadedAt: 0,
+};
+
 if (SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,
@@ -300,6 +310,31 @@ async function computeRvForHorizon(
   };
 }
 
+async function refreshFeatureFlags(): Promise<void> {
+  try {
+    const r = await pool.query(
+      `SELECT fee_type, rate FROM fee_config
+       WHERE fee_type IN ('speed_1m_markets_enabled')`
+    );
+    const m = new Map<string, number>();
+    for (const row of r.rows as Array<{ fee_type: string; rate: string | number }>) {
+      m.set(row.fee_type, Number(row.rate));
+    }
+    const prev = featureFlags.enabled_1m;
+    featureFlags.enabled_1m = (m.get("speed_1m_markets_enabled") ?? 1) > 0;
+    featureFlags.loadedAt = Date.now();
+    if (prev !== featureFlags.enabled_1m) {
+      console.log(
+        `[oracle][flags] speed_1m_markets_enabled: ${prev} -> ${featureFlags.enabled_1m}`
+      );
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[oracle][flags] refresh failed: ${msg}`);
+    // Keep previous flags; fail-open by default.
+  }
+}
+
 async function writeRvSnapshotForAsset(asset: string): Promise<void> {
   if (assetState[asset].lastTickAt === 0) return;
 
@@ -307,6 +342,10 @@ async function writeRvSnapshotForAsset(asset: string): Promise<void> {
   try {
     const summaries: RvSummary[] = [];
     for (const horizon of RV_HORIZONS) {
+      // Step 9 (2026-05-11): skip 1m RV writes when 1m markets disabled.
+      // Other horizons stay regardless — they're shared infra (EWMA blend,
+      // get_speed_volatility fallback).
+      if (horizon.label === "1m" && !featureFlags.enabled_1m) continue;
       const rv = await computeRvForHorizon(client, asset, horizon.windowSeconds);
       if (rv) {
         summaries.push({
@@ -321,7 +360,17 @@ async function writeRvSnapshotForAsset(asset: string): Promise<void> {
     if (summaries.length === 0) return;
 
     let ewmaSigma: number | null = null;
-    if (summaries.length === RV_HORIZONS.length) {
+    // EWMA needs every horizon that carries a non-zero weight. 1m is
+    // intentionally NOT in RV_EWMA_WEIGHTS (would degrade the blend with
+    // noise) so the absence of a 1m summary — whether from skip or from
+    // insufficient samples — does not block EWMA. The gate compares the
+    // weighted horizons present in `summaries` against the set of
+    // horizons that have a weight defined.
+    const ewmaHorizonsNeeded = Object.keys(RV_EWMA_WEIGHTS);
+    const haveAllWeightedHorizons = ewmaHorizonsNeeded.every((h) =>
+      summaries.some((s) => s.horizonLabel === h)
+    );
+    if (haveAllWeightedHorizons) {
       let weighted = 0;
       let weightSum = 0;
       for (const s of summaries) {
@@ -549,6 +598,13 @@ async function boot(): Promise<void> {
       void writeTick(sub.asset, trade);
     }
   }, FLUSH_INTERVAL_MS);
+
+  // Step 9 (2026-05-11): periodic feature-flag refresh so disabled
+  // markets/durations don't waste worker write cycles.
+  void refreshFeatureFlags(); // initial load on boot
+  setInterval(() => {
+    void refreshFeatureFlags();
+  }, FLAG_REFRESH_INTERVAL_MS);
 
   // Per-asset RV writer
   setInterval(() => {

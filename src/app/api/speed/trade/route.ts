@@ -18,8 +18,11 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { auth } from "@/auth";
+import { db } from "@/lib/db";
 import { runAs } from "@/lib/db/run-as";
 import { logger } from "@/lib/logger";
+import { getSpeedFlags, isMarketEnabled } from "@/lib/speed/feature-flags";
+import type { SpeedAsset, SpeedDuration } from "@/types/database";
 
 interface TradeBody {
   market_id: string;
@@ -62,6 +65,45 @@ export async function POST(req: Request) {
     }
     if (side !== "over" && side !== "under") {
       return NextResponse.json({ error: "Invalid side" }, { status: 400 });
+    }
+
+    // Step 9 pre-flight: short-circuit if trading is globally disabled.
+    // The RPC enforces the same; this just avoids spending a DB txn.
+    const flags = await getSpeedFlags();
+    if (!flags.trading_enabled) {
+      return NextResponse.json(
+        { error: "Speed markets are currently disabled" },
+        { status: 400 }
+      );
+    }
+
+    // Look up the market's asset+duration cheaply to check per-asset and
+    // per-duration gates before opening the heavyweight runAs transaction.
+    const mkt = await db.execute(sql`
+      SELECT asset::text AS asset, duration::text AS duration
+      FROM speed_markets WHERE id = ${market_id}::uuid
+    `);
+    const row = mkt.rows[0] as { asset: SpeedAsset; duration: SpeedDuration } | undefined;
+    if (!row) {
+      return NextResponse.json({ error: "Market not found" }, { status: 404 });
+    }
+    if (row.asset === "GOLD" && !flags.enabled_gold) {
+      return NextResponse.json(
+        { error: "Gold markets are currently disabled" },
+        { status: 400 }
+      );
+    }
+    if (row.duration === "1m" && !flags.enabled_1m) {
+      return NextResponse.json(
+        { error: "1-minute markets are currently disabled" },
+        { status: 400 }
+      );
+    }
+    if (!isMarketEnabled(flags, row.asset, row.duration)) {
+      return NextResponse.json(
+        { error: "This market is currently disabled" },
+        { status: 400 }
+      );
     }
 
     const data = await runAs(session.user.id, async (tx) => {

@@ -24,6 +24,7 @@ import { sql } from "drizzle-orm";
 import { auth } from "@/auth";
 import { runAs } from "@/lib/db/run-as";
 import { logger } from "@/lib/logger";
+import { getSpeedFlags } from "@/lib/speed/feature-flags";
 import type { SpeedAsset } from "@/types/database";
 
 interface QuoteBody {
@@ -162,6 +163,15 @@ export async function POST(req: Request) {
       }
       if (body.side !== "over" && body.side !== "under") {
         return NextResponse.json({ error: "Invalid side" }, { status: 400 });
+      }
+
+      // Step 9 pre-flight: short-circuit if trading is globally disabled.
+      const flags = await getSpeedFlags();
+      if (!flags.trading_enabled) {
+        return NextResponse.json(
+          { error: "Speed markets are currently disabled" },
+          { status: 400 }
+        );
       }
 
       const cacheKey = `t:${body.market_id}:${body.side}`;
@@ -346,6 +356,15 @@ export async function POST(req: Request) {
     if (body.mode === "cashout") {
       if (!body.position_id) {
         return NextResponse.json({ error: "Missing position_id" }, { status: 400 });
+      }
+
+      // Step 9 pre-flight: short-circuit if cashout is globally disabled.
+      const flags = await getSpeedFlags();
+      if (!flags.cashout_enabled) {
+        return NextResponse.json(
+          { error: "Cashout temporarily disabled — please try again shortly" },
+          { status: 400 }
+        );
       }
 
       const cacheKey = `c:${body.position_id}`;

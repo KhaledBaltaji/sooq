@@ -18,6 +18,7 @@ import { sql } from "drizzle-orm";
 import { auth } from "@/auth";
 import { runAs } from "@/lib/db/run-as";
 import { logger } from "@/lib/logger";
+import { getSpeedFlags } from "@/lib/speed/feature-flags";
 
 interface CashoutBody {
   position_id: string;
@@ -50,6 +51,16 @@ export async function POST(req: Request) {
 
     if (!position_id) {
       return NextResponse.json({ error: "Missing position_id" }, { status: 400 });
+    }
+
+    // Step 9 pre-flight: short-circuit if cashout is globally disabled.
+    // The RPC enforces the same; this just avoids spending a DB txn.
+    const flags = await getSpeedFlags();
+    if (!flags.cashout_enabled) {
+      return NextResponse.json(
+        { error: "Cashout temporarily disabled — please try again shortly" },
+        { status: 400 }
+      );
     }
 
     const data = await runAs(session.user.id, async (tx) => {
