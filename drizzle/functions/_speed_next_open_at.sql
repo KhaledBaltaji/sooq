@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0052_phase_5a_gold_completeness/functions/_speed_is_market_open.sql
--- Last extracted: 2026-05-11T18:30:38.535Z
+-- Last extracted: 2026-05-11T18:57:42.997Z
 CREATE OR REPLACE FUNCTION public._speed_next_open_at(p_asset text, p_ts_utc timestamp with time zone DEFAULT now())
  RETURNS timestamp with time zone
  LANGUAGE plpgsql

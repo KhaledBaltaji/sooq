@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0028_pricing_engine_v2.sql:176
--- Last extracted: 2026-05-11T18:30:36.317Z
+-- Last extracted: 2026-05-11T18:57:41.186Z
 CREATE OR REPLACE FUNCTION public._speed_utc_today()
  RETURNS date
  LANGUAGE sql

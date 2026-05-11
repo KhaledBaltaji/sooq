@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0037_recalibration_cron/functions/_speed_isotonic_pav.sql
--- Last extracted: 2026-05-11T18:30:37.048Z
+-- Last extracted: 2026-05-11T18:57:41.585Z
 CREATE OR REPLACE FUNCTION public._speed_isotonic_pav(p_values double precision[], p_weights double precision[])
  RETURNS double precision[]
  LANGUAGE plpgsql

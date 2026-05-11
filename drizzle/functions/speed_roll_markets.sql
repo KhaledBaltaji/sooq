@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0020_enable_1h_markets.sql:69
--- Last extracted: 2026-05-11T18:30:33.835Z
+-- Last extracted: 2026-05-11T18:57:38.499Z
 CREATE OR REPLACE FUNCTION public.speed_roll_markets()
  RETURNS jsonb
  LANGUAGE plpgsql
