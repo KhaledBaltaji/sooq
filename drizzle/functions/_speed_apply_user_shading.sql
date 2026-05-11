@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0044_sprint_2_clv_throttle/functions/_speed_apply_user_shading.sql
--- Last extracted: 2026-05-09T16:57:15.084Z
+-- Last extracted: 2026-05-11T18:30:38.127Z
 CREATE OR REPLACE FUNCTION public._speed_apply_user_shading(p_user_id uuid, p_offered_prob double precision, p_soft_block_threshold double precision DEFAULT 0.95)
  RETURNS double precision
  LANGUAGE plpgsql

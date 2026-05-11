@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0030_quote_execute_parity.sql:97
--- Last extracted: 2026-05-09T16:57:12.963Z
+-- Last extracted: 2026-05-11T18:30:35.470Z
 CREATE OR REPLACE FUNCTION public._speed_assert_parity(p_field text, p_expected numeric, p_actual numeric, p_tolerance numeric)
  RETURNS void
  LANGUAGE plpgsql
