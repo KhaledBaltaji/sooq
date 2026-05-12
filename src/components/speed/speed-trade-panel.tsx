@@ -173,9 +173,13 @@ export function SpeedTradePanel({
   const aboveMax = amount > stakeMaxForDuration;
   // Mig 0034: dynamic stake limit (tighter than configured trade max for low-prob bets)
   const aboveDynamicMax = amount > dynamicStakeMax;
+  // Phase 5b (2026-05-12): removed `!isStale` silent gate. The button no
+  // longer goes silently dead on a brief WS hiccup — server is authoritative
+  // on staleness and rejects with a visible error if the price is truly old.
+  // The "Reconnecting" banner below (line 580) already informs the user
+  // when the WS is stale, so they know what's happening.
   const canTrade =
     !expired &&
-    !isStale &&
     fairOver !== null &&
     aboveMin &&
     !aboveMax &&

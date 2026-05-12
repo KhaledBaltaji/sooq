@@ -495,7 +495,10 @@ function PositionCard({
   isStale: boolean;
 }) {
   const t = useTranslations("speed");
-  const { cashout, loading } = useSpeedCashout();
+  // Phase 5b (2026-05-12): destructure `error` so server rejections surface
+  // visibly. Before this change the cashout button silently swallowed every
+  // server error (rate limit, parity drift, balance, cap, etc.).
+  const { cashout, loading, error: cashError } = useSpeedCashout();
   const fee = useSpeedFeeConfig();
   const pnlBus = usePnlPop();
 
@@ -519,8 +522,13 @@ function PositionCard({
   const urgent = isUrgent(totalSeconds, secondsLeft);
 
   const sigma = fee.realizedVol?.[market.asset]?.rv ?? fee.iv[market.asset] ?? 0.6;
+  // Phase 5b (2026-05-12): removed `&& !isStale` silent gate. We still compute
+  // a markProb even if the WS is briefly stale — the chart is showing the
+  // last known price; the cashout button should honor that. Server has its
+  // own authoritative 2s staleness check on speed_oracle_latest. If truly
+  // stale, server rejects with a visible error (now rendered via cashError).
   const fairOver =
-    livePrice !== null && !isStale
+    livePrice !== null
       ? speedFairProbOver(livePrice, Number(market.strike_price), secondsLeft, sigma)
       : null;
   const markProb =
@@ -562,7 +570,31 @@ function PositionCard({
     await cashout(pos.id, parity, undefined, pos.market_id);
   }, [loading, cashoutLocked, cashoutValue, pnlBus, stake, cashout, pos.id, pos.market_id, livePrice, secondsLeft]);
 
+  // Phase 5b (2026-05-12): surface server errors that previously disappeared
+  // into hook state. Same mapping pattern as Phase 1 mobile-bar fix.
+  const mappedError = cashError ? mapSpeedRpcError(cashError) : null;
+
   return (
+    <div className="space-y-1.5">
+      {/* Error toast: visible whenever a cashout returned a server error.
+          Replaces the prior silent failure where the panel stayed unchanged
+          after a failed tap. */}
+      {mappedError && (
+        <div
+          className="rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive ring-1 ring-destructive/30"
+          role="alert"
+        >
+          {mappedError.userMessage}
+        </div>
+      )}
+      {/* Reconnecting hint when WS is briefly stale but we still have a price.
+          Informational only — the button stays enabled because the server
+          has its own authoritative 2s staleness check. */}
+      {isStale && livePrice !== null && !mappedError && (
+        <div className="text-[10px] uppercase tracking-wide text-muted-custom text-center font-medium">
+          Reconnecting to live price…
+        </div>
+      )}
     <button
       type="button"
       onClick={handleCashout}
@@ -656,6 +688,7 @@ function PositionCard({
         )}
       </div>
     </button>
+    </div>
   );
 }
 
@@ -671,7 +704,9 @@ function Dock({
   isStale: boolean;
   hasOpenPositions: boolean;
 }) {
-  const { placeBet, loading } = useSpeedExecuteTrade();
+  // Phase 5b (2026-05-12): destructure `error` so trade-entry rejections
+  // surface visibly. Mirrors the cashout-side fix in PositionCard.
+  const { placeBet, loading, error: betError } = useSpeedExecuteTrade();
   const fee = useSpeedFeeConfig();
   const [stake, setStake] = useState(5);
   const [tapFire, setTapFire] = useState<SpeedSide | null>(null);
@@ -690,7 +725,11 @@ function Dock({
   // Mig 0034+0044 follow-up: server-authoritative quotes for both sides.
   // The Dock bet buttons display payout multipliers that need to match
   // what the trade RPC will actually execute at. See use-speed-quote.ts.
-  const quoteEnabled = !expired && !isStale && market.status === "open";
+  //
+  // Phase 5b (2026-05-12): removed `!isStale` from quoteEnabled. We still
+  // poll for quotes during brief WS hiccups; the server is authoritative
+  // on staleness and will reject visibly if the oracle is truly stale.
+  const quoteEnabled = !expired && market.status === "open";
   const { quote: overQuote } = useSpeedTradeQuote(market.id, "over", {
     enabled: quoteEnabled,
   });
@@ -699,8 +738,10 @@ function Dock({
   });
 
   // Local fallback while quote loads or for anon users.
+  // Phase 5b: removed `&& !isStale` silent gate. Same reasoning as
+  // PositionCard.fairOver: server checks staleness authoritatively.
   const localFairOver =
-    livePrice !== null && !isStale
+    livePrice !== null
       ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
       : null;
   const localOfferedOver =
@@ -737,10 +778,13 @@ function Dock({
     (fairOver !== null
       ? isEntryRejectedNearDecided(1 - fairOver, secondsLeft, fee)
       : false);
+  // Phase 5b (2026-05-12): removed `!isStale` silent gate. The button stays
+  // enabled when WS is briefly stale — server has its own 2s authoritative
+  // check and will reject with a visible error if the price is truly stale.
   const canBetOver =
-    !expired && !isStale && fairOver !== null && stake > 0 && !loading && !upBlocked && rvLoaded;
+    !expired && fairOver !== null && stake > 0 && !loading && !upBlocked && rvLoaded;
   const canBetUnder =
-    !expired && !isStale && fairOver !== null && stake > 0 && !loading && !downBlocked && rvLoaded;
+    !expired && fairOver !== null && stake > 0 && !loading && !downBlocked && rvLoaded;
 
   const handleBet = useCallback(
     async (side: SpeedSide) => {
@@ -762,12 +806,31 @@ function Dock({
     [canBetOver, canBetUnder, placeBet, market.id, stake, livePrice, secondsLeft],
   );
 
+  // Phase 5b (2026-05-12): surface server errors that previously vanished.
+  const mappedError = betError ? mapSpeedRpcError(betError) : null;
+
   return (
     <div
       className="mt-auto px-3 pt-3 pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))]"
       role="region"
       aria-label="Speed trade dock"
     >
+      {/* Error toast for trade rejections (rate limit, parity drift, balance,
+          cap reached, etc.). Phase 5b — replaces the prior silent failure. */}
+      {mappedError && (
+        <div
+          className="mb-2 rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive ring-1 ring-destructive/30"
+          role="alert"
+        >
+          {mappedError.userMessage}
+        </div>
+      )}
+      {/* Reconnecting hint when WS is briefly stale. Button stays enabled. */}
+      {isStale && livePrice !== null && !mappedError && (
+        <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-custom text-center font-medium">
+          Reconnecting to live price…
+        </div>
+      )}
       {/* A5: hide preset chips when the user has at least one open position
           on this market — the dock stays leaner and attention shifts to
           the live position card above. */}

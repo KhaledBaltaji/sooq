@@ -89,8 +89,11 @@ export function SpeedMobileTradeBar({
   const noPosition = !position || position.status !== "open";
 
   // Trade-mode quotes for both sides (used by no-position branch).
+  // Phase 5b (2026-05-12): removed `!isStale` so quotes keep polling during
+  // brief WS hiccups. Server is authoritative on staleness; client-side
+  // silent block was masking visible server errors.
   const tradeQuotesEnabled =
-    noPosition && !expired && !isStale && market.status === "open";
+    noPosition && !expired && market.status === "open";
   const { quote: overQuote } = useSpeedTradeQuote(market.id, "over", {
     enabled: tradeQuotesEnabled,
   });
@@ -180,12 +183,15 @@ export function SpeedMobileTradeBar({
       !rvLoaded || (tradeQuotesEnabled && (overQuote === null || underQuote === null));
 
     // Plan C: gating booleans from the hook (local OR server).
+    // Phase 5b (2026-05-12): removed `!isStale` silent gate. quoteStale
+    // (local-vs-server divergence >5%) is the meaningful staleness signal;
+    // it gates the button without silently hiding the cause.
     const canBetOver =
-      !expired && !isStale && !quoteStale && fairOver !== null && stake > 0 && !betLoading &&
+      !expired && !quoteStale && fairOver !== null && stake > 0 && !betLoading &&
       !overGating.lateRejected && !overGating.nearDecidedReject &&
       !overGating.softBlocked && rvLoaded;
     const canBetUnder =
-      !expired && !isStale && !quoteStale && fairOver !== null && stake > 0 && !betLoading &&
+      !expired && !quoteStale && fairOver !== null && stake > 0 && !betLoading &&
       !underGating.lateRejected && !underGating.nearDecidedReject &&
       !underGating.softBlocked && rvLoaded;
 
@@ -250,6 +256,12 @@ export function SpeedMobileTradeBar({
           <div className="mb-2 flex items-center justify-center gap-2 text-[11px] text-text-secondary">
             <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
             <span>{t("loadingPricing")}</span>
+          </div>
+        ) : isStale && livePrice !== null ? (
+          /* Phase 5b: WS briefly stale but we still have a price. Informational
+             only — buttons stay enabled, server gates authoritatively. */
+          <div className="mb-2 text-center text-[11px] uppercase tracking-wide text-muted-custom font-medium">
+            Reconnecting to live price…
           </div>
         ) : null}
 
@@ -430,12 +442,20 @@ export function SpeedMobileTradeBar({
           <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
           <span>{t("loadingPricing")}</span>
         </div>
+      ) : isStale && livePrice !== null ? (
+        /* Phase 5b: WS briefly stale. Button stays enabled; server gates. */
+        <div className="mb-2 text-center text-[11px] uppercase tracking-wide text-muted-custom font-medium">
+          Reconnecting to live price…
+        </div>
       ) : null}
 
       <button
         type="button"
         onClick={handleCashout}
-        disabled={cashLoading || expired || isStale || cashoutLocked}
+        // Phase 5b (2026-05-12): removed `isStale` from disabled. Server is
+        // authoritative on price staleness and will reject visibly via the
+        // error toast above. WS hiccups no longer silently disable cashout.
+        disabled={cashLoading || expired || cashoutLocked}
         className={cn(
           "flex w-full items-center justify-center rounded-xl px-4 py-3 font-satoshi text-base font-extrabold uppercase tracking-wide text-white shadow-sm transition active:translate-y-px",
           "bg-warning disabled:opacity-50 disabled:cursor-not-allowed",

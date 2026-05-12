@@ -204,13 +204,24 @@ export function SpeedPositionPanel({
         </div>
       )}
 
+      {/* Phase 5b (2026-05-12): WS briefly stale but price still displayed.
+          Informational — button stays enabled, server is authoritative. */}
+      {isStale && livePrice !== null && !mappedError && (
+        <div className="text-center text-[11px] uppercase tracking-wide text-muted-custom font-medium">
+          Reconnecting to live price…
+        </div>
+      )}
+
       {position.status === "open" && !expired && (
         <div className="space-y-1.5">
           <Button
             type="button"
             size="lg"
             onClick={handleCashout}
-            disabled={cashLoading || isStale || cashoutLocked}
+            // Phase 5b (2026-05-12): removed `isStale` from disabled. Server
+            // is authoritative on staleness; client gate was silently hiding
+            // it. Error block above (mappedError) renders any server reject.
+            disabled={cashLoading || cashoutLocked}
             className="h-12 w-full font-satoshi text-sm font-bold uppercase tracking-wide"
           >
             {cashLoading ? (
