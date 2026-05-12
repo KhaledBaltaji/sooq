@@ -433,7 +433,15 @@ export function SpeedMobileTradeBar({
         role="region"
         aria-label="Speed position monitor"
       >
-        <div className="flex items-center justify-between rounded-xl bg-text text-bg px-4 py-3 min-h-[56px]">
+        <div className="relative flex items-center justify-between rounded-lg bg-bg ring-1 ring-border-custom/50 px-4 py-3 min-h-[56px] cursor-default select-text overflow-hidden">
+          {/* 4px colored side bar — only directional cue, no button feel. */}
+          <span
+            aria-hidden
+            className={cn(
+              "absolute left-0 top-0 bottom-0 w-1",
+              isUpPos ? "bg-success" : "bg-destructive",
+            )}
+          />
           <div className="flex items-center gap-2.5">
             <span
               className={cn(
@@ -443,14 +451,14 @@ export function SpeedMobileTradeBar({
             >
               {isUpPos ? t("up") : t("down")}
             </span>
-            <span className="font-satoshi text-base font-bold tabular-nums">
+            <span className="font-satoshi text-base font-bold tabular-nums text-text">
               {formatCurrency(stakeAmt)}
             </span>
-            <span className="text-[10px] uppercase tracking-wide text-bg/55">
+            <span className="text-[10px] uppercase tracking-wide text-muted-custom">
               {t("yourPosition")}
             </span>
           </div>
-          <span className="text-[11px] font-bold tabular-nums text-bg/80">
+          <span className="text-[11px] font-bold tabular-nums text-muted-custom">
             {t("paysIfWin", { amount: formatCurrency(expectedSettlementPayout) })}
           </span>
         </div>

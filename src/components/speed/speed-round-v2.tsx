@@ -583,12 +583,13 @@ function PositionCard({
     return (
       <div
         className={cn(
-          "relative w-full rounded-2xl bg-text text-bg overflow-hidden px-4 py-2.5 text-left",
+          "relative w-full rounded-lg bg-bg ring-1 ring-border-custom/50 overflow-hidden px-4 py-2.5 text-left cursor-default select-text",
         )}
         role="region"
         aria-label={`Position: ${isUp ? "up" : "down"} ${formatCurrency(stake)}`}
       >
-        {/* 4px colored side bar matches the cashout-button visual rhythm */}
+        {/* 4px colored side bar — direction is the one thing we want
+            unmistakable. No button affordance otherwise. */}
         <span
           aria-hidden
           className={cn(
@@ -597,7 +598,7 @@ function PositionCard({
           )}
         />
 
-        {/* Row 1: side chip + countdown · stake reference (same as 5m). */}
+        {/* Row 1: side chip + countdown · stake reference. */}
         <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide">
           <div className="flex items-center gap-2">
             <span
@@ -610,24 +611,24 @@ function PositionCard({
             </span>
             <span
               className={cn(
-                "tabular-nums text-bg/70",
+                "tabular-nums text-muted-custom",
                 urgent && "animate-pulse text-destructive",
               )}
             >
               {formatSpeedCountdown(secondsLeft)}
             </span>
           </div>
-          <span className="tabular-nums text-bg/55">
+          <span className="tabular-nums text-muted-custom">
             {formatCurrency(stake)} {t("stake")}
           </span>
         </div>
 
-        {/* Row 2: position recap — side+stake. No button affordance. */}
+        {/* Row 2: position recap — side+stake. Info weight, not button. */}
         <div className="mt-1 flex items-baseline justify-between gap-3">
-          <span className="text-[11px] font-bold uppercase tracking-wide text-bg/70">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-muted-custom">
             {t("yourPosition")}
           </span>
-          <span className="font-satoshi text-2xl font-black tabular-nums tracking-[-0.01em] leading-none">
+          <span className="font-satoshi text-base font-bold tabular-nums tracking-[-0.01em] leading-none text-text">
             {isUp ? t("up") : t("down")} {formatCurrency(stake)}
           </span>
         </div>
@@ -635,7 +636,7 @@ function PositionCard({
         {/* Row 3: settlement potential — "Pays $X if you win" */}
         <div className="mt-0.5 flex items-center justify-end h-4 text-xs font-bold tabular-nums leading-none">
           {potentialPayout !== null && (
-            <span className="font-satoshi text-bg/60 uppercase tracking-wide text-[10px]">
+            <span className="font-satoshi text-muted-custom uppercase tracking-wide text-[10px]">
               {t("paysIfWin", { amount: formatCurrency(potentialPayout) })}
             </span>
           )}
