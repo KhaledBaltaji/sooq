@@ -545,17 +545,22 @@ function PositionCard({
     if (loading || cashoutLocked || cashoutValue === null) return;
     triggerHapticConfirm();
     pnlBus?.pop(cashoutValue - stake);
+    // Hot-fix: align with mig 0057 follow-up. The other cashout call sites
+    // (speed-mobile-trade-bar, speed-position-panel) only send spot + bucket
+    // because expectedIv / expectedMarkProb / expectedCashoutAmount were
+    // tripping PARITY_DRIFT silently on deep-losing $0.00 cashouts —
+    // _speed_assert_parity raises when actual=0, regardless of whether
+    // expected was also 0. Server-side fix is a separate concern; for now
+    // skip these client-supplied parity fields to match the rest of the
+    // codebase. Server has its own authoritative computation.
     const parity: CashoutParitySnapshot = {
-      expectedIv: sigma,
       expectedSpot: livePrice ?? undefined,
       expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
-      expectedMarkProb: markProb ?? undefined,
-      expectedCashoutAmount: cashoutValue ?? undefined,
     };
     // Plan E: pass marketId so the cashout hook can flip the correct
     // (userId, marketId)-scoped query keys for instant UI update.
     await cashout(pos.id, parity, undefined, pos.market_id);
-  }, [loading, cashoutLocked, cashoutValue, pnlBus, stake, cashout, pos.id, pos.market_id, sigma, livePrice, secondsLeft, markProb]);
+  }, [loading, cashoutLocked, cashoutValue, pnlBus, stake, cashout, pos.id, pos.market_id, livePrice, secondsLeft]);
 
   return (
     <button
