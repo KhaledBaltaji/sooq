@@ -552,8 +552,10 @@ function PositionCard({
       expectedMarkProb: markProb ?? undefined,
       expectedCashoutAmount: cashoutValue ?? undefined,
     };
-    await cashout(pos.id, parity);
-  }, [loading, cashoutLocked, cashoutValue, pnlBus, stake, cashout, pos.id, sigma, livePrice, secondsLeft, markProb]);
+    // Plan E: pass marketId so the cashout hook can flip the correct
+    // (userId, marketId)-scoped query keys for instant UI update.
+    await cashout(pos.id, parity, undefined, pos.market_id);
+  }, [loading, cashoutLocked, cashoutValue, pnlBus, stake, cashout, pos.id, pos.market_id, sigma, livePrice, secondsLeft, markProb]);
 
   return (
     <button

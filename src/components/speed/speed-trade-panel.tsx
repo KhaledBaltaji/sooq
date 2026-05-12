@@ -4,12 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { animate as fmAnimate } from "framer-motion";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, Info } from "lucide-react";
+import { ChevronDown, Info, Loader2 } from "lucide-react";
 import { cn, formatCurrency, formatNumber, triggerHapticConfirm } from "@/lib/utils";
 import {
-  ENTRY_LATE_WINDOW_REJECT_S,
-  isEntryRejectedNearDecided,
-  isEntrySoftBlocked,
   speedFairProbOver,
   speedMaxStakeForOffered,
   speedOfferedProb,
@@ -23,6 +20,7 @@ import {
 } from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
 import { useSpeedTradeQuote } from "@/hooks/use-speed-quote";
+import { useTradeGating } from "@/hooks/use-trade-gating";
 import { useUser } from "@/lib/auth/hooks";
 import { useAuthModal } from "@/components/auth/auth-modal-provider";
 import { useDepositModal } from "@/components/wallet/deposit-modal-provider";
@@ -68,7 +66,10 @@ export function SpeedTradePanel({
   const [now, setNow] = useState<number>(Date.now());
 
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 250);
+    // Plan C: 100ms tick (was 250ms) so secondsLeft-driven gating predicates
+    // (last-10s reject, last-30s near-decided block) update 2.5× faster.
+    // CPU cost is one Date.now() + setState per mounted panel.
+    const id = setInterval(() => setNow(Date.now()), 100);
     return () => clearInterval(id);
   }, []);
 
@@ -94,10 +95,10 @@ export function SpeedTradePanel({
   // more than the IV_DRIFT tolerance, producing a confusing reject after
   // the user taps Bet. Block until snapshot arrives.
   const rvLoaded = !feeConfig.useRealizedVol || Boolean(realizedVol?.[market.asset]);
-  // Local fallback estimates — kept for pill display (both sides shown
-  // simultaneously, fetching a quote per side would double bandwidth) and
-  // for the brief window before the quote loads. Once `quote` arrives the
-  // selected-side values switch to server-truth below.
+
+  // Local estimates for the OPPOSITE side's pill (we don't fetch a quote
+  // for the unselected side — would double bandwidth). The selected side
+  // uses the gating hook below which already handles local + server.
   const localFairOver = livePrice
     ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
     : null;
@@ -110,56 +111,47 @@ export function SpeedTradePanel({
       ? speedOfferedProb(localFairOver, "under", feeConfig, secondsLeft)
       : null;
 
-  // Mig 0034+0044 follow-up: server-authoritative quote for the selected
-  // side. The server applies _speed_pricing_apply (matrix asym push-up)
-  // and _speed_apply_user_shading (CLV throttle) and reads per-market
-  // values from speed_market_config — none of which the client can
-  // replicate locally. `useSpeedTradeQuote` fetches /api/speed/quote and
-  // refetches every 1.5s while the round is open.
+  // Mig 0034+0044: server-authoritative quote for the selected side.
+  // Server applies _speed_pricing_apply (matrix) and _speed_apply_user_shading
+  // (CLV throttle) — neither replicable client-side.
   const { quote: tradeQuote } = useSpeedTradeQuote(
     market?.id ?? null,
     side,
     { enabled: !!user && !expired && market.status === "open" },
   );
 
-  // Display values: prefer server quote, fall back to local estimate while
-  // the quote loads or for anonymous users.
-  const offeredForSide =
-    tradeQuote?.offered_prob ??
-    (side === "over" ? localOfferedOver : localOfferedUnder);
-  const fairForSide =
-    tradeQuote?.fair_prob_side ??
-    (localFairOver !== null ? (side === "over" ? localFairOver : 1 - localFairOver) : null);
+  // Plan C: monotonic OR-gating. Local helper (fresh, WS-driven) OR server
+  // flag (1s stale but sees shading + matrix). Whichever restricts first
+  // wins. Replaces the old `server ?? local` preference that lagged 1-2s.
+  const gating = useTradeGating({
+    tradeQuote,
+    livePrice,
+    sigma,
+    market,
+    side,
+    secondsLeft,
+    isStale,
+    feeConfig,
+  });
 
-  // Pill display (both sides) — informational, local estimate is fine.
+  const offeredForSide = gating.offeredForDisplay;
+  const fairForSide = gating.fairForDisplay;
+  const lateRejected = gating.lateRejected;
+  const nearDecidedReject = gating.nearDecidedReject;
+  const softBlocked = gating.softBlocked;
+
+  // Pill display (both sides) — informational, local estimate is fine for
+  // the unselected side. Selected side reads from the gating hook (server-
+  // first display).
   const offeredOver =
-    side === "over" && tradeQuote ? tradeQuote.offered_prob : localOfferedOver;
+    side === "over" ? offeredForSide : localOfferedOver;
   const offeredUnder =
-    side === "under" && tradeQuote ? tradeQuote.offered_prob : localOfferedUnder;
-  // Convenience for any downstream readers expecting `fairOver`.
+    side === "under" ? offeredForSide : localOfferedUnder;
   const fairOver =
-    side === "over" && tradeQuote ? tradeQuote.fair_prob_side : localFairOver;
+    side === "over" ? fairForSide : localFairOver;
 
   const payoutPerDollar = offeredForSide ? 1 / offeredForSide : null;
   const toWin = payoutPerDollar && amount > 0 ? amount * payoutPerDollar : 0;
-
-  // Mig 0028: server-side gating predicates mirrored on the client so the
-  // button correctly disables BEFORE the user taps. Server rejects with raw
-  // exception strings; the client gate avoids the reject + toast cycle.
-  const lateRejectS =
-    feeConfig.pricing.cashoutLateRejectS ?? ENTRY_LATE_WINDOW_REJECT_S;
-  const lateRejected =
-    tradeQuote?.late_window_block ?? secondsLeft < lateRejectS;
-  const nearDecidedReject =
-    tradeQuote?.near_decided_block ??
-    (fairForSide !== null &&
-      isEntryRejectedNearDecided(fairForSide, secondsLeft, feeConfig));
-
-  // Mig 0034: soft-block — prefer server's authoritative boolean from the
-  // quote when available. Local predicate is fallback only.
-  const softBlocked =
-    tradeQuote?.soft_blocked ??
-    (offeredForSide !== null && isEntrySoftBlocked(offeredForSide, feeConfig));
 
   // Per-duration stake max from fee_config (admin-tunable per duration),
   // falling back to the generic UI ceiling.
@@ -296,6 +288,16 @@ export function SpeedTradePanel({
         type: "warning" as const,
       };
     }
+    // Plan C5: local-vs-server divergence indicator. Fires only when nothing
+    // else is wrong but the polled quote has drifted >5% from the WS-driven
+    // local computation. Surfaces a soft "Refreshing…" hint so the user
+    // doesn't act on stale display odds. Auto-clears on next quote arrival.
+    if (gating.isQuoteStale) {
+      return {
+        text: "Refreshing odds…",
+        type: "warning" as const,
+      };
+    }
     return null;
   }, [
     amount,
@@ -310,6 +312,7 @@ export function SpeedTradePanel({
     lateRejected,
     nearDecidedReject,
     softBlocked,
+    gating.isQuoteStale,
   ]);
 
   const getButtonLabel = () => {
@@ -348,7 +351,15 @@ export function SpeedTradePanel({
     };
   }
 
+  // Plan B2: submitting lock. Held from the instant of tap until the network
+  // round-trip completes (success or error). A second click while a request
+  // is in flight short-circuits before any network call fires. Closes the
+  // perceived gap between tap and React's next render in which `loading`
+  // becomes true.
+  const submittingRef = useRef<string | null>(null);
+
   async function handleButtonClick() {
+    if (submittingRef.current !== null) return; // second click ignored
     triggerHapticConfirm();
     // Auth-gate cascade — no user → login, no balance → deposit, then bet.
     if (!user) {
@@ -360,14 +371,23 @@ export function SpeedTradePanel({
       return;
     }
     if (!canTrade) return;
-    // Mig 0030: send full parity snapshot so server can detect drift.
-    const { error: err } = await placeBet(
-      market.id,
-      side,
-      amount,
-      buildParitySnapshot(),
-    );
-    if (!err) onBetPlaced();
+    // Plan B1: per-click UUID. Browser-level retries of the same Request
+    // reuse this UUID, so server dedups correctly. Distinct clicks each
+    // get a new UUID → each creates a real position.
+    const idempotencyKey = crypto.randomUUID();
+    submittingRef.current = idempotencyKey;
+    try {
+      const { error: err } = await placeBet(
+        market.id,
+        side,
+        amount,
+        buildParitySnapshot(),
+        idempotencyKey,
+      );
+      if (!err) onBetPlaced();
+    } finally {
+      submittingRef.current = null;
+    }
   }
 
   // 3D pushable button — mirror of trade-panel.tsx with green/red shadows.
@@ -571,7 +591,16 @@ export function SpeedTradePanel({
           disabled={isButtonDisabled()}
           className={cn(buttonBase, buttonColor, isButtonDisabled() && disabledStyle)}
         >
-          {getButtonLabel()}
+          {/* Plan B3: in-button spinner reads as "active" the same animation
+              frame the user taps, before React re-renders with loading=true. */}
+          {loading ? (
+            <span className="inline-flex items-center justify-center gap-2">
+              <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+              {getButtonLabel()}
+            </span>
+          ) : (
+            getButtonLabel()
+          )}
         </Button>
       </div>
 

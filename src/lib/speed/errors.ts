@@ -47,6 +47,14 @@ export type SpeedErrorKind =
   | "duplicate"
   | "kill_switch"
   | "unauthorized"
+  // Plan B4: HTTP 429 from rate-limit.ts. Distinct from `velocity` which
+  // is the RPC-level per-minute guard.
+  | "rate_limited"
+  // Plan B+ Option C: fetch itself threw (network drop, DNS, CORS, etc).
+  // Distinct from a non-OK HTTP response — the server MAY have processed
+  // the request and the response was lost in transit. UI must prompt the
+  // user to check position state before retrying to avoid double-charge.
+  | "network_error"
   | "unknown";
 
 export interface SpeedErrorMapped {
@@ -82,6 +90,19 @@ export function mapSpeedRpcError(raw: string | null | undefined): SpeedErrorMapp
   const msg = (raw ?? "").trim();
   if (!msg) {
     return { kind: "unknown", userMessage: "Something went wrong.", retryable: false };
+  }
+
+  // ---- Plan B+ Option C: network-layer throw ----
+  // First matcher — beats every other kind. When fetch itself fails (not a
+  // server response), the server MAY have processed the request. Telling
+  // the user to retry blindly risks double-charge.
+  if (msg.startsWith("NETWORK_THROW")) {
+    return {
+      kind: "network_error",
+      userMessage:
+        "Network issue — your request may have gone through. Check your positions before retrying.",
+      retryable: false,
+    };
   }
 
   // ---- Mig 0034 pricing engine v3 errors ----
@@ -209,6 +230,26 @@ export function mapSpeedRpcError(raw: string | null | undefined): SpeedErrorMapp
       kind: "ngr_floor",
       userMessage: "Trading paused for the day. Try again after midnight UTC.",
       retryable: false,
+    };
+  }
+
+  // ---- Plan B4: HTTP 429 (rate-limit.ts) ----
+  // The HTTP-layer 429 from src/lib/speed/rate-limit.ts has a distinctive
+  // phrasing: "Slow down — you can place a new trade in Xs" (or "...cash
+  // out again in Xs"). The RPC velocity guard's "Slow down" wording omits
+  // the "in Ns" suffix. Order matters: this matcher must fire BEFORE the
+  // generic "Slow down" matcher below.
+  if (
+    msg.includes("Slow down") &&
+    (msg.includes("you can place a new trade") ||
+      msg.includes("you can cash out again"))
+  ) {
+    return {
+      kind: "rate_limited",
+      // Pass through server-provided humanized message — it already
+      // includes the retryAfter seconds.
+      userMessage: msg,
+      retryable: true,
     };
   }
 

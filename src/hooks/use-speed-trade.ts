@@ -69,14 +69,18 @@ export function useSpeedExecuteTrade() {
       side: SpeedSide,
       stake: number,
       parity: TradeParitySnapshot = {},
+      idempotencyKeyArg?: string,
     ) => {
       setLoading(true);
       setError(null);
-      // Stable per-intent key: (market, side, stake) within a 5s bucket
-      // collapse to the same key, so a network-retry of the same bet is
-      // deduplicated by the server.
-      const bucket = Math.floor(Date.now() / 5000);
-      const idempotencyKey = `speed-bet-${marketId}-${side}-${stake}-${bucket}`;
+      // Plan B1: per-click idempotency key. Caller (the click handler in
+      // the trade panel / mobile bar) generates a UUID once per click and
+      // passes it in. A true network-level retry of the same Request reuses
+      // the same UUID, so the server dedupes correctly. Distinct
+      // user-initiated clicks each get a unique UUID → each creates a real
+      // position (fixes the 5s-bucket regression that silently dropped
+      // legitimate back-to-back trades).
+      const idempotencyKey = idempotencyKeyArg ?? crypto.randomUUID();
 
       try {
         const res = await fetch("/api/speed/trade", {
@@ -121,12 +125,13 @@ export function useSpeedExecuteTrade() {
         // Doesn't block the optimistic UI.
         void refetchUser();
 
-        // Group D: optimistic position insert. The trade RPC returns
-        // `position_id` (and other fields); splice a synthetic position into
-        // the cache so the cashout button card animates in immediately,
-        // BEFORE the 200ms invalidation refetch lands. Once the refetch
-        // returns the authoritative row, TanStack Query's structural sharing
-        // dedupes by id.
+        // Plan E (cache-key fix): the previous code only wrote to a
+        // non-existent ["speed-positions"] key. Mobile bar reads via
+        // useSpeedPosition (["speed-position", userId, marketId]) and
+        // desktop right column reads via useOpenSpeedPositions
+        // (["speed-open-positions", userId, marketId]). We now write to
+        // and invalidate all three so the optimistic flip is visible
+        // within ~50ms instead of the next 2s poll.
         if (data?.position_id && data.offered_prob > 0 && data.spot_price > 0) {
           const optimistic: SpeedPositionWithMarket = {
             id: data.position_id,
@@ -143,24 +148,46 @@ export function useSpeedExecuteTrade() {
             closed_at: null,
             market: null,
           };
+          // Dedup the optimistic row by id so a re-run doesn't duplicate.
+          const upsertOptimistic = (prev: PositionsListResponse | undefined) => {
+            if (!prev) return { positions: [optimistic] };
+            if (prev.positions.some((p) => p.id === data.position_id)) return prev;
+            return { positions: [optimistic, ...prev.positions] };
+          };
+          queryClient.setQueriesData<PositionsListResponse>(
+            { queryKey: ["speed-position", user?.id, marketId] },
+            upsertOptimistic,
+          );
+          queryClient.setQueriesData<PositionsListResponse>(
+            { queryKey: ["speed-open-positions", user?.id, marketId] },
+            upsertOptimistic,
+          );
+          // Legacy key — harmless future-compat in case any other surface
+          // subscribes (none today).
           queryClient.setQueriesData<PositionsListResponse>(
             { queryKey: ["speed-positions"] },
-            (prev) => {
-              if (!prev) return { positions: [optimistic] };
-              if (prev.positions.some((p) => p.id === data.position_id)) return prev;
-              return { positions: [optimistic, ...prev.positions] };
-            },
+            upsertOptimistic,
           );
         }
 
         // Reconcile with server (replaces optimistic with authoritative).
+        queryClient.invalidateQueries({ queryKey: ["speed-position", user?.id, marketId] });
+        queryClient.invalidateQueries({ queryKey: ["speed-open-positions", user?.id, marketId] });
         queryClient.invalidateQueries({ queryKey: ["speed-positions"] });
         return { data, error: null };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Network error";
+        // Plan B+ follow-up (Option C): the catch path fires only on a
+        // network-layer throw (fetch failure, DNS, CORS, transport drop).
+        // Distinct from a non-OK HTTP response (handled above). In this
+        // path the server MAY have processed the trade — we just lost the
+        // response. Prefix with NETWORK_THROW so mapSpeedRpcError surfaces
+        // a "check your positions before retrying" warning instead of a
+        // generic toast that prompts blind re-clicks.
+        const rawMsg = err instanceof Error ? err.message : "Network error";
+        const msg = `NETWORK_THROW: ${rawMsg}`;
         Sentry.captureMessage("Speed trade threw", {
           level: "error",
-          extra: { marketId, side, stake, errorMessage: msg },
+          extra: { marketId, side, stake, errorMessage: rawMsg },
           tags: { source: "hook/speed-execute-trade" },
         });
         setError(msg);
@@ -180,13 +207,24 @@ export function useSpeedCashout() {
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { adjustBalance, refetch: refetchUser } = useUserContext();
+  const { user } = useSession();
 
   const cashout = useCallback(
-    async (positionId: string, parity: CashoutParitySnapshot = {}) => {
+    async (
+      positionId: string,
+      parity: CashoutParitySnapshot = {},
+      idempotencyKeyArg?: string,
+      // Plan E: marketId is required for the optimistic cache update to
+      // hit the correct query keys (useSpeedPosition + useOpenSpeedPositions
+      // are scoped per (userId, marketId)). Optional for backwards compat
+      // — when missing, the optimistic update falls back to the legacy
+      // key-less write and the UI waits ~2s for the next poll.
+      marketId?: string,
+    ) => {
       setLoading(true);
       setError(null);
-      const bucket = Math.floor(Date.now() / 5000);
-      const idempotencyKey = `speed-cashout-${positionId}-${bucket}`;
+      // Plan B1: per-click idempotency key. See placeBet for rationale.
+      const idempotencyKey = idempotencyKeyArg ?? crypto.randomUUID();
 
       try {
         const res = await fetch("/api/speed/cashout", {
@@ -228,35 +266,60 @@ export function useSpeedCashout() {
         }
         void refetchUser();
 
-        // Optimistic position update: flip the cashed-out row to status
-        // 'cashed_out' immediately so the card exits via AnimatePresence
-        // before the 5s poll cycle.
+        // Plan E (cache-key fix): write to the actual keys the mobile bar
+        // (useSpeedPosition) and desktop right column (useOpenSpeedPositions)
+        // subscribe to. Previously this only wrote to ["speed-positions"]
+        // which nobody read from, so the mobile cashout button stayed
+        // visible for ~2s until the next poll. Optimistic update flips
+        // status to 'cashed_out' so AnimatePresence can exit the card
+        // within the same frame as the balance bump.
+        const flipToCashedOut = (prev: PositionsListResponse | undefined) => {
+          if (!prev) return prev;
+          return {
+            positions: prev.positions.map((p) =>
+              p.id === positionId
+                ? {
+                    ...p,
+                    status: "cashed_out" as SpeedPosition["status"],
+                    payout_amount: cashoutAmt,
+                    closed_at: new Date().toISOString(),
+                  }
+                : p,
+            ),
+          };
+        };
+        if (marketId) {
+          queryClient.setQueriesData<PositionsListResponse>(
+            { queryKey: ["speed-position", user?.id, marketId] },
+            flipToCashedOut,
+          );
+          queryClient.setQueriesData<PositionsListResponse>(
+            { queryKey: ["speed-open-positions", user?.id, marketId] },
+            flipToCashedOut,
+          );
+        }
+        // Legacy key — harmless future-compat.
         queryClient.setQueriesData<PositionsListResponse>(
           { queryKey: ["speed-positions"] },
-          (prev) => {
-            if (!prev) return prev;
-            return {
-              positions: prev.positions.map((p) =>
-                p.id === positionId
-                  ? {
-                      ...p,
-                      status: "cashed_out" as SpeedPosition["status"],
-                      payout_amount: cashoutAmt,
-                      closed_at: new Date().toISOString(),
-                    }
-                  : p,
-              ),
-            };
-          },
+          flipToCashedOut,
         );
-        // Reconcile.
+
+        // Reconcile against server.
+        if (marketId) {
+          queryClient.invalidateQueries({ queryKey: ["speed-position", user?.id, marketId] });
+          queryClient.invalidateQueries({ queryKey: ["speed-open-positions", user?.id, marketId] });
+        }
         queryClient.invalidateQueries({ queryKey: ["speed-positions"] });
         return { data, error: null };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Network error";
+        // Plan B+ follow-up (Option C): see placeBet for rationale. The
+        // server MAY have processed the cashout — surface a warning that
+        // prompts the user to check their position state before retrying.
+        const rawMsg = err instanceof Error ? err.message : "Network error";
+        const msg = `NETWORK_THROW: ${rawMsg}`;
         Sentry.captureMessage("Speed cashout threw", {
           level: "error",
-          extra: { positionId, errorMessage: msg },
+          extra: { positionId, errorMessage: rawMsg },
           tags: { source: "hook/speed-cashout" },
         });
         setError(msg);
@@ -265,7 +328,7 @@ export function useSpeedCashout() {
         setLoading(false);
       }
     },
-    [queryClient, adjustBalance, refetchUser]
+    [queryClient, adjustBalance, refetchUser, user?.id]
   );
 
   return { cashout, loading, error };

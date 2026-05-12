@@ -41,8 +41,13 @@ export async function POST(req: Request) {
 
     const rl = checkRateLimit("cashout", session.user.id, getClientIp(req));
     if (!rl.ok) {
+      // Plan B4: friendly, structured 429. See trade route for rationale.
       return NextResponse.json(
-        { error: "Too many requests" },
+        {
+          error: `Slow down — you can cash out again in ${rl.retryAfter}s`,
+          code: "RATE_LIMITED",
+          retryAfter: rl.retryAfter,
+        },
         { status: 429, headers: { "Retry-After": String(rl.retryAfter) } }
       );
     }

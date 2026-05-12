@@ -22,8 +22,14 @@
 
 const WINDOWS: Record<string, { perUser: number; perIp: number; windowMs: number }> = {
   quote:   { perUser: 60, perIp: 120, windowMs: 10_000 },
-  trade:   { perUser: 10, perIp:  20, windowMs: 10_000 },
-  cashout: { perUser: 10, perIp:  20, windowMs: 10_000 },
+  // Plan B4: bumped trade/cashout from 10→20 per 10s per user (and 20→40
+  // per IP). The RPC's own velocity guard (speed_per_user_velocity_max =
+  // 30/min) is the authoritative defense; this HTTP layer is anti-flood
+  // only. 10/10s was tripping legitimate frustration-spam from users
+  // whose first tap felt unresponsive and produced confusing "Too many
+  // requests" toasts.
+  trade:   { perUser: 20, perIp:  40, windowMs: 10_000 },
+  cashout: { perUser: 20, perIp:  40, windowMs: 10_000 },
 };
 
 // key -> array of unix-ms timestamps; pruned on read.

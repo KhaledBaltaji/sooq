@@ -126,7 +126,7 @@ async function postCashoutQuote(
 
 /**
  * Authoritative trade-side quote for a given (market, side).
- * Refetches every 1.5 seconds so the displayed price follows live BTC.
+ * Refetches every 750ms so the displayed price follows live BTC.
  *
  * Pass `enabled: false` to suppress the fetch (e.g. market closed,
  * user not logged in, side hasn't been picked).
@@ -144,8 +144,11 @@ export function useSpeedTradeQuote(
         : ["speed-quote", "trade", "noop"],
     queryFn: () => postTradeQuote(marketId!, side!),
     enabled,
-    // BTC ticks ~10Hz; 1.5s gives a fresh price ~6x per round of trading.
-    refetchInterval: 1500,
+    // Plan C: refetch every 750ms (was 1500ms). Combined with the kept
+    // 250ms server cache and the new OR-gating in useTradeGating, the
+    // chart-vs-button drift drops from ~1750ms to ~1000ms. Local helpers
+    // handle the sub-1s freshness, server is a reconciliation signal.
+    refetchInterval: 750,
     // We never want a stale quote sitting in cache after the user navigates
     // away and back — the price moves.
     staleTime: 0,
@@ -162,7 +165,7 @@ export function useSpeedTradeQuote(
 }
 
 /**
- * Authoritative cashout quote for an open position. Refetches every 1.5s.
+ * Authoritative cashout quote for an open position. Refetches every 750ms.
  *
  * Pass `enabled: false` after the position closes (won/lost/refunded).
  */
@@ -177,7 +180,8 @@ export function useSpeedCashoutQuote(
       : ["speed-quote", "cashout", "noop"],
     queryFn: () => postCashoutQuote(positionId!),
     enabled,
-    refetchInterval: 1500,
+    // Plan C: see useSpeedTradeQuote — 750ms refetch with OR-gating on the client.
+    refetchInterval: 750,
     staleTime: 0,
     gcTime: 5_000,
     retry: 1,

@@ -1,20 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Loader2, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn, formatCurrency, triggerHapticConfirm } from "@/lib/utils";
 import {
-  CASHOUT_REJECT_WINDOW_SECONDS,
-  computeCashoutAmount,
   durationToSeconds,
   formatSpeedCountdown,
-  isCashoutRejectedNearDecided,
   isUrgent,
-  speedCashoutMargin,
-  speedFairProbOver,
   speedSecondsLeftBucket,
 } from "@/lib/speed/pricing";
 import { mapSpeedRpcError } from "@/lib/speed/errors";
@@ -25,6 +20,7 @@ import {
 } from "@/hooks/use-speed-trade";
 import { useSpeedFeeConfig } from "@/hooks/use-speed-fee-config";
 import { useSpeedCashoutQuote } from "@/hooks/use-speed-quote";
+import { useCashoutGating } from "@/hooks/use-cashout-gating";
 
 export function SpeedPositionPanel({
   market,
@@ -46,7 +42,8 @@ export function SpeedPositionPanel({
   const [now, setNow] = useState<number>(Date.now());
 
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 250);
+    // Plan C: 100ms tick (was 250ms) — see speed-trade-panel.tsx for rationale.
+    const id = setInterval(() => setNow(Date.now()), 100);
     return () => clearInterval(id);
   }, []);
 
@@ -54,7 +51,6 @@ export function SpeedPositionPanel({
   const expired = secondsLeft <= 0;
   const urgent = isUrgent(totalSeconds, secondsLeft);
 
-  const strike = Number(market.strike_price);
   const stake = Number(position.stake);
   const entryOfferedProb = Number(position.entry_offered_prob);
   const payoutPerDollar = entryOfferedProb > 0 ? 1 / entryOfferedProb : 0;
@@ -63,63 +59,39 @@ export function SpeedPositionPanel({
   // Mig 0034+0044 follow-up: authoritative server cashout quote.
   // _speed_cashout_margin reads per-market values from speed_market_config
   // (mig 0050-0051) and the matrix correction the client can't replicate.
-  // Fetched every 1.5s while the position is open; falls back to local
+  // Fetched every 750ms while the position is open; falls back to local
   // estimate while loading.
   const cashoutEnabled = !expired && position.status === "open";
   const { quote: cashoutQuote } = useSpeedCashoutQuote(position.id, {
     enabled: cashoutEnabled,
   });
 
-  // Local fallback computation (while quote loads, or anon).
+  // Plan C: OR-gating from the centralized hook. Local helper OR server flag,
+  // whichever restricts first. Replaces the previous `server ?? local`
+  // preference that lagged 1-2s behind the chart.
   const sigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
-  const ivUsed = cashoutQuote?.iv_used ?? sigma;
-  const localFairOver =
-    livePrice && !isStale
-      ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
-      : null;
-  const localMarkProb =
-    localFairOver !== null
-      ? position.side === "over"
-        ? localFairOver
-        : 1 - localFairOver
-      : null;
+  const cashoutGating = useCashoutGating({
+    cashoutQuote,
+    livePrice,
+    sigma,
+    market,
+    position,
+    secondsLeft,
+    isStale,
+    feeConfig,
+  });
 
-  let localEstCashout: number | null = null;
-  let localIsWinning = false;
-  let localMargin = 0;
-  if (localMarkProb !== null) {
-    localIsWinning = localMarkProb >= entryOfferedProb;
-    localMargin = speedCashoutMargin(
-      market.duration,
-      localIsWinning,
-      localMarkProb,
-      secondsLeft,
-      feeConfig,
-    );
-    localEstCashout = computeCashoutAmount(
-      stake,
-      entryOfferedProb,
-      localMarkProb,
-      localIsWinning,
-      localMargin,
-    );
-    localEstCashout = Math.round(localEstCashout * 100) / 100;
-  }
+  // Only estCashout is consumed by this panel (label rendering + button).
+  // The hook exposes markProb / isWinning / margin / ivUsed for callers that
+  // need them; position panel doesn't.
+  const estCashout = cashoutGating.cashoutAmountForDisplay;
 
-  // Prefer server values, fall back to local estimate.
-  const markProb = cashoutQuote?.mark_prob ?? localMarkProb;
-  const estCashout = cashoutQuote?.cashout_amount ?? localEstCashout;
-  const isWinning = cashoutQuote?.is_winning ?? localIsWinning;
-  const margin = cashoutQuote?.margin_applied ?? localMargin;
-
-  // Mig 0028: cashout gating predicates. Prefer server booleans from quote.
-  const cashoutLockedLate =
-    cashoutQuote?.late_window_block ??
-    secondsLeft < (feeConfig.pricing.cashoutLateRejectS ?? CASHOUT_REJECT_WINDOW_SECONDS);
-  const cashoutLockedNearDecided =
-    cashoutQuote?.near_decided_block ??
-    (markProb !== null &&
-      isCashoutRejectedNearDecided(markProb, secondsLeft, feeConfig));
+  // Preserve the position panel's prior gating semantics: only late + near-
+  // decided block the cashout button (cap-edge does not gate here — the
+  // panel displays the cashout amount even at cap; mobile bar handles cap
+  // separately).
+  const cashoutLockedLate = cashoutGating.cashoutLockedLate;
+  const cashoutLockedNearDecided = cashoutGating.cashoutLockedNearDecided;
   const cashoutLocked = cashoutLockedLate || cashoutLockedNearDecided;
 
   const sideColor = position.side === "over" ? "text-success" : "text-destructive";
@@ -139,10 +111,23 @@ export function SpeedPositionPanel({
     };
   }
 
+  // Plan B2: submitting lock — see speed-trade-panel.tsx for rationale.
+  const submittingRef = useRef<string | null>(null);
+
   async function handleCashout() {
+    if (submittingRef.current !== null) return;
     if (cashLoading || expired || cashoutLocked) return;
     triggerHapticConfirm();
-    await cashout(position.id, buildParitySnapshot());
+    // Plan B1: per-click UUID for idempotency.
+    const idempotencyKey = crypto.randomUUID();
+    submittingRef.current = idempotencyKey;
+    try {
+      // Plan E: pass marketId so the cashout hook can flip the correct
+      // (userId, marketId)-scoped query keys.
+      await cashout(position.id, buildParitySnapshot(), idempotencyKey, market.id);
+    } finally {
+      submittingRef.current = null;
+    }
   }
 
   const mappedError = cashError ? mapSpeedRpcError(cashError) : null;

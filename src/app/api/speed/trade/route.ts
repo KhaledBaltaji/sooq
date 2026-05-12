@@ -47,8 +47,15 @@ export async function POST(req: Request) {
 
     const rl = checkRateLimit("trade", session.user.id, getClientIp(req));
     if (!rl.ok) {
+      // Plan B4: friendly, structured 429. Client `mapSpeedRpcError`
+      // matches on "Slow down" / code:RATE_LIMITED to render the same
+      // plain-English copy.
       return NextResponse.json(
-        { error: "Too many requests" },
+        {
+          error: `Slow down — you can place a new trade in ${rl.retryAfter}s`,
+          code: "RATE_LIMITED",
+          retryAfter: rl.retryAfter,
+        },
         { status: 429, headers: { "Retry-After": String(rl.retryAfter) } }
       );
     }

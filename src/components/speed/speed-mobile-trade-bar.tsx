@@ -1,22 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Minus, Plus } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { cn, formatCurrency, triggerHapticConfirm } from "@/lib/utils";
-import {
-  CASHOUT_REJECT_WINDOW_SECONDS,
-  computeCashoutAmount,
-  ENTRY_LATE_WINDOW_REJECT_S,
-  isCashoutAtCapEdge,
-  isCashoutRejectedNearDecided,
-  isEntryRejectedNearDecided,
-  isEntrySoftBlocked,
-  speedCashoutMargin,
-  speedFairProbOver,
-  speedOfferedProb,
-  speedSecondsLeftBucket,
-} from "@/lib/speed/pricing";
+import { speedSecondsLeftBucket } from "@/lib/speed/pricing";
 import {
   useSpeedExecuteTrade,
   useSpeedCashout,
@@ -28,6 +16,8 @@ import {
   useSpeedTradeQuote,
   useSpeedCashoutQuote,
 } from "@/hooks/use-speed-quote";
+import { useTradeGating } from "@/hooks/use-trade-gating";
+import { useCashoutGating } from "@/hooks/use-cashout-gating";
 import type { SpeedMarket, SpeedPosition, SpeedSide } from "@/types/database";
 
 const STAKE_PRESETS = [10, 50, 100, 1000];
@@ -77,7 +67,8 @@ export function SpeedMobileTradeBar({
   const [now, setNow] = useState<number>(Date.now());
 
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 250);
+    // Plan C: 100ms tick (was 250ms) — see speed-trade-panel.tsx for rationale.
+    const id = setInterval(() => setNow(Date.now()), 100);
     return () => clearInterval(id);
   }, []);
 
@@ -109,71 +100,80 @@ export function SpeedMobileTradeBar({
     { enabled: cashoutQuoteEnabled },
   );
 
+  // Hoisted at top-level so the gating hooks (which use useMemo internally)
+  // satisfy React's Rules of Hooks. Their results are only consumed within
+  // the matching branch below.
+  // Mig 0028+: prefer realized-vol σ from RV cache so client matches server.
+  const sigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
+  // T3.1: gate on RV cache being loaded — see speed-trade-panel.tsx for
+  // the rationale. When useRealizedVol is OFF, gate is a no-op.
+  const rvLoaded = !feeConfig.useRealizedVol || Boolean(realizedVol?.[market.asset]);
+
+  // Plan C: OR-gating per side, computed at top level. Used by the
+  // no-position branch's UP / DOWN buttons.
+  const overGating = useTradeGating({
+    tradeQuote: overQuote,
+    livePrice,
+    sigma,
+    market,
+    side: "over",
+    secondsLeft,
+    isStale,
+    feeConfig,
+  });
+  const underGating = useTradeGating({
+    tradeQuote: underQuote,
+    livePrice,
+    sigma,
+    market,
+    side: "under",
+    secondsLeft,
+    isStale,
+    feeConfig,
+  });
+  // Plan C: OR-gating for cashout. Accepts position=null so this is safe
+  // to call when the user has no open position.
+  const cashoutGating = useCashoutGating({
+    cashoutQuote: cashoutQuoteShared,
+    livePrice,
+    sigma,
+    market,
+    position: position ?? null,
+    secondsLeft,
+    isStale,
+    feeConfig,
+  });
+
+  // Plan B2: submitting lock shared across UP / DOWN / CASHOUT buttons.
+  // Hoisted to top-level so it persists across the no-position ↔ has-position
+  // branch flip. Held from the instant of tap until the network round-trip
+  // resolves — closes the pre-render window where a frustrated user could
+  // fire two requests for the same intent.
+  const submittingRef = useRef<string | null>(null);
+
   // ── No-position branch: stake stepper + Up/Down ────────────────────────
   if (!position || position.status !== "open") {
-    const strike = Number(market.strike_price);
-    // Mig 0028+: prefer realized-vol σ from RV cache so client matches server.
-    const sigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
-    // T3.1: gate on RV cache being loaded — see speed-trade-panel.tsx for
-    // the rationale. When useRealizedVol is OFF, gate is a no-op.
-    const rvLoaded = !feeConfig.useRealizedVol || Boolean(realizedVol?.[market.asset]);
-
-    // Local-estimate fallbacks (while quote loads, or anon user).
-    const localFairOver =
-      livePrice && !isStale
-        ? speedFairProbOver(livePrice, strike, secondsLeft, sigma)
-        : null;
-    const localOfferedOver =
-      localFairOver !== null
-        ? speedOfferedProb(localFairOver, "over", feeConfig, secondsLeft)
-        : null;
-    const localOfferedUnder =
-      localFairOver !== null
-        ? speedOfferedProb(localFairOver, "under", feeConfig, secondsLeft)
-        : null;
-
-    // Prefer server quote, fall back to local estimate.
-    const offeredOver = overQuote?.offered_prob ?? localOfferedOver;
-    const offeredUnder = underQuote?.offered_prob ?? localOfferedUnder;
-    const fairOver = overQuote?.fair_prob_side ?? localFairOver;
+    const offeredOver = overGating.offeredForDisplay;
+    const offeredUnder = underGating.offeredForDisplay;
+    const fairOver = overGating.fairForDisplay;
 
     const upPayout = offeredOver ? stake / offeredOver : null;
     const downPayout = offeredUnder ? stake / offeredUnder : null;
     const upProfit = upPayout !== null ? upPayout - stake : null;
     const downProfit = downPayout !== null ? downPayout - stake : null;
 
-    // Mig 0028 entry-side gating mirrored on client. Prefer server gate
-    // booleans from the quote when available.
-    const lateRejectS =
-      feeConfig.pricing.cashoutLateRejectS ?? ENTRY_LATE_WINDOW_REJECT_S;
-    const lateRejected =
-      overQuote?.late_window_block ??
-      underQuote?.late_window_block ??
-      secondsLeft < lateRejectS;
-    const fairOverGate =
-      overQuote?.near_decided_block ??
-      (fairOver !== null
-        ? isEntryRejectedNearDecided(fairOver, secondsLeft, feeConfig)
-        : false);
-    const fairUnderGate =
-      underQuote?.near_decided_block ??
-      (fairOver !== null
-        ? isEntryRejectedNearDecided(1 - fairOver, secondsLeft, feeConfig)
-        : false);
-    const overSoftBlocked =
-      overQuote?.soft_blocked ??
-      (offeredOver !== null && isEntrySoftBlocked(offeredOver, feeConfig));
-    const underSoftBlocked =
-      underQuote?.soft_blocked ??
-      (offeredUnder !== null && isEntrySoftBlocked(offeredUnder, feeConfig));
+    // Plan C: gating booleans from the hook (local OR server).
     const canBetOver =
       !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
-      !lateRejected && !fairOverGate && !overSoftBlocked && rvLoaded;
+      !overGating.lateRejected && !overGating.nearDecidedReject &&
+      !overGating.softBlocked && rvLoaded;
     const canBetUnder =
       !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
-      !lateRejected && !fairUnderGate && !underSoftBlocked && rvLoaded;
+      !underGating.lateRejected && !underGating.nearDecidedReject &&
+      !underGating.softBlocked && rvLoaded;
 
     const handleBet = async (side: SpeedSide) => {
+      if (submittingRef.current !== null) return; // Plan B2: in-flight lock
       const allowed = side === "over" ? canBetOver : canBetUnder;
       if (!allowed) return;
       triggerHapticConfirm();
@@ -186,8 +186,21 @@ export function SpeedMobileTradeBar({
         expectedSpot: livePrice ?? undefined,
         expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
       };
-      const { error: err } = await placeBet(market.id, side, stake, parity);
-      if (!err) onBetPlaced();
+      // Plan B1: per-click UUID for idempotency.
+      const idempotencyKey = crypto.randomUUID();
+      submittingRef.current = idempotencyKey;
+      try {
+        const { error: err } = await placeBet(
+          market.id,
+          side,
+          stake,
+          parity,
+          idempotencyKey,
+        );
+        if (!err) onBetPlaced();
+      } finally {
+        submittingRef.current = null;
+      }
     };
 
     const cyclePreset = () => {
@@ -244,16 +257,24 @@ export function SpeedMobileTradeBar({
               "min-h-[56px]",
             )}
           >
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-base uppercase tracking-wide">{t("up")}</span>
-              <span className="text-base font-extrabold tabular-nums">
-                {offeredOver !== null ? `${Math.round(offeredOver * 100)}%` : "—"}
-              </span>
-            </div>
-            {upProfit !== null && (
-              <span className="text-[11px] font-bold tabular-nums opacity-90">
-                +{formatCurrency(upProfit)}
-              </span>
+            {/* Plan B3: spinner reads as "active" within one animation frame
+                of the tap, before React re-renders with betLoading=true. */}
+            {betLoading ? (
+              <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+            ) : (
+              <>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-base uppercase tracking-wide">{t("up")}</span>
+                  <span className="text-base font-extrabold tabular-nums">
+                    {offeredOver !== null ? `${Math.round(offeredOver * 100)}%` : "—"}
+                  </span>
+                </div>
+                {upProfit !== null && (
+                  <span className="text-[11px] font-bold tabular-nums opacity-90">
+                    +{formatCurrency(upProfit)}
+                  </span>
+                )}
+              </>
             )}
           </button>
           <button
@@ -266,16 +287,23 @@ export function SpeedMobileTradeBar({
               "min-h-[56px]",
             )}
           >
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-base uppercase tracking-wide">{t("down")}</span>
-              <span className="text-base font-extrabold tabular-nums">
-                {offeredUnder !== null ? `${Math.round(offeredUnder * 100)}%` : "—"}
-              </span>
-            </div>
-            {downProfit !== null && (
-              <span className="text-[11px] font-bold tabular-nums opacity-90">
-                +{formatCurrency(downProfit)}
-              </span>
+            {/* Plan B3: see UP button. */}
+            {betLoading ? (
+              <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+            ) : (
+              <>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-base uppercase tracking-wide">{t("down")}</span>
+                  <span className="text-base font-extrabold tabular-nums">
+                    {offeredUnder !== null ? `${Math.round(offeredUnder * 100)}%` : "—"}
+                  </span>
+                </div>
+                {downProfit !== null && (
+                  <span className="text-[11px] font-bold tabular-nums opacity-90">
+                    +{formatCurrency(downProfit)}
+                  </span>
+                )}
+              </>
             )}
           </button>
         </div>
@@ -284,76 +312,24 @@ export function SpeedMobileTradeBar({
   }
 
   // ── Open-position branch: one-tap CASH OUT ─────────────────────────────
-  const strike = Number(market.strike_price);
   const stakeAmt = Number(position.stake);
   const entryProb = Number(position.entry_offered_prob);
 
-  // Mig 0028: option-C profit-based cashout. Use realized vol when fresh;
-  // falls back to fee_config IV. Cashout rejected in last 10s + last-30s
-  // near-decided block.
-  const cashoutSigma = realizedVol?.[market.asset]?.rv ?? iv[market.asset] ?? 0.6;
-  const lateRejectS =
-    feeConfig.pricing.cashoutLateRejectS ?? CASHOUT_REJECT_WINDOW_SECONDS;
-
-  // Mig 0034+0044 follow-up: authoritative server cashout quote.
-  // The hook itself is hoisted to the top of the component (Rules of
-  // Hooks) — reuse its result here.
+  // Plan C: gating booleans + display values from the hoisted useCashoutGating
+  // hook. OR-gated: server flag OR local predicate, whichever restricts first.
   const cashoutQuote = cashoutQuoteShared;
-
-  // Local fallback computation (while quote loads).
-  const localFairOver =
-    livePrice && !isStale
-      ? speedFairProbOver(livePrice, strike, secondsLeft, cashoutSigma)
-      : null;
-  const localMarkProb =
-    localFairOver !== null
-      ? position.side === "over"
-        ? localFairOver
-        : 1 - localFairOver
-      : null;
-
-  let localEstCashout: number | null = null;
-  if (localMarkProb !== null) {
-    const isWinning = localMarkProb >= entryProb;
-    const margin = speedCashoutMargin(
-      market.duration,
-      isWinning,
-      localMarkProb,
-      secondsLeft,
-      feeConfig,
-    );
-    const raw = computeCashoutAmount(
-      stakeAmt,
-      entryProb,
-      localMarkProb,
-      isWinning,
-      margin,
-    );
-    localEstCashout = Math.max(0, Math.round(raw * 100) / 100);
-  }
-
-  // Prefer server quote, fall back to local estimate.
-  const markProb = cashoutQuote?.mark_prob ?? localMarkProb;
-  const estCashout = cashoutQuote?.cashout_amount ?? localEstCashout;
-
-  // Gating: prefer server boolean from the quote, fall back to local
-  // predicate while loading.
-  const cashoutLockedLate =
-    cashoutQuote?.late_window_block ?? secondsLeft < lateRejectS;
-  const cashoutLockedNearDecided =
-    cashoutQuote?.near_decided_block ??
-    (markProb !== null &&
-      isCashoutRejectedNearDecided(markProb, secondsLeft, feeConfig));
-  const cashoutAtCap =
-    cashoutQuote?.cap_edge ??
-    (markProb !== null && isCashoutAtCapEdge(entryProb, markProb, feeConfig));
-  const cashoutLocked = cashoutLockedLate || cashoutLockedNearDecided || cashoutAtCap;
-  // Expected settlement payout shown in the cap-edge tooltip / message
+  const cashoutLockedLate = cashoutGating.cashoutLockedLate;
+  const cashoutLockedNearDecided = cashoutGating.cashoutLockedNearDecided;
+  const cashoutAtCap = cashoutGating.cashoutAtCap;
+  const cashoutLocked = cashoutGating.cashoutLocked;
+  const estCashout = cashoutGating.cashoutAmountForDisplay;
+  // Expected settlement payout shown in the cap-edge tooltip / message.
   const expectedSettlementPayout =
     cashoutQuote?.expected_settlement_payout ??
     (entryProb > 0 ? stakeAmt / entryProb : 0);
 
   const handleCashout = async () => {
+    if (submittingRef.current !== null) return; // Plan B2: in-flight lock
     if (cashLoading || expired || cashoutLocked) return;
     triggerHapticConfirm();
     // Mig 0030 / 0057 follow-up: only echo client-truthful inputs (spot,
@@ -363,7 +339,15 @@ export function SpeedMobileTradeBar({
       expectedSpot: livePrice ?? undefined,
       expectedSecondsLeftBucket: speedSecondsLeftBucket(secondsLeft),
     };
-    await cashout(position.id, parity);
+    const idempotencyKey = crypto.randomUUID();
+    submittingRef.current = idempotencyKey;
+    try {
+      // Plan E: pass marketId so the cashout hook can flip the correct
+      // (userId, marketId)-scoped query keys for instant UI update.
+      await cashout(position.id, parity, idempotencyKey, market.id);
+    } finally {
+      submittingRef.current = null;
+    }
   };
 
   let cashoutLabel: string;
