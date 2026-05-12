@@ -266,6 +266,7 @@ export async function POST(req: Request) {
                 c.reject_low,
                 c.late_30s_imb,
                 c.late_reject_s,
+                c.use_new_curve,
                 CASE
                   WHEN s.seconds_left < 30 THEN c.late_30s_mult::DOUBLE PRECISION
                   WHEN s.seconds_left < 60 THEN c.late_60s_mult::DOUBLE PRECISION
