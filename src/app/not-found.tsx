@@ -1,17 +1,8 @@
 import Link from "next/link";
-import { headers } from "next/headers";
 import { getTranslations } from "next-intl/server";
-import { logger } from "@/lib/logger";
 
 export default async function NotFound() {
-  const headerList = await headers();
-  const url = headerList.get("x-invoke-path") || headerList.get("referer") || "unknown";
   const t = await getTranslations("errors");
-
-  logger.warn(`404 Not Found: ${url}`, {
-    source: "http/404",
-    path: url,
-  });
 
   return (
     <div className="min-h-[60vh] flex flex-col items-center justify-center gap-4 px-6 text-center">
