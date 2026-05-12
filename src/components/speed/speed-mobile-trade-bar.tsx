@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Minus, Plus } from "lucide-react";
+import { AlertCircle, Loader2, Minus, Plus } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { cn, formatCurrency, triggerHapticConfirm } from "@/lib/utils";
+import { mapSpeedRpcError } from "@/lib/speed/errors";
 import { speedSecondsLeftBucket } from "@/lib/speed/pricing";
 import {
   useSpeedExecuteTrade,
@@ -58,8 +59,13 @@ export function SpeedMobileTradeBar({
   onBetPlaced: () => void;
 }) {
   const t = useTranslations("speed");
-  const { placeBet, loading: betLoading } = useSpeedExecuteTrade();
-  const { cashout, loading: cashLoading } = useSpeedCashout();
+  // Phase 1 (2026-05-12): read errors from both hooks so the mobile bar can
+  // surface every server rejection (rate limit 429, PARITY_DRIFT, IV_DRIFT,
+  // balance, cap, etc). Before this change the mobile bar never rendered
+  // these — taps silently failed and the user saw nothing.
+  const { placeBet, loading: betLoading, error: betError } = useSpeedExecuteTrade();
+  const { cashout, loading: cashLoading, error: cashError } = useSpeedCashout();
+  const lastError = betError ?? cashError;
   const feeConfig = useSpeedFeeConfig();
   const { iv, realizedVol } = feeConfig;
   const [stake, setStake] = useState<number>(5);
@@ -162,13 +168,24 @@ export function SpeedMobileTradeBar({
     const upProfit = upPayout !== null ? upPayout - stake : null;
     const downProfit = downPayout !== null ? downPayout - stake : null;
 
+    // Phase 1 (2026-05-12): block taps when the local/server quote has
+    // diverged > 5% — UI already shows the stale price; letting the tap
+    // through would just produce a PARITY_DRIFT toast after the round trip.
+    const quoteStale = overGating.isQuoteStale || underGating.isQuoteStale;
+
+    // Phase 1 (2026-05-12): inline hint when pricing inputs aren't ready
+    // yet. Replaces the silent "button greys with no explanation" state
+    // that previously made the bar look broken on first paint.
+    const tradeQuoteLoading =
+      !rvLoaded || (tradeQuotesEnabled && (overQuote === null || underQuote === null));
+
     // Plan C: gating booleans from the hook (local OR server).
     const canBetOver =
-      !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
+      !expired && !isStale && !quoteStale && fairOver !== null && stake > 0 && !betLoading &&
       !overGating.lateRejected && !overGating.nearDecidedReject &&
       !overGating.softBlocked && rvLoaded;
     const canBetUnder =
-      !expired && !isStale && fairOver !== null && stake > 0 && !betLoading &&
+      !expired && !isStale && !quoteStale && fairOver !== null && stake > 0 && !betLoading &&
       !underGating.lateRejected && !underGating.nearDecidedReject &&
       !underGating.softBlocked && rvLoaded;
 
@@ -209,12 +226,33 @@ export function SpeedMobileTradeBar({
       setStake(STAKE_PRESETS[next]);
     };
 
+    const mappedError = lastError ? mapSpeedRpcError(lastError) : null;
+
     return (
       <div
         className="fixed bottom-0 left-0 right-0 z-40 lg:hidden border-t border-border-custom bg-bg/95 backdrop-blur-sm pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] pt-3 px-4"
         role="region"
         aria-label="Speed trade bar"
       >
+        {/* Phase 1 (2026-05-12): error toast + loading hint. Error wins over
+            loading when both are active. Previously this surface was empty
+            so every server rejection (rate limit, parity drift, balance,
+            cap) silently failed and the user saw nothing. */}
+        {mappedError ? (
+          <div
+            className="mb-2 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive"
+            role="alert"
+          >
+            <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="leading-tight">{mappedError.userMessage}</span>
+          </div>
+        ) : tradeQuoteLoading ? (
+          <div className="mb-2 flex items-center justify-center gap-2 text-[11px] text-text-secondary">
+            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+            <span>{t("loadingPricing")}</span>
+          </div>
+        ) : null}
+
         {/* Stake stepper */}
         <div className="flex items-center justify-center gap-3 mb-2">
           <button
@@ -367,12 +405,33 @@ export function SpeedMobileTradeBar({
     cashoutLabel = t("cashOut");
   }
 
+  const mappedError = lastError ? mapSpeedRpcError(lastError) : null;
+  // Phase 1: cashout-quote loading hint.
+  const cashoutQuoteLoading = cashoutQuoteEnabled && cashoutQuote === null;
+
   return (
     <div
       className="fixed bottom-0 left-0 right-0 z-40 lg:hidden border-t border-border-custom bg-bg/95 backdrop-blur-sm pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] pt-3 px-4"
       role="region"
       aria-label="Speed cashout bar"
     >
+      {/* Phase 1 (2026-05-12): error toast + loading hint — mirrors the
+          no-position branch. Error wins over loading. */}
+      {mappedError ? (
+        <div
+          className="mb-2 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive"
+          role="alert"
+        >
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span className="leading-tight">{mappedError.userMessage}</span>
+        </div>
+      ) : cashoutQuoteLoading ? (
+        <div className="mb-2 flex items-center justify-center gap-2 text-[11px] text-text-secondary">
+          <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+          <span>{t("loadingPricing")}</span>
+        </div>
+      ) : null}
+
       <button
         type="button"
         onClick={handleCashout}

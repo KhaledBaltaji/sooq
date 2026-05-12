@@ -85,6 +85,7 @@
     "empty": "No open speed markets right now. Check back in a few seconds.",
     "reconnecting": "Reconnecting to price feed…",
     "loadingChart": "Loading chart…",
+    "loadingPricing": "Loading pricing…",
     "spotPrice": "Spot",
     "potentialPayout": "Potential payout",
     "payoutIfWin": "Payout if won",
