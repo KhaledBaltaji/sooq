@@ -1,0 +1,6 @@
+{
+  "functions": ["_speed_cashout_margin"],
+  "exact_args": {
+    "_speed_cashout_margin": 5
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "functions": ["_speed_cashout_margin", "_speed_pricing_apply", "speed_execute_cashout"],
+  "tables": ["speed_market_config", "fee_config"]
+}

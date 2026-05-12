@@ -130,7 +130,10 @@ export function speedSpreadMultiplier(
 
 /**
  * Mig 0028: option-C profit-based cashout margin.
- * Mirrors `_speed_cashout_margin(duration, is_winning, mark_prob, seconds_left)`.
+ * Mirrors `_speed_cashout_margin(asset, duration, is_winning, mark_prob, seconds_left)`
+ * (asset+duration arg pair added in mig 0051; p_mark_prob widened from numeric to
+ * double precision in mig 0060 — JS Number is already float64, so the JS body is
+ * unchanged).
  *
  *   Winning side:
  *     margin = base_winning + saturation_premium + late_window_premium
