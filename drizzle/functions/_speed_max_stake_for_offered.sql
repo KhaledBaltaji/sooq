@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0034_pricing_engine_v3.sql:461
--- Last extracted: 2026-05-11T18:57:39.766Z
+-- Last extracted: 2026-05-12T10:35:32.254Z
 CREATE OR REPLACE FUNCTION public._speed_max_stake_for_offered(p_asset text, p_duration speed_duration, p_offered_prob double precision)
  RETURNS numeric
  LANGUAGE plpgsql

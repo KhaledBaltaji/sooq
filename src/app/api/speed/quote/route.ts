@@ -251,7 +251,12 @@ export async function POST(req: Request) {
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_fair_prob_reject_high'), 0.97) AS reject_high,
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_fair_prob_reject_low'), 0.03) AS reject_low,
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_late_30s_imbalance_reject'), 0.30) AS late_30s_imb,
-                COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_late_window_reject_s'), 10) AS late_reject_s
+                COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_late_window_reject_s'), 10) AS late_reject_s,
+                -- 0061 Phase 5: when speed_use_new_curve=1, the trade RPC drops
+                -- the fair_prob hard rejects, the late-30s near-decided block,
+                -- and the soft-block exception. The quote endpoint mirrors so
+                -- the UI doesn't grey the button on rejections the RPC won't apply.
+                COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_use_new_curve'), 0) AS use_new_curve
             ),
             spread AS (
               SELECT
@@ -344,6 +349,12 @@ export async function POST(req: Request) {
                 -- max 10->20) it throws "record type has not been registered"
                 -- and the entire /quote endpoint 500s. jsonb is a built-in
                 -- so it always parses. Logical behavior unchanged.
+                -- 0061 Phase 5: the four FAIR_PROB_TOO_HIGH / FAIR_PROB_TOO_LOW /
+                -- LATE_30S_IMBALANCE / SOFT_BLOCK branches are gated on
+                -- sm.use_new_curve = 0. When flag = 1 the trade RPC drops
+                -- these gates and the UI must not preemptively grey the
+                -- button. MARKET_CLOSED / ORACLE_STALE / LATE_WINDOW (last
+                -- 10s) stay always-on — they're real terminal states.
                 CASE
                   WHEN sm.status <> 'open' THEN jsonb_build_object('reason', 'Market is not open', 'code', 'MARKET_CLOSED')
                   WHEN NOW() >= sm.closes_at THEN jsonb_build_object('reason', 'Market has closed', 'code', 'MARKET_CLOSED')
@@ -351,11 +362,15 @@ export async function POST(req: Request) {
                        > COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_oracle_stale_seconds'), 2)
                     THEN jsonb_build_object('reason', 'Oracle price stale — try again', 'code', 'ORACLE_STALE')
                   WHEN sm.seconds_left < sm.late_reject_s THEN jsonb_build_object('reason', 'Market closing — no new bets', 'code', 'LATE_WINDOW')
-                  WHEN sm.fair_prob_side > sm.reject_high THEN jsonb_build_object('reason', 'Outcome too close to certain', 'code', 'FAIR_PROB_TOO_HIGH')
-                  WHEN sm.fair_prob_side < sm.reject_low THEN jsonb_build_object('reason', 'Side too unlikely', 'code', 'FAIR_PROB_TOO_LOW')
-                  WHEN sm.seconds_left < 30 AND ABS(sm.fair_prob_side::DOUBLE PRECISION - 0.5) > sm.late_30s_imb::DOUBLE PRECISION
+                  WHEN sm.use_new_curve = 0 AND sm.fair_prob_side > sm.reject_high
+                    THEN jsonb_build_object('reason', 'Outcome too close to certain', 'code', 'FAIR_PROB_TOO_HIGH')
+                  WHEN sm.use_new_curve = 0 AND sm.fair_prob_side < sm.reject_low
+                    THEN jsonb_build_object('reason', 'Side too unlikely', 'code', 'FAIR_PROB_TOO_LOW')
+                  WHEN sm.use_new_curve = 0 AND sm.seconds_left < 30
+                    AND ABS(sm.fair_prob_side::DOUBLE PRECISION - 0.5) > sm.late_30s_imb::DOUBLE PRECISION
                     THEN jsonb_build_object('reason', 'Too late and too one-sided', 'code', 'LATE_30S_IMBALANCE')
-                  WHEN sm.soft_blocked THEN jsonb_build_object('reason', 'Market closing — try next round', 'code', 'SOFT_BLOCK')
+                  WHEN sm.use_new_curve = 0 AND sm.soft_blocked
+                    THEN jsonb_build_object('reason', 'Market closing — try next round', 'code', 'SOFT_BLOCK')
                   ELSE NULL::jsonb
                 END AS reject_obj
               FROM stake_max sm

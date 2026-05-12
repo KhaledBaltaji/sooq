@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0037_recalibration_cron/functions/_speed_promote_matrix_version.sql
--- Last extracted: 2026-05-11T18:57:42.178Z
+-- Last extracted: 2026-05-12T10:35:34.798Z
 CREATE OR REPLACE FUNCTION public._speed_promote_matrix_version(p_version_id integer)
  RETURNS jsonb
  LANGUAGE plpgsql

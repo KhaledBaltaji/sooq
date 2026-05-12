@@ -1,0 +1,13 @@
+{
+  "functions": [
+    "_speed_pricing_apply",
+    "speed_execute_trade",
+    "speed_execute_cashout"
+  ],
+  "fee_config_keys": ["speed_use_new_curve"],
+  "exact_args": {
+    "_speed_pricing_apply": 9,
+    "speed_execute_trade": 9,
+    "speed_execute_cashout": 7
+  }
+}

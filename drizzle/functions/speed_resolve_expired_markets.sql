@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0004_speed_cron.sql:151
--- Last extracted: 2026-05-11T18:57:38.715Z
+-- Last extracted: 2026-05-12T10:35:31.280Z
 CREATE OR REPLACE FUNCTION public.speed_resolve_expired_markets()
  RETURNS jsonb
  LANGUAGE plpgsql
