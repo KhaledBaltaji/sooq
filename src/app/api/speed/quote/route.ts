@@ -45,15 +45,23 @@ interface QuoteBody {
 // hot market each poll runs the full pricing CTE (BSM + matrix lookup +
 // fee_config reads) — wasted DB cycles. This cache shares one response
 // across all callers within a 250ms window keyed by:
-//   - trade:   `t:${market_id}:${side}`
+//   - trade:   `t:${user_id}:${market_id}:${side}`
 //   - cashout: `c:${position_id}`     (position_id is per-user already)
 //
 // Caching is safe AFTER auth — the 401 check still runs every request.
-// Trade quotes are user-invariant today (CLV shading happens at execute,
-// not quote). Cashout responses are naturally per-user because the
-// position_id is per-user. 250ms TTL keeps quotes effectively
-// indistinguishable from live (BTC moves ~1¢/0.000013% in that window;
-// well inside the parity-drift tolerances on /trade and /cashout).
+//
+// Mig 0060 / Phase 0 (2026-05-12): trade cache key includes `user_id`
+// because the quote now applies _speed_apply_user_shading per user.
+// Before this change, the cache key was `t:${market_id}:${side}` which
+// would have leaked one user's shaded price to other users on the same
+// market+side. The shading helper is a no-op for users with no edge
+// score, so cache hit-rate stays high on normal traffic; sharks get
+// their own bucket which is correct.
+//
+// Cashout quotes are naturally per-user because the position_id is
+// per-user. 250ms TTL keeps quotes effectively indistinguishable from
+// live (BTC moves ~1¢/0.000013% in that window; well inside the
+// parity-drift tolerances on /trade and /cashout).
 //
 // Per-Lambda-instance only (Map in module scope). Multiple instances
 // don't share state, but each amortizes its own users.
@@ -183,13 +191,14 @@ export async function POST(req: Request) {
         );
       }
 
-      const cacheKey = `t:${body.market_id}:${body.side}`;
+      const userId = session.user.id;
+      const cacheKey = `t:${userId}:${body.market_id}:${body.side}`;
       const cached = quoteCacheGet(cacheKey) as TradeQuote | null;
       if (cached) {
         return NextResponse.json(cached);
       }
 
-      const data = await runAs(session.user.id, async (tx) => {
+      const data = await runAs(userId, async (tx) => {
         const r = await tx.execute<{ result: TradeQuote }>(sql`
           WITH
             mkt AS (
@@ -269,11 +278,13 @@ export async function POST(req: Request) {
               FROM spread p
             ),
             applied AS (
-              -- 0034: shared helper for matrix correction + asym push-up + soft-block
+              -- 0034: shared helper for matrix correction + asym push-up + soft-block.
+              -- Returns the pre-shade offered_prob; we apply CLV user-shading
+              -- in the shaded CTE below to mirror speed_execute_trade behavior.
               SELECT
                 pr.*,
                 a.mark_prob,
-                a.offered_prob,
+                a.offered_prob AS pre_shade_offered_prob,
                 a.matrix_used,
                 a.matrix_version,
                 a.soft_blocked
@@ -289,12 +300,35 @@ export async function POST(req: Request) {
                 'entry'::text
               ) a
             ),
-            stake_max AS (
+            shaded AS (
+              -- Phase 0 (2026-05-12): apply per-user CLV shading as the last
+              -- pricing layer, matching speed_execute_trade (mig 0044). Helper
+              -- is a no-op for users without sustained edge — most users see
+              -- pre_shade_offered_prob unchanged. For users above the CI gate,
+              -- the shaded value must equal what the trade RPC will compute at
+              -- execute time so quote/execute parity holds.
+              --
+              -- Cap arg matches the trade RPC: speed_entry_soft_block_threshold
+              -- from fee_config (default 0.95). The helper caps shaded value at
+              -- (threshold - 0.001) so shading can't push a user into SOFT_BLOCK.
               SELECT
                 ap.*,
-                -- mig 0051 Phase 2C: helper takes (asset, duration, offered_prob)
-                _speed_max_stake_for_offered(ap.asset, ap.duration, ap.offered_prob) AS max_stake_allowed
+                _speed_apply_user_shading(
+                  ${userId}::uuid,
+                  ap.pre_shade_offered_prob,
+                  COALESCE(
+                    (SELECT rate::DOUBLE PRECISION FROM fee_config WHERE fee_type = 'speed_entry_soft_block_threshold' LIMIT 1),
+                    0.95
+                  )
+                ) AS offered_prob
               FROM applied ap
+            ),
+            stake_max AS (
+              SELECT
+                sh.*,
+                -- mig 0051 Phase 2C: helper takes (asset, duration, offered_prob)
+                _speed_max_stake_for_offered(sh.asset, sh.duration, sh.offered_prob) AS max_stake_allowed
+              FROM shaded sh
             ),
             final AS (
               SELECT
