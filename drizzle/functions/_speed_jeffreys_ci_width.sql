@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0037_recalibration_cron/functions/_speed_jeffreys_ci_width.sql
--- Last extracted: 2026-05-12T10:35:34.418Z
+-- Last extracted: 2026-05-12T13:55:01.965Z
 CREATE OR REPLACE FUNCTION public._speed_jeffreys_ci_width(p_wins integer, p_n integer)
  RETURNS double precision
  LANGUAGE plpgsql

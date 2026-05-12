@@ -113,6 +113,9 @@
     "resolved": "تم الحل",
     "cashoutLockedLate": "السحب مغلق",
     "cashoutLockedNearDecided": "الجولة شبه محسومة",
+    "yourPosition": "صفقتك",
+    "paysIfWin": "يدفع {amount} عند الفوز",
+    "holdToSettlement": "احتفظ حتى التسوية",
     "entryLockedLate": "الجولة تُغلق",
     "entryLockedNearDecided": "الجولة شبه محسومة",
     "errors": {

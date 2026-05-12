@@ -34,6 +34,11 @@ export type SpeedErrorKind =
   | "soft_block"
   | "max_payout_cap"
   | "cashout_at_cap"
+  // 0062 Phase 5e: cashout structurally disabled on this market (1m markets).
+  // UI should not normally surface this — the cashout button is hidden — but
+  // if a user bypasses the UI the server returns this and we render a friendly
+  // message instead of the raw SQL exception.
+  | "cashout_disabled_for_market"
   | "limit_reached"
   | "ngr_soft_block"
   | "ngr_hard_stop"
@@ -132,6 +137,16 @@ export function mapSpeedRpcError(raw: string | null | undefined): SpeedErrorMapp
       // are at the price ceiling, so cashout has no meaningful value. Hold
       // to settlement for the full payout instead.
       userMessage: "Stake is at the price cap — hold to settlement for full payout.",
+      retryable: false,
+    };
+  }
+  // 0062 Phase 5e: market-level cashout disabled (1m markets). Server raises:
+  //   'Cashout isn''t available on this market — hold to settlement.'
+  // Match the prefix in case the message gets extended later.
+  if (msg.includes("Cashout isn't available on this market")) {
+    return {
+      kind: "cashout_disabled_for_market",
+      userMessage: "Cashout isn't available on 1-minute rounds — hold to settlement.",
       retryable: false,
     };
   }

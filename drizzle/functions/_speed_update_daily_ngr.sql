@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0028_pricing_engine_v2.sql:200
--- Last extracted: 2026-05-12T10:35:33.422Z
+-- Last extracted: 2026-05-12T13:55:00.984Z
 CREATE OR REPLACE FUNCTION public._speed_update_daily_ngr(p_stake_in numeric DEFAULT 0, p_payout_out numeric DEFAULT 0, p_cashout_out numeric DEFAULT 0, p_refund_out numeric DEFAULT 0)
  RETURNS void
  LANGUAGE plpgsql

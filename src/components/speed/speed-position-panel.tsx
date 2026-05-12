@@ -212,7 +212,28 @@ export function SpeedPositionPanel({
         </div>
       )}
 
-      {position.status === "open" && !expired && (
+      {/* 0062 Phase 5e: on 1m markets, cashout is structurally disabled.
+          Render a passive position monitor card — no button affordance, no
+          greyed-out look, just a clean info display showing what the user
+          has and what it could be at settlement. 5m markets keep the
+          existing cashout button. */}
+      {position.status === "open" && !expired && market.duration === "1m" && (
+        <div className="rounded-lg bg-bg p-3 ring-1 ring-border-custom/50">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wide text-muted-custom">
+              {t("yourPosition")}
+            </span>
+            <span className="font-satoshi text-base font-bold tabular-nums">
+              {position.side === "over" ? t("up") : t("down")} {formatCurrency(stake)}
+            </span>
+          </div>
+          <div className="mt-1 text-right text-[11px] text-muted-custom">
+            {t("paysIfWin", { amount: formatCurrency(potentialPayout) })}
+          </div>
+        </div>
+      )}
+
+      {position.status === "open" && !expired && market.duration !== "1m" && (
         <div className="space-y-1.5">
           <Button
             type="button"

@@ -421,6 +421,43 @@ export function SpeedMobileTradeBar({
   // Phase 1: cashout-quote loading hint.
   const cashoutQuoteLoading = cashoutQuoteEnabled && cashoutQuote === null;
 
+  // 0062 Phase 5e: 1m markets have cashout disabled (longshot-extract exploit
+  // closure). Render a passive position monitor instead of the cashout button.
+  // Same visual shell so the user's mental model doesn't break — different
+  // content (position recap + settlement potential, no action).
+  if (market.duration === "1m") {
+    const isUpPos = position.side === "over";
+    return (
+      <div
+        className="fixed bottom-0 left-0 right-0 z-40 lg:hidden border-t border-border-custom bg-bg/95 backdrop-blur-sm pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] pt-3 px-4"
+        role="region"
+        aria-label="Speed position monitor"
+      >
+        <div className="flex items-center justify-between rounded-xl bg-text text-bg px-4 py-3 min-h-[56px]">
+          <div className="flex items-center gap-2.5">
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide leading-none",
+                isUpPos ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive",
+              )}
+            >
+              {isUpPos ? t("up") : t("down")}
+            </span>
+            <span className="font-satoshi text-base font-bold tabular-nums">
+              {formatCurrency(stakeAmt)}
+            </span>
+            <span className="text-[10px] uppercase tracking-wide text-bg/55">
+              {t("yourPosition")}
+            </span>
+          </div>
+          <span className="text-[11px] font-bold tabular-nums text-bg/80">
+            {t("paysIfWin", { amount: formatCurrency(expectedSettlementPayout) })}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="fixed bottom-0 left-0 right-0 z-40 lg:hidden border-t border-border-custom bg-bg/95 backdrop-blur-sm pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] pt-3 px-4"

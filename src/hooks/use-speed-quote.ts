@@ -78,6 +78,9 @@ export interface SpeedCashoutQuote {
   expected_settlement_payout: number;
   near_decided_block: boolean;
   late_window_block: boolean;
+  /** 0062 Phase 5e: false when this market has cashout disabled (1m markets).
+   * UI renders a passive position monitor instead of a cashout button. */
+  cashout_available?: boolean;
   rejected: boolean;
   reject_reason: string | null;
   reject_code: string | null;

@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0044_sprint_2_clv_throttle/functions/_speed_recompute_edge_scores.sql
--- Last extracted: 2026-05-12T10:35:34.993Z
+-- Last extracted: 2026-05-12T13:55:02.536Z
 CREATE OR REPLACE FUNCTION public._speed_recompute_edge_scores(p_window integer DEFAULT NULL::integer)
  RETURNS integer
  LANGUAGE plpgsql

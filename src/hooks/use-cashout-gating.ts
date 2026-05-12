@@ -44,7 +44,15 @@ export interface CashoutGating {
   cashoutLockedLate: boolean;
   /** Entry and current mark both at price cap — hold to settlement. */
   cashoutAtCap: boolean;
-  /** Any cashout gate fires. */
+  /**
+   * 0062 Phase 5e: market-level cashout disabled (currently all 1m markets).
+   * When true, the panel should render a passive position monitor (showing
+   * stake + settlement payout) instead of a cashout button. Distinct from
+   * the other gates because this is *structural* — the market never had
+   * cashout available; there's no "wait and try again" path.
+   */
+  cashoutDisabledForMarket: boolean;
+  /** Any cashout gate fires (includes cashoutDisabledForMarket). */
   cashoutLocked: boolean;
   /** Server-first cashout amount. Local fallback while loading. */
   cashoutAmountForDisplay: number | null;
@@ -116,7 +124,17 @@ export function useCashoutGating(args: CashoutGatingArgs): CashoutGating {
     cashoutQuote?.cap_edge === true ||
     (localMarkProb !== null && isCashoutAtCapEdge(entryProb, localMarkProb, feeConfig));
 
-  const cashoutLocked = cashoutLockedLate || cashoutLockedNearDecided || cashoutAtCap;
+  // 0062 Phase 5e: market-level cashout disabled (1m markets currently).
+  // Server is authoritative via cashoutQuote.cashout_available. Default true
+  // (cashout available) when the field is undefined — safer fallback for
+  // older clients / pre-deploy quote responses.
+  const cashoutDisabledForMarket = cashoutQuote?.cashout_available === false;
+
+  const cashoutLocked =
+    cashoutLockedLate ||
+    cashoutLockedNearDecided ||
+    cashoutAtCap ||
+    cashoutDisabledForMarket;
 
   // Display: server-first.
   const cashoutAmountForDisplay = cashoutQuote?.cashout_amount ?? localCashout;
@@ -136,6 +154,7 @@ export function useCashoutGating(args: CashoutGatingArgs): CashoutGating {
     cashoutLockedNearDecided,
     cashoutLockedLate,
     cashoutAtCap,
+    cashoutDisabledForMarket,
     cashoutLocked,
     cashoutAmountForDisplay,
     markProbForDisplay,

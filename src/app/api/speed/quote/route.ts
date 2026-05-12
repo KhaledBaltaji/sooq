@@ -149,6 +149,10 @@ interface CashoutQuote {
   near_decided_block: boolean;
   /** Mig 0035: true when cashout is fully blocked because seconds_left < cashout_late_reject_s. */
   late_window_block: boolean;
+  /** 0062 Phase 5e: false when the market has cashout disabled (currently all 1m
+   * durations). Frontend renders a passive position monitor instead of a cashout
+   * button when this is false. */
+  cashout_available: boolean;
   rejected: boolean;
   reject_reason: string | null;
   reject_code: string | null;
@@ -519,16 +523,24 @@ export async function POST(req: Request) {
                 COALESCE((SELECT rate FROM fee_config WHERE fee_type = 'speed_cashout_cap_edge_threshold'), 0.985) AS cap_edge_thresh
             ),
             priced AS (
+              -- 0062 Phase 5e: LEFT JOIN speed_market_config to pull the
+              -- per-market cashout_enabled flag. COALESCE to TRUE for safety
+              -- if a market doesn't have a config row (shouldn't happen on
+              -- live markets but keeps the fallback non-blocking).
               SELECT
                 a.*,
                 c.kill_switch,
                 c.late_reject_s,
                 c.late_30s_imb,
                 c.cap_edge_thresh,
+                COALESCE(mc.cashout_enabled, true) AS cashout_enabled,
                 (a.mark_prob > a.entry_offered_prob) AS is_winning,
                 a.stake * (a.mark_prob / a.entry_offered_prob - 1.0) AS fair_profit,
                 (a.entry_offered_prob >= c.cap_edge_thresh AND a.mark_prob >= c.cap_edge_thresh) AS cap_edge
-              FROM applied a, cfg c
+              FROM applied a
+              CROSS JOIN cfg c
+              LEFT JOIN speed_market_config mc
+                ON mc.asset = a.market_asset AND mc.duration = a.market_duration
             ),
             margins AS (
               SELECT
@@ -602,6 +614,12 @@ export async function POST(req: Request) {
             'expected_settlement_payout', ROUND(expected_settlement_payout::NUMERIC, 2),
             'near_decided_block', near_decided_block,
             'late_window_block', late_window_block,
+            -- 0062 Phase 5e: per-market cashout flag. Frontend renders a
+            -- passive position monitor (not a cashout button) when false.
+            -- Deliberately NOT folded into reject_obj — the quote still
+            -- returns valid mark_prob and expected_settlement_payout for
+            -- display; only the cashout action is suppressed.
+            'cashout_available', cashout_enabled,
             'rejected', reject_obj IS NOT NULL,
             'reject_reason', reject_obj->>'reason',
             'reject_code', reject_obj->>'code'

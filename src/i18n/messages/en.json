@@ -113,6 +113,9 @@
     "resolved": "Resolved",
     "cashoutLockedLate": "Cashout locked",
     "cashoutLockedNearDecided": "Round near decided",
+    "yourPosition": "Your position",
+    "paysIfWin": "Pays {amount} if you win",
+    "holdToSettlement": "Hold to settlement",
     "entryLockedLate": "Round closing",
     "entryLockedNearDecided": "Round near decided",
     "errors": {

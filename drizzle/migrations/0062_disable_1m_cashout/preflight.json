@@ -1,0 +1,4 @@
+{
+  "tables": ["speed_market_config"],
+  "functions": ["speed_execute_cashout"]
+}

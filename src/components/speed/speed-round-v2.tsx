@@ -574,6 +574,76 @@ function PositionCard({
   // into hook state. Same mapping pattern as Phase 1 mobile-bar fix.
   const mappedError = cashError ? mapSpeedRpcError(cashError) : null;
 
+  // 0062 Phase 5e: on 1m markets, cashout is structurally unavailable (the
+  // longshot-extract exploit lives here). Render a passive position monitor
+  // instead of a cashout button. No tap target, no "WIN PAYOUT" label, no
+  // disabled-button styling — just a clean info card showing what the user
+  // has and what it could be at settlement.
+  if (market.duration === "1m") {
+    return (
+      <div
+        className={cn(
+          "relative w-full rounded-2xl bg-text text-bg overflow-hidden px-4 py-2.5 text-left",
+        )}
+        role="region"
+        aria-label={`Position: ${isUp ? "up" : "down"} ${formatCurrency(stake)}`}
+      >
+        {/* 4px colored side bar matches the cashout-button visual rhythm */}
+        <span
+          aria-hidden
+          className={cn(
+            "absolute left-0 top-0 bottom-0 w-1",
+            isUp ? "bg-success" : "bg-destructive",
+          )}
+        />
+
+        {/* Row 1: side chip + countdown · stake reference (same as 5m). */}
+        <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide">
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 leading-none",
+                isUp ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive",
+              )}
+            >
+              {isUp ? t("up") : t("down")}
+            </span>
+            <span
+              className={cn(
+                "tabular-nums text-bg/70",
+                urgent && "animate-pulse text-destructive",
+              )}
+            >
+              {formatSpeedCountdown(secondsLeft)}
+            </span>
+          </div>
+          <span className="tabular-nums text-bg/55">
+            {formatCurrency(stake)} {t("stake")}
+          </span>
+        </div>
+
+        {/* Row 2: position recap — side+stake. No button affordance. */}
+        <div className="mt-1 flex items-baseline justify-between gap-3">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-bg/70">
+            {t("yourPosition")}
+          </span>
+          <span className="font-satoshi text-2xl font-black tabular-nums tracking-[-0.01em] leading-none">
+            {isUp ? t("up") : t("down")} {formatCurrency(stake)}
+          </span>
+        </div>
+
+        {/* Row 3: settlement potential — "Pays $X if you win" */}
+        <div className="mt-0.5 flex items-center justify-end h-4 text-xs font-bold tabular-nums leading-none">
+          {potentialPayout !== null && (
+            <span className="font-satoshi text-bg/60 uppercase tracking-wide text-[10px]">
+              {t("paysIfWin", { amount: formatCurrency(potentialPayout) })}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-1.5">
       {/* Error toast: visible whenever a cashout returned a server error.

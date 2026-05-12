@@ -1,0 +1,6 @@
+{
+  "functions": ["speed_execute_cashout"],
+  "exact_args": {
+    "speed_execute_cashout": 7
+  }
+}

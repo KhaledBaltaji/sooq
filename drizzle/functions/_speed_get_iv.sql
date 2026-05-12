@@ -6,7 +6,7 @@
 --
 -- Source of truth (latest known migration touching this function):
 --   0029_iv_cache_and_helper.sql:129
--- Last extracted: 2026-05-12T10:35:33.227Z
+-- Last extracted: 2026-05-12T13:55:00.753Z
 CREATE OR REPLACE FUNCTION public._speed_get_iv(p_asset text, p_duration speed_duration)
  RETURNS numeric
  LANGUAGE plpgsql
